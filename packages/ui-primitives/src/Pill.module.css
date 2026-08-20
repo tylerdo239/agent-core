@@ -1,0 +1,26 @@
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--alias-border-default);
+  color: var(--alias-label-secondary);
+  white-space: nowrap;
+}
+
+.success {
+  color: var(--alias-state-success);
+  border-color: var(--alias-state-success);
+}
+
+.error {
+  color: var(--alias-state-error);
+  border-color: var(--alias-state-error);
+}
+
+.accent {
+  color: var(--alias-accent);
+  border-color: var(--alias-accent);
+}

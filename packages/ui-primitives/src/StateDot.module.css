@@ -1,0 +1,33 @@
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.connected {
+  background: var(--alias-state-success);
+}
+
+.disconnected {
+  background: var(--alias-state-error);
+}
+
+.error {
+  background: var(--alias-state-error);
+}
+
+.connecting {
+  background: var(--alias-label-secondary);
+  animation: state-dot-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes state-dot-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}

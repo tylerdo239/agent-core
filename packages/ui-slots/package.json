@@ -1,0 +1,10 @@
+{
+  "name": "@agent-core/ui-slots",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@deepseek-ai/cordis": "4.0.1"
+  }
+}

@@ -1,0 +1,606 @@
+/* Phase 10.2: import token 3 tầng từ packages/ui-theme (cam #F26F21/trắng/
+   đen) — thay hoàn toàn theme tối cũ kế thừa từ bản vanilla JS Phase 7.
+   Mọi rule dưới đây CHỈ tham chiếu var(--alias-*)/var(--specific-*), không
+   bao giờ hardcode màu hay chạm var(--static-*) trực tiếp (đúng nguyên tắc
+   3 tầng đã lập ở Phase 10.1). */
+@import '@agent-core/ui-theme/src/tokens.css';
+
+:root {
+  color-scheme: light;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--alias-bg-base);
+  color: var(--alias-label-primary);
+}
+
+/* Layout 2 cột (sidebar + khung chat chính) — xem Sidebar.tsx cho lý do đơn
+   giản hoá so với AppFrame 3 cột thật của dsh (không có "details panel",
+   agent-core không có tính năng tương ứng để hiện ở đó). */
+#app {
+  height: 100vh;
+  display: flex;
+  flex-direction: row;
+}
+
+/* Phase 14: sidebar thu gọn còn 1 rail 56px icon-only (KHÔNG ẩn hẳn/
+   display:none — giữ đúng affordance thật của dsh: vẫn thấy được toggle +
+   "+ Chat mới" + "Cấu hình" khi thu gọn, chỉ mất phần list dài). Transition
+   trên đúng 1 thuộc tính (width) — đơn giản hơn 2-pha slide/settle của bản
+   gốc (coding rule A6), đủ mượt cho layout 2 cột tĩnh hiện tại. */
+#sidebar {
+  width: 260px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 10px;
+  border-right: 1px solid var(--alias-border-default);
+  background: var(--alias-bg-subtle);
+  overflow-y: auto;
+  overflow-x: hidden;
+  transition: width 180ms ease;
+}
+
+#sidebar.sidebar-collapsed {
+  width: 56px;
+  align-items: center;
+  padding: 12px 10px;
+}
+
+.sidebar-top {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.sidebar-collapsed .sidebar-top {
+  justify-content: center;
+}
+
+/* Icon-only control chung (toggle) — hình tròn 28px, hover dùng đúng cặp
+   bg-subtle/bg-base đã dùng cho .sidebar-session-item:hover, không thêm
+   token màu song song mới. */
+.sidebar-icon-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  padding: 0;
+  background: transparent;
+  color: var(--alias-label-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.sidebar-icon-btn:hover {
+  background: var(--alias-bg-base);
+  color: var(--alias-label-primary);
+}
+
+.sidebar-new-chat {
+  flex: none;
+  width: 100%;
+}
+
+.sidebar-new-chat-collapsed {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+}
+
+.sidebar-history {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+}
+
+.sidebar-empty {
+  font-size: 12.5px;
+  color: var(--alias-label-secondary);
+  padding: 8px 4px;
+  margin: 0;
+}
+
+.sidebar-session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sidebar-session-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--alias-label-primary);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.sidebar-session-item:hover {
+  background: var(--alias-bg-base);
+}
+
+.sidebar-session-item.active {
+  background: var(--alias-accent-subtle-bg);
+  border-color: var(--alias-accent);
+  font-weight: 600;
+}
+
+/* Hàng "Cấu hình" cố định cuối sidebar — thay nút bánh răng trong header cũ
+   (gỡ hẳn, không giữ 2 lối vào cùng 1 modal settings). Cùng rhythm 1 hàng
+   full-width như .sidebar-session-item, không phải avatar/profile vì app
+   này không có tài khoản người dùng thật để hiện. */
+.sidebar-foot {
+  flex: none;
+  width: 100%;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--alias-border-default);
+}
+
+.sidebar-collapsed .sidebar-foot {
+  display: flex;
+  justify-content: center;
+}
+
+.sidebar-settings-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--alias-label-primary);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.sidebar-settings-trigger:hover {
+  background: var(--alias-bg-base);
+}
+
+.sidebar-settings-trigger-collapsed {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 50%;
+}
+
+.sidebar-settings-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#main {
+  flex: 1;
+  min-width: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--alias-border-default);
+}
+
+header h1 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: 0.02em;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* `.status`/`.status-*` (badge trạng thái kết nối) đã thay bằng
+   <Pill>+<StateDot> (packages/ui-primitives, thêm sau audit UI) — không còn
+   cần CSS riêng ở đây nữa. */
+
+/* Nút thô mặc định — mọi `<button>` thật trong app (kể cả UI-plugin) giờ
+   đều dùng <Button> (packages/ui-primitives, CSS Modules) — rule này giữ
+   lại làm fallback thuần tuý cho `<button>` nào lỡ chưa đổi, không phải
+   style chính còn dùng rộng rãi. */
+button {
+  background: var(--alias-bg-subtle);
+  color: var(--alias-label-primary);
+  border: 1px solid var(--alias-border-default);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--alias-accent);
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+#messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.msg {
+  max-width: 78%;
+  line-height: 1.45;
+  font-size: 14px;
+  word-break: break-word;
+}
+
+/* Phase 10.4 — hình học bubble user đúng MessageItem.tsx thật của dsh
+   (packages/client/ui-conversation, verify qua đọc source thật):
+   border-radius 22px, padding 10px 16px, max-width min(525px, 82%). */
+.msg-user {
+  align-self: flex-end;
+  max-width: min(525px, 82%);
+  padding: 10px 16px;
+  border-radius: 22px;
+  background: var(--specific-bubble-user-bg);
+  color: var(--specific-bubble-user-text);
+  white-space: pre-wrap;
+}
+
+/* Assistant KHÔNG còn là bubble (khác app.js cũ Phase 7, kế thừa nhầm từ
+   thiết kế "bubble cả 2 chiều") — chảy full-width, đúng AssistantMarkdown
+   thật của dsh. Nội dung render qua react-markdown trong .assistant-markdown
+   bên dưới, không phải text thô nên bỏ white-space: pre-wrap ở đây. */
+.msg-assistant {
+  align-self: stretch;
+  max-width: 100%;
+}
+
+.assistant-markdown {
+  line-height: 1.6;
+}
+
+.assistant-markdown > :first-child {
+  margin-top: 0;
+}
+
+.assistant-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.assistant-markdown p,
+.assistant-markdown ul,
+.assistant-markdown ol {
+  margin: 0.6em 0;
+}
+
+.assistant-markdown ul,
+.assistant-markdown ol {
+  padding-left: 1.4em;
+}
+
+.assistant-markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  background: var(--alias-bg-subtle);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+}
+
+.assistant-markdown pre {
+  background: var(--alias-bg-subtle);
+  border: 1px solid var(--alias-border-default);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+
+.assistant-markdown pre code {
+  background: none;
+  padding: 0;
+}
+
+.assistant-markdown a {
+  color: var(--alias-accent);
+}
+
+.msg-step {
+  align-self: flex-start;
+  background: var(--alias-bg-subtle);
+  border: 1px dashed var(--alias-border-default);
+  color: var(--alias-label-secondary);
+  font-size: 12.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  border-radius: 10px;
+  max-width: 90%;
+}
+
+/* Tool call row — collapsed-by-default 1 dòng (icon + title + tóm tắt),
+   click để mở rộng. Dựa theo ToolRow.tsx thật của deepseek-harness
+   (packages/client/ui-tool): mọi tool call dùng chung 1 chrome, running =
+   sweep shimmer trên header, error = dot đỏ thay icon + tóm tắt đổi thành
+   dòng lỗi. Không dùng bubble nhấp nháy riêng như bản cũ. */
+.tool-row {
+  align-self: flex-start;
+  max-width: 92%;
+  padding: 0;
+  background: transparent;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.tool-row-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 12px;
+  background: var(--alias-bg-subtle);
+  border: 1px solid var(--alias-border-default);
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--alias-label-secondary);
+}
+
+/* Sweep shimmer màu cam (brand), thay cho tint xanh của theme cũ. */
+.tool-row[data-state='running'] .tool-row-header {
+  background-image: linear-gradient(90deg, transparent, rgba(242, 111, 33, 0.18), transparent);
+  background-size: 200% 100%;
+  animation: tool-row-sweep 1.6s linear infinite;
+}
+
+@keyframes tool-row-sweep {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.tool-row[data-state='ok'] .tool-row-header,
+.tool-row[data-state='error'] .tool-row-header {
+  cursor: pointer;
+}
+
+.tool-row-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.tool-row-icon-error {
+  color: var(--alias-state-error);
+}
+
+.tool-row-title {
+  flex-shrink: 0;
+  color: var(--alias-label-primary);
+  font-weight: 600;
+}
+
+.tool-row-sep {
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.tool-row-summary {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+}
+
+.tool-row[data-state='error'] .tool-row-summary {
+  color: var(--alias-state-error);
+}
+
+.tool-row-chevron {
+  flex-shrink: 0;
+  opacity: 0.5;
+  transition: transform 0.15s;
+}
+
+.tool-row-chevron-open {
+  transform: rotate(90deg);
+}
+
+.tool-row-body {
+  padding: 10px 14px;
+  border: 1px solid var(--alias-border-default);
+  border-top: none;
+  border-radius: 0 0 10px 10px;
+  background: var(--alias-bg-base);
+}
+
+/* Danh sách "nguồn tham khảo" đánh số — mirror WebBlock thật của dsh: <ol>
+   đơn giản (link + snippet), KHÔNG dùng card/favicon dạng lưới. */
+.tool-sources {
+  margin: 0;
+  padding-left: 1.8em;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.tool-source-link {
+  color: var(--alias-accent);
+  font-size: 13.5px;
+  word-break: break-word;
+}
+
+.tool-source-link:hover {
+  text-decoration: underline;
+}
+
+.tool-source-snippet {
+  margin-top: 2px;
+  color: var(--alias-label-secondary);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+/* Card IN/OUT chung cho các tool không có card riêng (query_database...). */
+.tool-io {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+}
+
+.tool-io-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.tool-io-label {
+  flex-shrink: 0;
+  width: 26px;
+  color: var(--alias-label-secondary);
+  font-weight: 600;
+}
+
+.tool-io-text {
+  min-width: 0;
+  color: var(--alias-label-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg-error {
+  align-self: stretch;
+  background: #fdeeee;
+  border: 1px solid var(--alias-state-error);
+  color: var(--alias-state-error);
+  font-size: 13px;
+}
+
+.msg-system {
+  align-self: center;
+  color: var(--alias-label-secondary);
+  font-size: 12px;
+}
+
+#compose-form {
+  display: flex;
+  gap: 10px;
+  padding: 16px 20px 20px;
+  border-top: 1px solid var(--alias-border-default);
+}
+
+#compose-input {
+  flex: 1;
+  background: var(--alias-bg-base);
+  border: 1px solid var(--alias-border-default);
+  color: var(--alias-label-primary);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 14px;
+}
+
+#compose-input:focus {
+  outline: none;
+  border-color: var(--alias-accent);
+}
+
+/* `dialog`/`dialog::backdrop` đã chuyển vào packages/ui-primitives/src/
+   Modal.module.css (scoped qua CSS Modules, thêm sau audit UI) — không còn
+   global rule ở đây nữa. */
+
+#settings-form {
+  padding: 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#settings-form h2 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+#settings-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--alias-label-secondary);
+}
+
+#settings-form input {
+  background: var(--alias-bg-subtle);
+  border: 1px solid var(--alias-border-default);
+  color: var(--alias-label-primary);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+#settings-form input:focus {
+  outline: none;
+  border-color: var(--alias-accent);
+}
+
+.hint {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--alias-label-secondary);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}

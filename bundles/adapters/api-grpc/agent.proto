@@ -1,0 +1,51 @@
+syntax = "proto3";
+package agentcore;
+
+// Phase 6.3 — mirror REST (CreateSession/SendMessage) + tương đương WS
+// streaming (StreamTurn, server-streaming RPC nghe agent/step real-time).
+service AgentService {
+  rpc CreateSession (CreateSessionRequest) returns (CreateSessionResponse);
+  rpc SendMessage (SendMessageRequest) returns (SendMessageResponse);
+  rpc StreamTurn (SendMessageRequest) returns (stream StepEvent);
+}
+
+message CreateSessionRequest {
+  string id = 1;
+  string driver = 2;
+  // 0 = dùng default của server (8 bước) — proto3 không phân biệt được
+  // "không truyền" với "truyền 0", chấp nhận đơn giản hoá này cho bề mặt
+  // gRPC tối giản (xem ghi chú trong build plan Phase 6.3).
+  int32 max_steps = 3;
+  string system_prompt = 4;
+}
+
+message CreateSessionResponse {
+  string id = 1;
+  string driver = 2;
+  int32 max_steps = 3;
+}
+
+message SendMessageRequest {
+  string session_id = 1;
+  string message = 2;
+  // rỗng = dùng driver mặc định của session
+  string driver = 3;
+}
+
+message SendMessageResponse {
+  string content = 1;
+  int32 steps = 2;
+}
+
+// Flatten LoopStep (discriminated union bên TypeScript) thành 1 message
+// phẳng — field nào không áp dụng cho `type` hiện tại thì để rỗng.
+message StepEvent {
+  string session_id = 1;
+  string type = 2; // "model_message" | "tool_result" | "critic_message" | "final"
+  string content = 3; // model_message / critic_message / final
+  string tool_call_name = 4; // model_message có toolCall
+  string tool_call_args_json = 5;
+  string tool_result_name = 6; // tool_result
+  string tool_result_json = 7; // tool_result
+  string tool_ui_json = 8; // model_message/tool_result — ToolUiHint do tool tự khai (seams/tools.ts), rỗng nếu tool không khai
+}

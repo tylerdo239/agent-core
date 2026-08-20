@@ -1,0 +1,22 @@
+services:
+  agent-core:
+    build: .
+    env_file:
+      - .env
+    ports:
+      - "${PORT_REST:-8787}:8787"
+      - "${PORT_WS:-8788}:8788"
+      - "${PORT_GRPC:-50051}:50051"
+      - "${PORT_WEB_UI:-8790}:8790"
+    volumes:
+      - agent-core-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  agent-core-data:

@@ -1,0 +1,69 @@
+/* packages/ui-theme/src/tokens.css — Phase 10.1.
+ *
+ * Port ĐÚNG KIẾN TRÚC token 3 tầng của dsh thật (packages/client/ui-theme/
+ * src/styles/design-platform.css, verify qua đọc source thật, không suy
+ * đoán) — KHÔNG port giá trị màu gốc (dsh dùng xanh dương/"deepseek blue"),
+ * thay bằng bảng màu chủ đạo mới: cam #F26F21 / nền trắng #fff / chữ đen
+ * #222222.
+ *
+ * 3 tầng, đúng nguyên tắc dsh: mọi component CHỈ được tham chiếu tầng
+ * "alias" (hoặc "specific" cho token riêng 1 chỗ dùng) — KHÔNG BAO GIỜ
+ * tham chiếu thẳng "static". Đổi bảng màu sau này = chỉ sửa tầng static +
+ * map lại alias, không phải sửa từng component.
+ *
+ * Đơn giản hoá có chủ đích so với dsh gốc (coding rule A6): dsh có ~7 thang
+ * static (neutral, neutral-bluish, blue, red, green, amber, deepseek) —
+ * agent-core chỉ cần 3 (neutral, brand thay "deepseek", error/success rút
+ * gọn còn 1 sắc mỗi loại thay vì scale 10 bậc đầy đủ — chưa có UI nào cần
+ * nhiều mức độ nghiêm trọng khác nhau cho lỗi/thành công).
+ */
+
+:root {
+  /* ============ TẦNG 1: static — thang màu thô, KHÔNG mang ý nghĩa ============ */
+  --static-neutral-0: #ffffff;
+  --static-neutral-50: #f7f7f7;
+  --static-neutral-100: #eeeeee;
+  --static-neutral-200: #e0e0e0;
+  --static-neutral-300: #cccccc;
+  --static-neutral-400: #999999;
+  --static-neutral-500: #757575;
+  --static-neutral-600: #5c5c5c;
+  --static-neutral-700: #444444;
+  --static-neutral-800: #2e2e2e;
+  --static-neutral-900: #222222;
+
+  --static-brand-50: #fef3ec;
+  --static-brand-100: #fde3d1;
+  --static-brand-200: #fbcba8;
+  --static-brand-300: #f7ac79;
+  --static-brand-400: #f58e4d;
+  --static-brand-500: #f26f21;
+  --static-brand-600: #d95e14;
+  --static-brand-700: #b44c10;
+
+  --static-error-500: #e5484d;
+  --static-success-500: #30a46c;
+
+  /* ============ TẦNG 2: alias — ngữ nghĩa, MỌI component chỉ dùng tầng này ============ */
+  --alias-bg-base: var(--static-neutral-0);
+  --alias-bg-subtle: var(--static-neutral-50);
+  --alias-border-default: var(--static-neutral-200);
+  --alias-border-strong: var(--static-neutral-300);
+  --alias-label-primary: var(--static-neutral-900);
+  --alias-label-secondary: var(--static-neutral-500);
+  --alias-label-disabled: var(--static-neutral-400);
+  --alias-accent: var(--static-brand-500);
+  --alias-accent-hover: var(--static-brand-600);
+  --alias-accent-active: var(--static-brand-700);
+  --alias-accent-subtle-bg: var(--static-brand-100);
+  --alias-state-error: var(--static-error-500);
+  --alias-state-success: var(--static-success-500);
+
+  /* ============ TẦNG 3: specific — token riêng theo ĐÚNG 1 chỗ dùng thật ============ */
+  /* Quyết định thiết kế (ghi rõ, không phải bikeshed im lặng): bubble user
+     dùng tint cam NHẠT + chữ đen, KHÔNG dùng cam đặc làm nền — chữ đen trên
+     nền cam đặc #F26F21 có contrast ratio ~4.1:1, sát ngưỡng AA 4.5:1 cho
+     text thường. Cam đặc (--alias-accent) dành cho nút hành động chính. */
+  --specific-bubble-user-bg: var(--alias-accent-subtle-bg);
+  --specific-bubble-user-text: var(--alias-label-primary);
+}

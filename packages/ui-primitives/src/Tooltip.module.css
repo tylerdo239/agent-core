@@ -1,0 +1,29 @@
+.wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.bubble {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) translateY(2px);
+  background: var(--alias-label-primary);
+  color: var(--alias-bg-base);
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.12s, transform 0.12s;
+  z-index: 20;
+}
+
+.wrapper:hover .bubble,
+.wrapper:focus-within .bubble {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}

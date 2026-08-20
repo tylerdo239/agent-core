@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agent-core — demo chat</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>agent-core</h1>
+      <div class="header-actions">
+        <span id="status" class="status status-disconnected">chưa kết nối</span>
+        <button id="new-chat-btn" title="Tạo session mới">Chat mới</button>
+        <button id="settings-btn" title="Cấu hình kết nối">⚙</button>
+      </div>
+    </header>
+
+    <main id="messages" aria-live="polite"></main>
+
+    <form id="compose-form">
+      <input id="compose-input" type="text" placeholder="Nhắn gì đó cho agent..." autocomplete="off" disabled />
+      <button id="compose-send" type="submit" disabled>Gửi</button>
+    </form>
+  </div>
+
+  <dialog id="settings-dialog">
+    <form id="settings-form" method="dialog">
+      <h2>Cấu hình kết nối</h2>
+      <label>
+        REST URL
+        <input id="settings-rest" type="text" placeholder="http://localhost:8787" />
+      </label>
+      <label>
+        WebSocket URL
+        <input id="settings-ws" type="text" placeholder="ws://localhost:8788" />
+      </label>
+      <label>
+        API Key
+        <input id="settings-key" type="password" placeholder="Bearer token" />
+      </label>
+      <p class="hint">Lưu trong localStorage của trình duyệt này — không gửi đi đâu khác ngoài 2 URL ở trên.</p>
+      <div class="dialog-actions">
+        <button type="button" id="settings-cancel">Huỷ</button>
+        <button type="submit" id="settings-save">Lưu &amp; kết nối</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>

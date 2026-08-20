@@ -1,0 +1,9 @@
+/* packages/ui-tool-web-search/src/WebSearchCard.css — Phase 9.5.
+   2 nút thao tác (mở tất cả/toggle snippet) giờ dùng <Button> dùng chung
+   (packages/ui-primitives, thêm sau audit UI) — style riêng
+   .web-search-open-all/.web-search-toggle-snippet không cần nữa. */
+.web-search-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}

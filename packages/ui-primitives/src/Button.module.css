@@ -1,0 +1,49 @@
+/* Chuyển từ apps/web/src/Button.module.css sang package dùng chung — cả
+   apps/web lẫn packages/ui-tool-web-search (WebSearchCard) đều cần dùng
+   Button nhất quán, package đó KHÔNG thể phụ thuộc ngược vào apps/web (đảo
+   hướng phụ thuộc), nên Button phải sống ở đây. Hình học không đổi: dạng
+   viên thuốc (border-radius 18px, height 36px), biến thể size md/sm. */
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: 18px;
+  height: 36px;
+  padding: 0 16px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid var(--alias-border-default);
+  background: var(--alias-bg-subtle);
+  color: var(--alias-label-primary);
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+.button:hover:not(:disabled) {
+  border-color: var(--alias-accent);
+}
+
+.button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.primary {
+  background: var(--alias-accent);
+  border-color: var(--alias-accent);
+  color: #ffffff;
+}
+
+.primary:hover:not(:disabled) {
+  background: var(--alias-accent-hover);
+  border-color: var(--alias-accent-hover);
+}
+
+.sm {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  border-radius: 14px;
+}
