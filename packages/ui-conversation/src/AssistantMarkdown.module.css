@@ -1,0 +1,78 @@
+.markdown {
+  line-height: var(--alias-line-height-prose);
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol {
+  margin: 0.6em 0;
+}
+
+.markdown ul,
+.markdown ol {
+  padding-left: 1.4em;
+}
+
+.markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  background: var(--alias-bg-subtle);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+}
+
+.markdown pre {
+  background: var(--alias-bg-subtle);
+  border: 1px solid var(--alias-border-default);
+  border-radius: var(--alias-radius-control);
+  padding: var(--alias-space-md);
+  overflow-x: auto;
+}
+
+.markdown pre code {
+  background: none;
+  padding: 0;
+}
+
+.markdown a {
+  color: var(--alias-accent);
+}
+
+/* Trước đây KHÔNG có rule heading nào — model trả lời markdown thật đôi khi
+   có "# heading", trước đây rơi về UA default (2em, bold cứng) lệch hẳn
+   nhịp chữ còn lại của app. */
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  line-height: var(--alias-line-height-ui);
+  margin: 0.8em 0 0.4em;
+}
+
+.markdown h1 {
+  font-size: var(--alias-font-size-heading-lg);
+  font-weight: var(--alias-font-weight-emphasis);
+}
+
+.markdown h2 {
+  font-size: var(--alias-font-size-heading-md);
+  font-weight: var(--alias-font-weight-emphasis);
+}
+
+.markdown h3 {
+  font-size: var(--alias-font-size-heading-sm);
+  font-weight: var(--alias-font-weight-emphasis);
+}
+
+.markdown h4 {
+  font-size: var(--alias-font-size-heading-sm);
+  font-weight: var(--alias-font-weight-medium);
+}

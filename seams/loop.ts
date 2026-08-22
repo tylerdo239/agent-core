@@ -78,6 +78,10 @@ export abstract class LoopRegistryService extends Service {
  */
 export class Session {
   history: LlmMessage[] = []
+  /** Mốc tạo — hiện trong GET /sessions (module auth). Luôn = lúc constructor
+   * chạy thật, KHÔNG phải giá trị caller truyền vào — field thường, không
+   * phải tham số constructor (khác id/driver/...). */
+  createdAt = Date.now()
 
   constructor(
     public id: string,
@@ -94,6 +98,14 @@ export class Session {
      * phải giữ nguyên cặp tool_call/tool_result.
      */
     public maxHistoryMessages = 40,
+    /**
+     * Module auth: chủ sở hữu (user id) — set BỞI ADAPTER từ identity đã
+     * verify() được, KHÔNG BAO GIỜ do client tự khai trong body/message. Nếu
+     * client gửi field "ownerId" trong POST /sessions body, adapter phải LỜ
+     * ĐI, chỉ dùng identity.userId của chính request đó (coding rule B1: tự
+     * check, không tin dữ liệu client tự khai cho chính danh tính của họ).
+     */
+    public ownerId?: string,
   ) {
     if (systemPrompt) this.history.push({ role: 'system', content: systemPrompt })
   }

@@ -1,0 +1,25 @@
+.empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--alias-space-xs);
+  text-align: center;
+  color: var(--alias-label-secondary);
+}
+
+.icon {
+  display: inline-flex;
+  color: var(--alias-label-disabled);
+}
+
+.title {
+  font-size: var(--alias-font-size-body);
+  font-weight: var(--alias-font-weight-emphasis);
+  color: var(--alias-label-primary);
+}
+
+.caption {
+  font-size: var(--alias-font-size-body-sm);
+}

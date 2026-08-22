@@ -1,0 +1,57 @@
+/* apps/web/src/Composer.module.css — UI redesign (2026-08): trước đây
+   textarea + Button là 2 phần tử VIỀN RIÊNG đứng cạnh nhau trong 1 thanh
+   full-width có border-top — giờ gộp thành 1 "capsule" nổi (viền + shadow +
+   bo tròn chung), khớp pattern composer thật của dsh (research đã ghi:
+   "rounded capsule card, soft shadow, auto-grow textarea"). */
+.form {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--alias-space-sm);
+  margin: 0 var(--alias-space-xl) var(--alias-space-xl);
+  padding: var(--alias-space-sm) var(--alias-space-sm) var(--alias-space-sm) var(--alias-space-lg);
+  border: 1px solid var(--alias-border-default);
+  border-radius: var(--alias-radius-capsule);
+  background: var(--alias-bg-base);
+  box-shadow: var(--alias-shadow-raised);
+  transition: border-color var(--alias-motion-base) var(--alias-motion-ease);
+}
+
+.form:focus-within {
+  border-color: var(--alias-accent);
+}
+
+/* Trước đây #compose-input:focus { outline:none } TẮT HẲN focus indicator —
+   gap a11y thật, không phải chủ đích. Border-color tint (:focus-within ở
+   trên) cho click chuột, ring tường minh riêng (:focus-visible dưới) cho
+   điều hướng bàn phím — không hiện ring khi chỉ click chuột. */
+.textarea {
+  flex: 1;
+  resize: none;
+  border: none;
+  background: transparent;
+  color: var(--alias-label-primary);
+  font-family: inherit;
+  font-size: var(--alias-font-size-body);
+  line-height: var(--alias-line-height-body);
+  padding: var(--alias-space-sm) 0;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.textarea:focus {
+  outline: none;
+}
+
+.textarea:focus-visible {
+  outline: 2px solid var(--alias-accent);
+  outline-offset: 2px;
+}
+
+.textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.send {
+  flex-shrink: 0;
+}

@@ -10,6 +10,9 @@ import { Tooltip } from '../src/Tooltip.tsx'
 import { Pill } from '../src/Pill.tsx'
 import { StateDot } from '../src/StateDot.tsx'
 import { useToasts, ToastContainer } from '../src/Toast.tsx'
+import { SourceList } from '../src/SourceList.tsx'
+import { Skeleton } from '../src/Skeleton.tsx'
+import { TextField } from '../src/TextField.tsx'
 
 // jsdom không implement HTMLDialogElement.showModal()/close() -- cùng giới
 // hạn môi trường test đã gặp ở apps/web/tests/App.smoke.test.tsx, KHÔNG
@@ -86,6 +89,36 @@ describe('Modal', () => {
     })
     expect(document.querySelector('dialog')?.open).toBe(false)
   })
+
+  it('click thẳng vào dialog (backdrop) -> onClose(); click vào children -> KHÔNG đóng', async () => {
+    const onClose = vi.fn()
+    await act(async () => {
+      render(
+        <Modal open onClose={onClose}>
+          <p>nội dung modal</p>
+        </Modal>,
+      )
+    })
+    const dialog = document.querySelector('dialog') as HTMLDialogElement
+
+    fireEvent.click(screen.getByText('nội dung modal'))
+    expect(onClose).not.toHaveBeenCalled()
+
+    fireEvent.click(dialog)
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('className truyền vào được gắn thêm (không thay thế) class .dialog gốc', async () => {
+    await act(async () => {
+      render(
+        <Modal open onClose={() => {}} className="custom-position">
+          <p>x</p>
+        </Modal>,
+      )
+    })
+    const dialog = document.querySelector('dialog') as HTMLDialogElement
+    expect(dialog.className).toContain('custom-position')
+  })
 })
 
 describe('Tooltip', () => {
@@ -130,6 +163,39 @@ describe('StateDot', () => {
   })
 })
 
+describe('SourceList', () => {
+  const results = [
+    { title: 'Nguồn A', url: 'https://a.example/', snippet: 'mô tả A' },
+    { url: 'https://b.example/', snippet: 'mô tả B' },
+  ]
+
+  it('rỗng -> hiện đúng 1 dòng "không tìm thấy kết quả"', () => {
+    render(<SourceList results={[]} />)
+    expect(screen.getByText('không tìm thấy kết quả')).toBeTruthy()
+  })
+
+  it('title thiếu -> label rơi về hostname', () => {
+    render(<SourceList results={results} />)
+    expect(screen.getByText('Nguồn A')).toBeTruthy()
+    expect(screen.getByText('b.example')).toBeTruthy()
+  })
+
+  it('collapsibleSnippets=false (mặc định) -> snippet hiện tĩnh, không có nút toggle', () => {
+    render(<SourceList results={results} />)
+    expect(screen.getByText('mô tả A')).toBeTruthy()
+    expect(screen.queryByText('xem mô tả')).toBeNull()
+  })
+
+  it('collapsibleSnippets=true -> snippet ẩn mặc định, click "xem mô tả" mới hiện', () => {
+    render(<SourceList results={results} collapsibleSnippets />)
+    expect(screen.queryByText('mô tả A')).toBeNull()
+    fireEvent.click(screen.getAllByText('xem mô tả')[0])
+    expect(screen.getByText('mô tả A')).toBeTruthy()
+    fireEvent.click(screen.getByText('ẩn mô tả'))
+    expect(screen.queryByText('mô tả A')).toBeNull()
+  })
+})
+
 describe('useToasts / ToastContainer', () => {
   function Harness({ autoDismissMs }: { autoDismissMs: number }) {
     const { toasts, push } = useToasts(autoDismissMs)
@@ -159,5 +225,39 @@ describe('useToasts / ToastContainer', () => {
     })
     expect(screen.queryByText('lỗi kết nối')).toBeNull()
     vi.useRealTimers()
+  })
+})
+
+describe('Skeleton', () => {
+  it('render đúng số dòng yêu cầu, thuần trang trí (aria-hidden)', () => {
+    const { container } = render(<Skeleton rows={4} />)
+    const wrap = container.firstChild as HTMLElement
+    expect(wrap.getAttribute('aria-hidden')).toBe('true')
+    expect(wrap.children.length).toBe(4)
+  })
+
+  it('mặc định 3 dòng khi không truyền rows', () => {
+    const { container } = render(<Skeleton />)
+    expect((container.firstChild as HTMLElement).children.length).toBe(3)
+  })
+})
+
+describe('TextField', () => {
+  it('gõ vào input -> onChange nhận đúng giá trị', () => {
+    const onChange = vi.fn()
+    render(<TextField label="Tên đăng nhập" value="" onChange={onChange} />)
+    fireEvent.change(screen.getByLabelText('Tên đăng nhập'), { target: { value: 'alice' } })
+    expect(onChange).toHaveBeenCalledWith('alice')
+  })
+
+  it('có error -> hiện dòng lỗi + aria-invalid', () => {
+    render(<TextField label="Mật khẩu" value="" onChange={vi.fn()} error="Mật khẩu quá ngắn" />)
+    expect(screen.getByText('Mật khẩu quá ngắn')).toBeTruthy()
+    expect(screen.getByLabelText('Mật khẩu').getAttribute('aria-invalid')).toBe('true')
+  })
+
+  it('không có error -> KHÔNG có aria-invalid', () => {
+    render(<TextField label="Mật khẩu" value="" onChange={vi.fn()} />)
+    expect(screen.getByLabelText('Mật khẩu').getAttribute('aria-invalid')).toBeNull()
   })
 })

@@ -5,13 +5,17 @@
 // (icon/label/render-kind cố định), đây chính là điểm dsh's `ctx.slots`
 // hơn hẳn cơ chế metadata (xác nhận qua đọc source thật dsh, xem Phase 9.0).
 //
+// UI redesign (2026-08): danh sách nguồn (toggle snippet + label/hostname
+// fallback) giờ dùng SourceList dùng chung (packages/ui-primitives) — trước
+// đây viết trùng gần như nguyên văn với GenericToolCard.tsx, 2 class name
+// global riêng dễ va chạm (tool-source*), gộp về 1 implementation.
+//
 // Coding rule (docs/ui-plugin-build-guide.md mục 4): không throw khi result
 // thiếu field/sai shape (validate trước khi destructure), không tự gọi
 // network/localStorage riêng — mọi dữ liệu cần đã có trong props.
-import { useState } from 'react'
 import type { ToolViewOwnerProps } from '@agent-core/ui-slots'
-import { Button } from '@agent-core/ui-primitives'
-import './WebSearchCard.css'
+import { Button, SourceList } from '@agent-core/ui-primitives'
+import styles from './WebSearchCard.module.css'
 
 interface SearchResult {
   title?: string
@@ -19,58 +23,22 @@ interface SearchResult {
   snippet?: string
 }
 
-function sourceLabel(url: string, title?: string): string {
-  if (title) return title
-  try {
-    return new URL(url).hostname
-  } catch {
-    return url
-  }
-}
-
 export function WebSearchCard({ result }: ToolViewOwnerProps) {
-  const [expandedIds, setExpandedIds] = useState<ReadonlySet<number>>(new Set())
-
   const parsed = result as { results?: SearchResult[] } | null | undefined
   const results = Array.isArray(parsed?.results) ? parsed!.results! : []
 
-  if (!results.length) return <p className="tool-io-text">không tìm thấy kết quả</p>
-
-  function toggle(i: number) {
-    setExpandedIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(i)) next.delete(i)
-      else next.add(i)
-      return next
-    })
-  }
+  if (!results.length) return <SourceList results={[]} />
 
   function openAll() {
     for (const r of results) window.open(r.url, '_blank', 'noopener,noreferrer')
   }
 
   return (
-    <div className="web-search-card">
+    <div className={styles.card}>
       <Button type="button" size="sm" onClick={openAll}>
         Mở tất cả ({results.length}) trong tab mới
       </Button>
-      <ol className="tool-sources">
-        {results.map((r, i) => (
-          <li className="tool-source" key={r.url + i}>
-            <a className="tool-source-link" href={r.url} target="_blank" rel="noopener noreferrer">
-              {sourceLabel(r.url, r.title)}
-            </a>
-            {r.snippet && (
-              <>
-                <Button type="button" size="sm" onClick={() => toggle(i)}>
-                  {expandedIds.has(i) ? 'ẩn mô tả' : 'xem mô tả'}
-                </Button>
-                {expandedIds.has(i) && <div className="tool-source-snippet">{r.snippet}</div>}
-              </>
-            )}
-          </li>
-        ))}
-      </ol>
+      <SourceList results={results} collapsibleSnippets />
     </div>
   )
 }

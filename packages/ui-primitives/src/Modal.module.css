@@ -2,11 +2,20 @@
   background: var(--alias-bg-base);
   color: var(--alias-label-primary);
   border: 1px solid var(--alias-border-default);
-  border-radius: 12px;
+  border-radius: var(--alias-radius-panel);
+  /* Trước đây KHÔNG có box-shadow — 1 modal nổi trên nền mà không có độ nổi
+     thị giác nào là gap thật đã audit ra, không phải quyết định thẩm mỹ. */
+  box-shadow: var(--alias-shadow-overlay);
   padding: 0;
   width: min(420px, 90vw);
 }
 
+/* Follow-up (2026-08): thêm backdrop-filter blur cho MỌI modal (không chỉ
+   riêng search) — nhất quán 1 hệ visual, không phải tách riêng 1 biến thể
+   chỉ cho search. -webkit- prefix cho Safari (chưa hỗ trợ backdrop-filter
+   không prefix ở 1 số phiên bản). */
 .dialog::backdrop {
   background: rgba(0, 0, 0, 0.4);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
 }

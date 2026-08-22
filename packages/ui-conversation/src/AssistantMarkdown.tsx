@@ -8,10 +8,11 @@
 // markdown parser rủi ro sai edge case cao, không đáng (coding rule A6 áp
 // dụng cả hướng "đừng tự xây cái đã có thư viện tốt").
 import ReactMarkdown from 'react-markdown'
+import styles from './AssistantMarkdown.module.css'
 
 export function AssistantMarkdown({ content }: { content: string }) {
   return (
-    <div className="assistant-markdown">
+    <div className={styles.markdown}>
       <ReactMarkdown>{content}</ReactMarkdown>
     </div>
   )

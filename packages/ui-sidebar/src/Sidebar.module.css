@@ -1,0 +1,256 @@
+/* apps/web/src/Sidebar.module.css — UI redesign (2026-08): CSS Modules
+   migration (trước đây global trong style.css) + 2 thay đổi hành vi:
+   (1) collapse/expand đổi từ "unmount lịch sử dưới 1 width transition" (đọc
+   như 1 cú squish đột ngột) sang always-render + crossfade opacity riêng
+   (đọc như dsh thật: nội dung mờ dần TRƯỚC/độc lập với width đổi);
+   (2) hover/active hội tụ về CÙNG 1 cơ chế (chỉ đổi màu nền/tint), bỏ
+   border-color riêng cho .active — trước đây 2 state dùng 2 cơ chế khác
+   nhau (tint-only vs tint+border). */
+.sidebar {
+  width: 260px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: var(--alias-space-md) var(--alias-space-sm);
+  border-right: 1px solid var(--alias-border-default);
+  background: var(--alias-bg-subtle);
+  overflow-y: auto;
+  overflow-x: hidden;
+  transition: width var(--alias-motion-base) var(--alias-motion-ease);
+}
+
+.collapsed {
+  width: 56px;
+  align-items: center;
+  padding: var(--alias-space-md) var(--alias-space-sm);
+}
+
+.top {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.collapsed .top {
+  justify-content: center;
+}
+
+/* Logo — badge chữ đơn (đúng convention emoji/glyph đơn giản đã dùng khắp
+   app, KHÔNG thêm bộ icon SVG riêng chỉ cho 1 chỗ) + wordmark, ẩn hẳn lúc
+   collapsed (rail chỉ còn đúng 1 nút mở rộng, cùng cách "+ Chat mới"/hàng
+   Cấu hình đã rút gọn còn icon-only hôm nay). */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--alias-space-sm);
+  min-width: 0;
+}
+
+.logoMark {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--alias-radius-control);
+  background: var(--alias-accent);
+  color: var(--static-neutral-0);
+  font-size: var(--alias-font-size-caption);
+  font-weight: var(--alias-font-weight-emphasis);
+  line-height: 1;
+}
+
+.logoText {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--alias-font-size-body-sm);
+  font-weight: var(--alias-font-weight-emphasis);
+  color: var(--alias-label-primary);
+}
+
+.topActions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* Search: input đã chuyển sang SearchModal.tsx (modal giữa màn hình, xem
+   file đó) — sidebar chỉ còn giữ nút mở modal, không còn ô input tại chỗ. */
+
+.iconBtn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--alias-radius-pill);
+  padding: 0;
+  background: transparent;
+  color: var(--alias-label-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color var(--alias-motion-fast) var(--alias-motion-ease);
+}
+
+.iconBtn:hover {
+  background: var(--alias-bg-base);
+  color: var(--alias-label-primary);
+}
+
+.newChat {
+  flex: none;
+  width: 100%;
+}
+
+.newChatCollapsed {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+}
+
+.history {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+  opacity: 1;
+  transition: opacity var(--alias-motion-fast) var(--alias-motion-ease);
+}
+
+.historyCollapsed {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.empty {
+  font-size: var(--alias-font-size-caption);
+  color: var(--alias-label-secondary);
+  padding: var(--alias-space-sm) 4px;
+  margin: 0;
+}
+
+.sessionList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.dateGroup + .dateGroup {
+  margin-top: var(--alias-space-sm);
+}
+
+.dateGroupLabel {
+  margin: 0 0 2px;
+  padding: var(--alias-space-xs) var(--alias-space-md);
+  font-size: var(--alias-font-size-caption);
+  font-weight: var(--alias-font-weight-emphasis);
+  color: var(--alias-label-secondary);
+}
+
+.sessionItem {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: var(--alias-radius-panel);
+  padding: var(--alias-space-sm) var(--alias-space-md);
+  font-size: var(--alias-font-size-body-sm);
+  color: var(--alias-label-primary);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background-color var(--alias-motion-fast) var(--alias-motion-ease);
+}
+
+.sessionItem:hover {
+  background: var(--alias-bg-base);
+}
+
+.sessionItemActive {
+  background: var(--alias-accent-subtle-bg);
+  font-weight: var(--alias-font-weight-emphasis);
+}
+
+.foot {
+  flex: none;
+  width: 100%;
+  margin-top: auto;
+  padding-top: var(--alias-space-sm);
+  border-top: 1px solid var(--alias-border-default);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.collapsed .foot {
+  align-items: center;
+}
+
+/* Module auth: hàng username + đăng xuất, đứng trên "Quản lý người dùng"/
+   "Cấu hình" — chỉ hiện khi mở rộng (lúc collapsed chỉ còn icon đăng xuất
+   riêng, cùng pattern icon-only đã dùng cho new-chat/settings). */
+.userRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--alias-space-sm);
+  padding: var(--alias-space-xs) var(--alias-space-md);
+}
+
+.username {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--alias-font-size-body-sm);
+  font-weight: var(--alias-font-weight-emphasis);
+  color: var(--alias-label-primary);
+}
+
+.settingsTrigger {
+  display: flex;
+  align-items: center;
+  gap: var(--alias-space-sm);
+  width: 100%;
+  height: 38px;
+  padding: 0 var(--alias-space-md);
+  border: none;
+  border-radius: var(--alias-radius-panel);
+  background: transparent;
+  color: var(--alias-label-primary);
+  font-size: var(--alias-font-size-body-sm);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color var(--alias-motion-fast) var(--alias-motion-ease);
+}
+
+.settingsTrigger:hover {
+  background: var(--alias-bg-base);
+}
+
+.settingsTriggerCollapsed {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  justify-content: center;
+  border-radius: var(--alias-radius-pill);
+}
+
+.settingsLabel {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}

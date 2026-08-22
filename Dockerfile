@@ -25,6 +25,11 @@ COPY package.json package-lock.json ./
 COPY packages/ui-slots/package.json ./packages/ui-slots/package.json
 COPY packages/ui-react/package.json ./packages/ui-react/package.json
 COPY packages/ui-tool-web-search/package.json ./packages/ui-tool-web-search/package.json
+COPY packages/ui-sidebar/package.json ./packages/ui-sidebar/package.json
+COPY packages/ui-layout/package.json ./packages/ui-layout/package.json
+COPY packages/ui-conversation/package.json ./packages/ui-conversation/package.json
+COPY packages/ui-settings-general/package.json ./packages/ui-settings-general/package.json
+COPY packages/ui-auth/package.json ./packages/ui-auth/package.json
 COPY apps/web/package.json ./apps/web/package.json
 RUN npm ci
 

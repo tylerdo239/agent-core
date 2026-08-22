@@ -6,18 +6,40 @@
 // turn có tool call — GenericToolCard (Phase 9.4) là fallback bắt buộc khi
 // tool không có UI-plugin riêng (Phase 9.5 chưa mount cái nào, nên mọi tool
 // call hiện tại đều rơi vào đường fallback này — đúng như thiết kế).
+//
+// Restructure UI mirror dsh (2026-08): Sidebar/SearchModal/sessionHistory/
+// sidebarState -> packages/ui-sidebar; MessageBubble/Composer/ToolRow/
+// GenericToolCard/EmptyState/AssistantMarkdown/StreamingRow ->
+// packages/ui-conversation; SettingsForm/settings.ts ->
+// packages/ui-settings-general; AppFrame (shell #app/#main/header/#messages,
+// MỚI trích ra) -> packages/ui-layout. App.tsx giờ CHỈ còn WS/session state
+// + compose các package trên qua <AppFrame> — KHÔNG đổi hành vi, thuần
+// relocation (xem docs/agent-core-ui-architecture.md cho lý do/ranh giới
+// đầy đủ). WS/session state (connect/applyStep/reconstructItems/
+// handleSubmit) CHỦ ĐÍCH ở lại đây, không tách thành "controller" riêng như
+// dsh — 1 consumer duy nhất, tách thêm không có lợi ích thật.
+//
+// Module auth (nhiều người dùng thật, 2026-08): API key dùng chung đã bị
+// THAY THẾ hoàn toàn bằng tài khoản thật (packages/ui-auth) — `auth` state
+// mới (token + user) là ĐIỀU KIỆN render toàn bộ khung chat. React rules of
+// hooks: MỌI hook vẫn gọi KHÔNG ĐIỀU KIỆN mỗi render — chỉ THÂN effect gate
+// theo `auth`, nhánh "chưa đăng nhập -> return LoginForm/SignupForm" nằm
+// SAU toàn bộ hook, ngay trước JSX chính (đúng pattern "loading gate", không
+// vi phạm rules of hooks). `sessions` giờ tải qua GET /sessions thật (server
+// tự lọc đúng session CỦA CHÍNH caller nhờ ownerId) thay vì localStorage —
+// xem packages/ui-sidebar/src/sessionHistory.ts cho lý do đầy đủ.
 import { useEffect, useRef, useState } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import { RenderSlot } from '@agent-core/ui-react'
 import type { ToolViewOwnerProps } from '@agent-core/ui-slots'
 import { Button, Modal, Pill, StateDot, ToastContainer, useToasts } from '@agent-core/ui-primitives'
-import { AssistantMarkdown } from './AssistantMarkdown.tsx'
+import { AppFrame } from '@agent-core/ui-layout'
+import { AdminUsersPanel, clearAuthState, loadAuthState, LoginForm, saveAuthState, SignupForm, type AuthState } from '@agent-core/ui-auth'
+import { cacheSessionTitle, fetchSessionHistory, Sidebar, type SessionSummary } from '@agent-core/ui-sidebar'
+import { Composer, EmptyState, GenericToolCard, MessageBubble, StreamingRow, ToolRow } from '@agent-core/ui-conversation'
+import { defaultSettings, loadSettings, saveSettings, SettingsForm, type Settings } from '@agent-core/ui-settings-general'
+import styles from './App.module.css'
 import { createClientContext } from './client-context.ts'
-import { GenericToolCard } from './GenericToolCard.tsx'
-import { Sidebar } from './Sidebar.tsx'
-import { ToolRow } from './ToolRow.tsx'
-import { defaultSettings, loadSettings, saveSettings, type Settings } from './settings.ts'
-import { addSessionToHistory, loadSessionHistory, updateSessionTitle, type SessionSummary } from './sessionHistory.ts'
 
 type ToolUiHint = ToolViewOwnerProps['toolUi']
 
@@ -36,7 +58,7 @@ interface LoopStep {
 }
 
 type ChatItem =
-  | { kind: 'user' | 'assistant' | 'system' | 'error' | 'critic'; id: string; text: string }
+  | { kind: 'user' | 'assistant' | 'system' | 'error' | 'critic'; id: string; text: string; ts?: number }
   | {
       kind: 'tool'
       id: string
@@ -67,6 +89,8 @@ function toolRowSummary(item: Extract<ChatItem, { kind: 'tool' }>): string {
 export function App() {
   const [clientCtx, setClientCtx] = useState<Context | null>(null)
   const [settings, setSettings] = useState<Settings>(() => loadSettings())
+  const [auth, setAuth] = useState<AuthState | null>(() => loadAuthState())
+  const [authView, setAuthView] = useState<'login' | 'signup'>('login')
   const [status, setStatus] = useState<ConnStatus>('connecting')
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [items, setItems] = useState<ChatItem[]>([])
@@ -74,7 +98,8 @@ export function App() {
   const [composerText, setComposerText] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsDraft, setSettingsDraft] = useState<Settings>(settings)
-  const [sessions, setSessions] = useState<SessionSummary[]>(() => loadSessionHistory())
+  const [adminPanelOpen, setAdminPanelOpen] = useState(false)
+  const [sessions, setSessions] = useState<SessionSummary[]>([])
 
   const { toasts, push: pushToast } = useToasts()
 
@@ -111,16 +136,12 @@ export function App() {
   // Phase 8.1). WS protocol không có message riêng "resume" — `send_message`
   // chấp nhận BẤT KỲ sessionId hợp lệ nào, không quan tâm nó được tạo qua
   // kết nối WS nào, nên chỉ cần bỏ qua bước create_session là đủ.
-  function connect(current: Settings, resumeSessionId?: string) {
-    if (!current.apiKey) {
-      setSettingsOpen(true)
-      return
-    }
+  function connect(current: Settings, token: string, resumeSessionId?: string) {
     setStatus('connecting')
     setSessionId(resumeSessionId ?? null)
     activeToolItemIdRef.current = null
 
-    const url = `${current.wsUrl}/?key=${encodeURIComponent(current.apiKey)}`
+    const url = `${current.wsUrl}/?token=${encodeURIComponent(token)}`
     const ws = new WebSocket(url)
     wsRef.current = ws
 
@@ -138,8 +159,12 @@ export function App() {
       if (msg.type === 'session_created') {
         setSessionId(msg.id)
         setStatus('connected')
-        setItems((prev) => [...prev, { kind: 'system', id: genId(), text: `Session mới: ${msg.id} (driver: ${msg.driver})` }])
-        setSessions(addSessionToHistory(msg.id))
+        setItems((prev) => [...prev, { kind: 'system', id: genId(), text: `Session mới: ${msg.id} (driver: ${msg.driver})`, ts: Date.now() }])
+        // Thêm optimistic lên ĐẦU list — server đã gắn ownerId thật lúc tạo
+        // (create_session qua WS truyền identity đã verify), lần fetch
+        // GET /sessions tiếp theo sẽ thấy đúng session này; thêm ngay ở đây
+        // để UI phản hồi tức thời, không đợi round-trip fetch lại.
+        setSessions((prev) => [{ id: msg.id, createdAt: Date.now(), title: 'Cuộc trò chuyện mới' }, ...prev])
         return
       }
 
@@ -166,18 +191,22 @@ export function App() {
             prev.map((it) => (it.kind === 'tool' && it.id === activeId ? { ...it, state: 'error', errorText: msg.message } : it)),
           )
         }
-        setItems((prev) => [...prev, { kind: 'error', id: genId(), text: `Lỗi: ${msg.message}` }])
+        setItems((prev) => [...prev, { kind: 'error', id: genId(), text: `Lỗi: ${msg.message}`, ts: Date.now() }])
         return
       }
     })
 
     ws.addEventListener('close', (event) => {
       setStatus('disconnected')
-      // Lỗi kết nối/hệ thống -> toast thoáng qua, KHÔNG phải bubble chat vĩnh
-      // viễn (khác lỗi tool throw giữa turn, vẫn giữ trong chat vì đó là nội
-      // dung hội thoại thật, không phải thông báo hệ thống).
+      // Module auth: 401 giờ nghĩa là TOKEN hết hạn/bị thu hồi (không còn
+      // "sai API key" — token đã được xác thực lúc mở kết nối, hết hạn/bị
+      // logout ở tab khác giữa chừng là kịch bản khác) — đăng xuất NGAY,
+      // không để user tưởng vẫn còn phiên hợp lệ trong khi mọi request tiếp
+      // theo đều sẽ 401.
       if (event.code === 401) {
-        pushToast('API key không hợp lệ — mở ⚙ để sửa lại.', 'error')
+        clearAuthState()
+        setAuth(null)
+        pushToast('Phiên đăng nhập đã hết hạn — vui lòng đăng nhập lại.', 'error')
       }
     })
 
@@ -213,21 +242,21 @@ export function App() {
       return
     }
     if (step.type === 'critic_message') {
-      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `🔍 đang rà soát: ${step.content}` }])
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `🔍 đang rà soát: ${step.content}`, ts: Date.now() }])
       return
     }
     if (step.type === 'final') {
-      setItems((prev) => [...prev, { kind: 'assistant', id: genId(), text: step.content ?? '' }])
+      setItems((prev) => [...prev, { kind: 'assistant', id: genId(), text: step.content ?? '', ts: Date.now() }])
       return
     }
   }
 
-  function startNewChat(current: Settings) {
+  function startNewChat(current: Settings, token: string) {
     wsRef.current?.close()
     wsRef.current = null
     activeToolItemIdRef.current = null
     setItems([])
-    connect(current)
+    connect(current, token)
   }
 
   // Dựng lại ChatItem[] từ event log THẬT (GET /sessions/:id/events) — khác
@@ -279,10 +308,10 @@ export function App() {
   // qua REST (KHÔNG phải WS, vốn không có message "resume"), rồi mở kết nối
   // WS mới bỏ qua create_session (session đã tồn tại server-side).
   async function resumeSession(id: string) {
-    if (id === sessionId) return
+    if (id === sessionId || !auth) return
     try {
       const res = await fetch(`${settings.restUrl}/sessions/${id}/events`, {
-        headers: { authorization: `Bearer ${settings.apiKey}` },
+        headers: { authorization: `Bearer ${auth.token}` },
       })
       if (!res.ok) {
         pushToast(
@@ -297,23 +326,36 @@ export function App() {
       activeToolItemIdRef.current = null
       setItems(reconstructItems(events))
       titledSessionIdsRef.current.add(id) // đã có lịch sử thật -> không ghi đè title bằng tin nhắn tiếp theo
-      connect(settings, id)
+      connect(settings, auth.token, id)
     } catch {
       pushToast('Không thể tải lại cuộc trò chuyện này — kiểm tra kết nối.', 'error')
     }
   }
 
-  // Kết nối lần đầu khi mount — có key sẵn (đã lưu lần trước) thì tự kết nối,
-  // chưa có thì mở settings luôn (không để user nhìn màn hình trống không
-  // biết làm gì) — đúng hành vi app.js cũ.
+  // Module auth: kết nối + tải lịch sử CHỈ khi đã đăng nhập — mọi hook vẫn
+  // gọi KHÔNG ĐIỀU KIỆN mỗi render (React rules of hooks), chỉ THÂN effect
+  // này gate theo `auth`. Đăng xuất (auth chuyển null) PHẢI dọn sạch state
+  // NGAY trong nhánh else — không để 1 người đăng nhập sau, trên CÙNG
+  // trình duyệt, thấy sót state của người đăng nhập trước đó.
   useEffect(() => {
-    if (settings.apiKey) connect(settings)
-    else setSettingsOpen(true)
+    if (!auth) {
+      wsRef.current?.close()
+      wsRef.current = null
+      setSessions([])
+      setItems([])
+      setSessionId(null)
+      setStatus('connecting')
+      return
+    }
+    fetchSessionHistory(settings.restUrl, auth.token)
+      .then(setSessions)
+      .catch(() => pushToast('Không tải được danh sách cuộc trò chuyện.', 'error'))
+    connect(settings, auth.token)
     return () => {
       wsRef.current?.close()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [auth])
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -321,14 +363,15 @@ export function App() {
     const ws = wsRef.current
     if (!text || !sessionId || turnInFlight || !ws || ws.readyState !== WebSocket.OPEN) return
 
-    setItems((prev) => [...prev, { kind: 'user', id: genId(), text }])
+    setItems((prev) => [...prev, { kind: 'user', id: genId(), text, ts: Date.now() }])
     setComposerText('')
     setTurnInFlight(true)
     // Chỉ đặt title 1 LẦN cho câu hỏi ĐẦU TIÊN của session (Set tránh ghi đè
     // bằng câu hỏi sau, và tránh ghi đè session đã resume có title thật).
     if (!titledSessionIdsRef.current.has(sessionId)) {
       titledSessionIdsRef.current.add(sessionId)
-      setSessions(updateSessionTitle(sessionId, text))
+      const title = cacheSessionTitle(sessionId, text)
+      setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, title } : s)))
     }
     ws.send(JSON.stringify({ type: 'send_message', sessionId, message: text }))
   }
@@ -338,44 +381,89 @@ export function App() {
     const next: Settings = {
       restUrl: settingsDraft.restUrl.trim() || defaultSettings().restUrl,
       wsUrl: settingsDraft.wsUrl.trim() || defaultSettings().wsUrl,
-      apiKey: settingsDraft.apiKey.trim(),
     }
     saveSettings(next)
     setSettings(next)
     setSettingsOpen(false)
-    startNewChat(next)
+    if (auth) startNewChat(next, auth.token)
   }
+
+  function handleLogout() {
+    wsRef.current?.close()
+    wsRef.current = null
+    clearAuthState()
+    setAuth(null)
+    setAuthView('login')
+  }
+
+  // Chỉ báo Ở CẤP LƯỢT (không phải gõ từng ký tự — WS không có protocol
+  // token-delta, xem seams/loop.ts). Không hiện nếu item cuối ĐANG LÀ 1 tool
+  // đang chạy — tool đó đã có shimmer riêng của chính nó (ToolRow), tránh 2
+  // shimmer chồng nhau cho cùng 1 lượt.
+  const lastItem = items[items.length - 1]
+  const showStreamingRow = turnInFlight && !(lastItem?.kind === 'tool' && lastItem.state === 'running')
 
   const composerEnabled = status === 'connected' && !!sessionId && !turnInFlight
   const statusLabel =
     status === 'connected' && sessionId ? `đã kết nối — session ${sessionId.slice(0, 8)}` : status === 'connecting' ? 'đang kết nối...' : 'mất kết nối'
   const statusTone = status === 'connected' ? 'success' : status === 'disconnected' ? 'error' : 'neutral'
 
-  return (
-    <div id="app">
-      <ToastContainer toasts={toasts} />
-      {/* Layout 2 cột (sidebar + khung chat chính) — xem Sidebar.tsx cho lý
-          do đơn giản hoá so với AppFrame 3 cột thật của dsh. */}
-      <Sidebar
-        sessions={sessions}
-        activeSessionId={sessionId}
-        onNewChat={() => startNewChat(settings)}
-        onSelectSession={resumeSession}
-        onOpenSettings={() => setSettingsOpen(true)}
+  // Module auth: chưa đăng nhập -> thay TOÀN BỘ khung chat bằng màn hình
+  // đăng nhập/đăng ký — đặt SAU mọi hook (đúng rules of hooks), TRƯỚC JSX
+  // chính.
+  if (!auth) {
+    return authView === 'login' ? (
+      <LoginForm
+        restUrl={settings.restUrl}
+        onSuccess={(result) => {
+          saveAuthState(result)
+          setAuth(result)
+        }}
+        onSwitchToSignup={() => setAuthView('signup')}
       />
+    ) : (
+      <SignupForm
+        restUrl={settings.restUrl}
+        onSuccess={(result) => {
+          saveAuthState(result)
+          setAuth(result)
+        }}
+        onSwitchToLogin={() => setAuthView('login')}
+      />
+    )
+  }
 
-      <div id="main">
-        <header>
-          <h1>agent-core</h1>
-          <div className="header-actions">
-            <Pill tone={statusTone}>
-              <StateDot variant={status} />
-              {statusLabel}
-            </Pill>
-          </div>
-        </header>
-
-        <main id="messages" aria-live="polite">
+  return (
+    <>
+      <ToastContainer toasts={toasts} />
+      <AppFrame
+        sidebar={
+          <Sidebar
+            sessions={sessions}
+            activeSessionId={sessionId}
+            onNewChat={() => startNewChat(settings, auth.token)}
+            onSelectSession={resumeSession}
+            onOpenSettings={() => setSettingsOpen(true)}
+            isAdmin={auth.user.role === 'admin'}
+            onOpenAdminPanel={() => setAdminPanelOpen(true)}
+            currentUsername={auth.user.username}
+            onLogout={handleLogout}
+          />
+        }
+        header={
+          <>
+            <h1>agent-core</h1>
+            <div className={styles.headerActions}>
+              <Pill tone={statusTone}>
+                <StateDot variant={status} />
+                {statusLabel}
+              </Pill>
+            </div>
+          </>
+        }
+        footer={<Composer value={composerText} onChange={setComposerText} onSubmit={handleSubmit} disabled={!composerEnabled} />}
+      >
+        {items.length === 0 && <EmptyState />}
         {items.map((item) => {
           if (item.kind === 'tool') {
             const owner: ToolViewOwnerProps = { toolCall: item.toolCall, result: item.result, state: item.state, toolUi: item.toolUi }
@@ -399,86 +487,31 @@ export function App() {
               </ToolRow>
             )
           }
-          // Phase 10.4: assistant KHÔNG còn là bubble — chảy full-width,
-          // render markdown thật (đúng pattern AssistantMarkdown thật của
-          // dsh), khác hẳn user/step/error/system vẫn là bubble/dòng ngắn.
-          if (item.kind === 'assistant') {
-            return (
-              <div key={item.id} className="msg msg-assistant">
-                <AssistantMarkdown content={item.text} />
-              </div>
-            )
-          }
-          const cssKind = item.kind === 'critic' ? 'step' : item.kind
           return (
-            <div key={item.id} className={`msg msg-${cssKind}`}>
-              {item.text}
-            </div>
+            <MessageBubble
+              key={item.id}
+              kind={item.kind}
+              text={item.text}
+              ts={item.ts}
+              onCopied={() => pushToast('Đã sao chép')}
+            />
           )
         })}
+        {showStreamingRow && <StreamingRow />}
         <div ref={messagesEndRef} />
-      </main>
-
-      <form
-        id="compose-form"
-        onSubmit={handleSubmit}
-      >
-        <input
-          id="compose-input"
-          type="text"
-          placeholder="Nhắn gì đó cho agent..."
-          autoComplete="off"
-          disabled={!composerEnabled}
-          value={composerText}
-          onChange={(e) => setComposerText(e.target.value)}
-        />
-        <Button type="submit" variant="primary" disabled={!composerEnabled}>
-          Gửi
-        </Button>
-      </form>
-      </div>
+      </AppFrame>
 
       <Modal open={settingsOpen} onClose={() => setSettingsOpen(false)}>
-        <form id="settings-form" onSubmit={handleSettingsSubmit}>
-          <h2>Cấu hình kết nối</h2>
-          <label>
-            REST URL
-            <input
-              type="text"
-              placeholder="http://localhost:8787"
-              value={settingsDraft.restUrl}
-              onChange={(e) => setSettingsDraft((s) => ({ ...s, restUrl: e.target.value }))}
-            />
-          </label>
-          <label>
-            WebSocket URL
-            <input
-              type="text"
-              placeholder="ws://localhost:8788"
-              value={settingsDraft.wsUrl}
-              onChange={(e) => setSettingsDraft((s) => ({ ...s, wsUrl: e.target.value }))}
-            />
-          </label>
-          <label>
-            API Key
-            <input
-              type="password"
-              placeholder="Bearer token"
-              value={settingsDraft.apiKey}
-              onChange={(e) => setSettingsDraft((s) => ({ ...s, apiKey: e.target.value }))}
-            />
-          </label>
-          <p className="hint">Lưu trong localStorage của trình duyệt này — không gửi đi đâu khác ngoài 2 URL ở trên.</p>
-          <div className="dialog-actions">
-            <Button type="button" onClick={() => setSettingsOpen(false)}>
-              Huỷ
-            </Button>
-            <Button type="submit" variant="primary">
-              Lưu &amp; kết nối
-            </Button>
-          </div>
-        </form>
+        <SettingsForm draft={settingsDraft} onChange={setSettingsDraft} onSubmit={handleSettingsSubmit} onCancel={() => setSettingsOpen(false)} />
       </Modal>
-    </div>
+
+      <AdminUsersPanel
+        open={adminPanelOpen}
+        onClose={() => setAdminPanelOpen(false)}
+        restUrl={settings.restUrl}
+        token={auth.token}
+        currentUserId={auth.user.id}
+      />
+    </>
   )
 }

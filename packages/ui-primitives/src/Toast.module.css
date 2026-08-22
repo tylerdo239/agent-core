@@ -1,11 +1,11 @@
 .container {
   position: fixed;
-  top: 16px;
+  top: var(--alias-space-lg);
   left: 50%;
   transform: translateX(-50%);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--alias-space-sm);
   z-index: 50;
   pointer-events: none;
 }
@@ -14,14 +14,14 @@
   pointer-events: auto;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--alias-space-sm);
   background: var(--alias-label-primary);
   color: var(--alias-bg-base);
-  font-size: 13px;
-  padding: 10px 16px;
-  border-radius: 10px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
-  animation: toast-in 0.15s ease-out;
+  font-size: var(--alias-font-size-body-sm);
+  padding: var(--alias-space-md) var(--alias-space-lg);
+  border-radius: var(--alias-radius-panel);
+  box-shadow: var(--alias-shadow-floating);
+  animation: toast-in var(--alias-motion-base) ease-out;
 }
 
 .error {

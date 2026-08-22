@@ -4,15 +4,19 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@agent-core/ui-auth": "*",
+    "@agent-core/ui-conversation": "*",
+    "@agent-core/ui-layout": "*",
     "@agent-core/ui-primitives": "*",
     "@agent-core/ui-react": "*",
+    "@agent-core/ui-settings-general": "*",
+    "@agent-core/ui-sidebar": "*",
     "@agent-core/ui-slots": "*",
     "@agent-core/ui-theme": "*",
     "@agent-core/ui-tool-web-search": "*",
     "@deepseek-ai/cordis": "4.0.1",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-markdown": "^9.1.0"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@types/react": "^18.3.31",

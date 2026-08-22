@@ -1,0 +1,31 @@
+/* apps/web/src/GenericToolCard.module.css — UI redesign (2026-08): CSS
+   Modules migration (trước đây global trong style.css). Nhánh citations giờ
+   dùng SourceList dùng chung (packages/ui-primitives) — chỉ còn card IN/OUT
+   ở đây. */
+.io {
+  display: flex;
+  flex-direction: column;
+  gap: var(--alias-space-sm);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+}
+
+.ioRow {
+  display: flex;
+  gap: var(--alias-space-sm);
+  align-items: baseline;
+}
+
+.ioLabel {
+  flex-shrink: 0;
+  width: 26px;
+  color: var(--alias-label-secondary);
+  font-weight: var(--alias-font-weight-emphasis);
+}
+
+.ioText {
+  min-width: 0;
+  color: var(--alias-label-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

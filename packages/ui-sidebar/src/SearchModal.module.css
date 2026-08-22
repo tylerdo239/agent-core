@@ -1,0 +1,116 @@
+/* Ghim modal gần đầu màn hình (margin-top cố định) thay vì canh giữa mặc
+   định của <dialog> (margin: auto UA stylesheet) — lúc skeleton<->kết quả
+   đổi chiều cao, canh-giữa sẽ làm modal "nhảy" vị trí theo mỗi lần đổi
+   chiều cao; ghim 1 điểm cố định ở trên thì không. margin-bottom: auto giữ
+   nguyên phần center ngang (margin-left/right auto không đổi). */
+.searchDialog {
+  margin-top: 96px;
+  margin-bottom: auto;
+}
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  max-height: 70vh;
+}
+
+.inputRow {
+  flex: none;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--alias-border-default);
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  border-radius: var(--alias-radius-panel) 0 0 0;
+  padding: var(--alias-space-lg);
+  font-size: var(--alias-font-size-heading-sm);
+  font-family: inherit;
+  color: var(--alias-label-primary);
+  background: transparent;
+}
+
+.input:focus {
+  outline: none;
+}
+
+.closeBtn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin-right: var(--alias-space-md);
+  border: none;
+  border-radius: var(--alias-radius-pill);
+  background: transparent;
+  color: var(--alias-label-secondary);
+  cursor: pointer;
+  transition: background-color var(--alias-motion-fast) var(--alias-motion-ease);
+}
+
+.closeBtn:hover {
+  background: var(--alias-bg-subtle);
+  color: var(--alias-label-primary);
+}
+
+.results {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--alias-space-sm);
+}
+
+.empty {
+  margin: 0;
+  padding: var(--alias-space-xl);
+  text-align: center;
+  font-size: var(--alias-font-size-body-sm);
+  color: var(--alias-label-secondary);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: var(--alias-radius-control);
+  padding: var(--alias-space-sm) var(--alias-space-md);
+  font-size: var(--alias-font-size-body-sm);
+  color: var(--alias-label-primary);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background-color var(--alias-motion-fast) var(--alias-motion-ease);
+}
+
+.item:hover {
+  background: var(--alias-bg-subtle);
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

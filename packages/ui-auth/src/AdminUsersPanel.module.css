@@ -1,0 +1,52 @@
+.wideDialog {
+  width: min(640px, 90vw);
+}
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--alias-space-md);
+  padding: var(--alias-space-xl);
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--alias-font-size-heading-sm);
+}
+
+.error {
+  margin: 0;
+  color: var(--alias-state-error);
+  font-size: var(--alias-font-size-body-sm);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--alias-font-size-body-sm);
+}
+
+.table th {
+  text-align: left;
+  padding: var(--alias-space-xs) var(--alias-space-sm);
+  color: var(--alias-label-secondary);
+  font-weight: var(--alias-font-weight-emphasis);
+  border-bottom: 1px solid var(--alias-border-default);
+}
+
+.table td {
+  padding: var(--alias-space-sm);
+  border-bottom: 1px solid var(--alias-border-default);
+}
+
+.actions {
+  display: flex;
+  gap: var(--alias-space-xs);
+}
+
+.dialogActions {
+  display: flex;
+  justify-content: flex-end;
+}

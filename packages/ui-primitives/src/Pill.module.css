@@ -2,9 +2,9 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: var(--alias-font-size-caption);
   padding: 3px 9px;
-  border-radius: 999px;
+  border-radius: var(--alias-radius-pill);
   border: 1px solid var(--alias-border-default);
   color: var(--alias-label-secondary);
   white-space: nowrap;

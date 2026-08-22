@@ -1,0 +1,103 @@
+/* apps/web/src/MessageBubble.module.css — UI redesign (2026-08): CSS
+   Modules migration của .msg/.msg-* (trước đây global trong style.css) +
+   hover-reveal timestamp/copy cho user/assistant + sửa 2 gap audit tìm
+   thấy: .error dùng token thay literal #fdeeee, .step bỏ dashed-border +
+   monospace (chữ tự nhiên "🔍 đang rà soát: ...", không phải code — đọc như
+   debug output trước đây, không đúng bản chất nội dung). */
+.msg {
+  max-width: 78%;
+  line-height: 1.45;
+  font-size: var(--alias-font-size-body);
+  word-break: break-word;
+}
+
+.user {
+  align-self: flex-end;
+  max-width: min(525px, 82%);
+  padding: var(--alias-space-sm) var(--alias-space-lg);
+  border-radius: var(--specific-bubble-user-radius);
+  background: var(--specific-bubble-user-bg);
+  color: var(--specific-bubble-user-text);
+  white-space: pre-wrap;
+}
+
+.assistant {
+  align-self: stretch;
+  max-width: 100%;
+}
+
+.step {
+  align-self: flex-start;
+  background: var(--alias-bg-subtle);
+  border: 1px solid var(--alias-border-default);
+  color: var(--alias-label-secondary);
+  font-size: var(--alias-font-size-caption);
+  border-radius: var(--alias-radius-panel);
+  max-width: 90%;
+}
+
+.error {
+  align-self: stretch;
+  background: var(--alias-state-error-subtle-bg);
+  border: 1px solid var(--alias-state-error);
+  color: var(--alias-state-error);
+  font-size: var(--alias-font-size-body-sm);
+}
+
+.system {
+  align-self: center;
+  color: var(--alias-label-secondary);
+  font-size: var(--alias-font-size-caption);
+}
+
+/* Wrapper riêng cho user/assistant — chỉ 2 kind này có action row (copy +
+   timestamp hover-reveal); step/error/system là thông báo thoáng qua, không
+   phải nội dung hội thoại thật để "sao chép". */
+.wrapper {
+  display: flex;
+  flex-direction: column;
+}
+
+.wrapperUser {
+  align-items: flex-end;
+}
+
+.wrapperAssistant {
+  align-items: flex-start;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--alias-space-xs);
+  margin-top: 2px;
+  min-height: 18px;
+  opacity: 0;
+  transition: opacity var(--alias-motion-fast) var(--alias-motion-ease);
+}
+
+.wrapper:hover .actions,
+.wrapper:focus-within .actions {
+  opacity: 1;
+}
+
+.timestamp {
+  font-size: var(--alias-font-size-caption);
+  color: var(--alias-label-secondary);
+}
+
+.copyBtn {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  color: var(--alias-label-secondary);
+  cursor: pointer;
+  padding: var(--alias-space-xs);
+  border-radius: var(--alias-radius-control);
+}
+
+.copyBtn:hover {
+  background: var(--alias-bg-subtle);
+  color: var(--alias-label-primary);
+}

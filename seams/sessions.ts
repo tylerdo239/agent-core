@@ -21,6 +21,9 @@ export interface CreateSessionOptions {
   systemPrompt?: string
   /** Phase 8.2 — xem seams/loop.ts (Session.maxHistoryMessages). */
   maxHistoryMessages?: number
+  /** Module auth — xem seams/loop.ts (Session.ownerId). Adapter LUÔN truyền
+   * field này từ identity đã verify() được, không phải từ client. */
+  ownerId?: string
 }
 
 export abstract class SessionRegistryService extends Service {

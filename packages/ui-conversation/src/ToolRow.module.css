@@ -1,0 +1,113 @@
+/* apps/web/src/ToolRow.module.css — UI redesign (2026-08): CSS Modules
+   migration (trước đây global trong style.css) + sweep padding/radius lên
+   token, đổi màu sweep-shimmer từ literal rgba() sang var(--alias-accent)
+   (giữ nguyên cơ chế shimmer — audit nói "refine, không reinvent"). */
+.toolRow {
+  align-self: flex-start;
+  max-width: 92%;
+  padding: 0;
+  background: transparent;
+  border-radius: var(--alias-radius-panel);
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: var(--alias-space-sm) var(--alias-space-md);
+  background: var(--alias-bg-subtle);
+  border: 1px solid var(--alias-border-default);
+  border-radius: var(--alias-radius-panel);
+  font-size: var(--alias-font-size-body-sm);
+  color: var(--alias-label-secondary);
+}
+
+/* Custom ARIA-button (div[role=button]), không phải <button> thật — rule
+   :focus-visible chung ở style.css áp dụng qua selector universal nên vẫn
+   phủ được, nhưng khai tường minh ở đây để không phụ thuộc ngầm định phần tử
+   này "chắc được cover" (coding rule A15 tinh thần: chỗ nào render tương tác
+   phải tự chịu trách nhiệm fallback/a11y riêng của nó). */
+.header:focus-visible {
+  outline: 2px solid var(--alias-accent);
+  outline-offset: 2px;
+}
+
+/* var(--alias-accent-subtle-bg) (cùng token .msg-user/.sessionItemActive
+   đang dùng) thay literal rgba(242, 111, 33, 0.18) — cùng sắc cam nhạt, khỏi
+   phải tính lại alpha thủ công mỗi lần đổi bảng màu brand. */
+.headerRunning {
+  background-image: linear-gradient(90deg, transparent, var(--alias-accent-subtle-bg), transparent);
+  background-size: 200% 100%;
+  animation: tool-row-sweep 1.6s linear infinite;
+}
+
+@keyframes tool-row-sweep {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.headerClickable {
+  cursor: pointer;
+}
+
+.icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.iconError {
+  color: var(--alias-state-error);
+}
+
+.title {
+  flex-shrink: 0;
+  color: var(--alias-label-primary);
+  font-weight: var(--alias-font-weight-emphasis);
+}
+
+.sep {
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.summary {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+}
+
+.summaryError {
+  color: var(--alias-state-error);
+}
+
+.chevron {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.5;
+  transition: transform var(--alias-motion-base) var(--alias-motion-ease);
+}
+
+.chevronOpen {
+  transform: rotate(90deg);
+}
+
+.body {
+  padding: var(--alias-space-md) var(--alias-space-lg);
+  border: 1px solid var(--alias-border-default);
+  border-top: none;
+  border-radius: 0 0 var(--alias-radius-panel) var(--alias-radius-panel);
+  background: var(--alias-bg-base);
+}

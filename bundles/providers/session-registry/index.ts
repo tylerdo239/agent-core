@@ -56,7 +56,7 @@ export class SessionRegistry extends SessionRegistryService {
     if (this.entries.has(id)) {
       throw new Error(`session "${id}" already exists`)
     }
-    const session = new Session(id, opts.maxSteps ?? 8, opts.systemPrompt, opts.driver ?? 'default', opts.maxHistoryMessages)
+    const session = new Session(id, opts.maxSteps ?? 8, opts.systemPrompt, opts.driver ?? 'default', opts.maxHistoryMessages, opts.ownerId)
     this.entries.set(id, { session, lastActiveAt: Date.now() })
     this.ctx.logger('session-registry').info('created session "%s" (driver=%s)', id, session.driver)
     return session

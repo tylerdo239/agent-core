@@ -10,7 +10,8 @@
 //                      (identify 1 hạ tầng cụ thể, sai môi trường phải fail
 //                      ngay lúc boot, không âm thầm gọi nhầm chỗ)
 //   OPENAI_MODEL_ID    tên model trên endpoint đó — cùng lý do không có default
-//   API_KEYS           danh sách API key hợp lệ cho REST/WS/gRPC, cách nhau bởi dấu phẩy
+//   DATABASE_URL       connection string Postgres cho ctx.auth (bundles/providers/auth-users)
+//                      — tài khoản/token nhiều người dùng thật, KHÔNG còn API_KEYS dùng chung
 // Tuỳ chọn — phần còn lại của config llm-qwen tách qua env:
 //   OPENAI_MAX_TOKENS, OPENAI_TIMEOUT_MS, OPENAI_ENABLE_THINKING,
 //   OPENAI_EXTRA_BODY (JSON object, merge thẳng vào body request — vd.
@@ -52,7 +53,7 @@ import * as toolDatabaseQuery from '../bundles/tools/tool-database-query/index.t
 // cho chi tiết parser + rủi ro markup DuckDuckGo có thể đổi.
 import * as toolWebSearch from '../bundles/tools/tool-web-search/index.ts'
 import * as sessionRegistry from '../bundles/providers/session-registry/index.ts'
-import * as authApiKey from '../bundles/providers/auth-apikey/index.ts'
+import * as authUsers from '../bundles/providers/auth-users/index.ts'
 import * as apiRest from '../bundles/adapters/api-rest/index.ts'
 import * as apiWs from '../bundles/adapters/api-ws/index.ts'
 import * as apiGrpc from '../bundles/adapters/api-grpc/index.ts'
@@ -126,14 +127,11 @@ async function main() {
   // validate bên trong provider.
   const openaiBaseUrl = requireEnv('OPENAI_BASE_URL')
   const openaiModelId = requireEnv('OPENAI_MODEL_ID')
-  const apiKeys = requireEnv('API_KEYS')
-    .split(',')
-    .map((k) => k.trim())
-    .filter(Boolean)
-  if (!apiKeys.length) {
-    console.error('FATAL: API_KEYS rỗng sau khi parse — cần ít nhất 1 key hợp lệ.')
-    process.exit(1)
-  }
+  // Module auth (nhiều người dùng thật): API_KEYS dùng chung đã bị THAY THẾ
+  // hoàn toàn bằng tài khoản Postgres (đăng ký/đăng nhập, xem bundles/
+  // providers/auth-users) — không còn env var nào cần thiết lập trước cho
+  // auth, tài khoản tạo qua POST /auth/signup lúc chạy.
+  const databaseUrl = requireEnv('DATABASE_URL')
 
   const root = new Context()
 
@@ -157,7 +155,10 @@ async function main() {
   // deny-by-default — chỉ mở đúng action tool-web-search cần
   // (actor "web-search", action "search"); tool nào khác cần permission
   // trong tương lai phải tự thêm rule riêng, không "mở hết" cho tiện.
-  root.plugin(permissionRbac, { rules: { 'web-search': ['search'] } })
+  // "admin" (role, không phải actor tool) -> action 'admin:users:manage':
+  // gate cho GET/PATCH/DELETE /users trong api-rest — tái dùng nguyên seam
+  // RBAC đã có, không cần seam mới cho việc phân quyền admin.
+  root.plugin(permissionRbac, { rules: { 'web-search': ['search'], admin: ['admin:users:manage'] } })
   root.plugin(llmQwen, {
     apiKey: openaiApiKey,
     baseUrl: openaiBaseUrl,
@@ -192,7 +193,7 @@ async function main() {
     ttlMs: optionalNumber('SESSION_TTL_MS'),
     sweepIntervalMs: optionalNumber('SESSION_SWEEP_INTERVAL_MS'),
   })
-  root.plugin(authApiKey, { keys: apiKeys })
+  root.plugin(authUsers, { connectionString: databaseUrl })
   root.plugin(toolDatabaseQuery)
   root.plugin(toolWebSearch, {
     // Audit fix: trước đây không có timeout, fetch() có thể treo cả turn vô
@@ -209,9 +210,9 @@ async function main() {
   await root.plugin(apiGrpc, grpcConfig)
   await root.plugin(webUi, webUiConfig)
 
-  console.log(`\nWeb UI  http://localhost:${webUiConfig.port}  (nhập API key trong ⚙ lúc mở lần đầu)`)
-  console.log(`REST    http://localhost:${restConfig.port}  (Authorization: Bearer <key>, trừ /health /ready)`)
-  console.log(`WS      ws://localhost:${wsConfig.port}  (Authorization header hoặc ?key=<key>)`)
+  console.log(`\nWeb UI  http://localhost:${webUiConfig.port}  (đăng nhập/đăng ký ngay lần mở đầu tiên)`)
+  console.log(`REST    http://localhost:${restConfig.port}  (Authorization: Bearer <token> từ POST /auth/login hoặc /auth/signup, trừ /health /ready /auth/signup /auth/login)`)
+  console.log(`WS      ws://localhost:${wsConfig.port}  (Authorization header hoặc ?token=<token>)`)
   console.log(`gRPC    localhost:${grpcConfig.port}  (metadata "authorization")\n`)
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {

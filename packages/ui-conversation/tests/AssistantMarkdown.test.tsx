@@ -8,6 +8,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/react'
 import { AssistantMarkdown } from '../src/AssistantMarkdown.tsx'
+import styles from '../src/AssistantMarkdown.module.css'
 
 afterEach(cleanup)
 
@@ -21,7 +22,7 @@ describe('Phase 10.4 — AssistantMarkdown', () => {
 
   it('danh sách markdown render ra <ul>/<li> thật', () => {
     render(<AssistantMarkdown content={'Các mức giá:\n\n- Mua vào: 100\n- Bán ra: 105'} />)
-    const list = document.querySelector('.assistant-markdown ul')
+    const list = document.querySelector(`.${styles.markdown} ul`)
     expect(list).toBeTruthy()
     expect(list?.querySelectorAll('li').length).toBe(2)
     expect(screen.getByText(/Mua vào/).closest('li')).toBeTruthy()
@@ -29,7 +30,7 @@ describe('Phase 10.4 — AssistantMarkdown', () => {
 
   it('code block render qua <pre><code>, giữ nguyên nội dung không escape sai', () => {
     render(<AssistantMarkdown content={'```\nconst x = 1\n```'} />)
-    const codeBlock = document.querySelector('.assistant-markdown pre code')
+    const codeBlock = document.querySelector(`.${styles.markdown} pre code`)
     expect(codeBlock?.textContent?.trim()).toBe('const x = 1')
   })
 

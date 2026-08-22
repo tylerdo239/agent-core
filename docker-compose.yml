@@ -1,8 +1,35 @@
 services:
+  # Module auth (nhiều người dùng thật): Postgres riêng cho ctx.auth
+  # (bundles/providers/auth-users) — KHÔNG đụng tới SQLite của ctx.storage
+  # (event log hội thoại, vẫn nguyên trong volume agent-core-data). Named
+  # volume riêng + healthcheck pg_isready — agent-core chờ đúng lúc Postgres
+  # sẵn sàng (depends_on condition: service_healthy) trước khi tự thử kết
+  # nối (auth-users cũng tự retry-with-backoff riêng, xem provider đó — 2
+  # lớp phòng thủ, vì pg_isready healthy không đảm bảo 100% nhận connection
+  # mới ngay lập tức).
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: agent_core
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?bắt buộc, đặt trong .env}
+      POSTGRES_DB: agent_core_users
+    volumes:
+      - agent-core-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent_core"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   agent-core:
     build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
     env_file:
       - .env
+    environment:
+      DATABASE_URL: postgres://agent_core:${POSTGRES_PASSWORD}@postgres:5432/agent_core_users
     ports:
       - "${PORT_REST:-8787}:8787"
       - "${PORT_WS:-8788}:8788"
@@ -20,3 +47,4 @@ services:
 
 volumes:
   agent-core-data:
+  agent-core-postgres-data:
