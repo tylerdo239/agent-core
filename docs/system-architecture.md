@@ -641,3 +641,26 @@ team nên đọc toàn bộ flow 4 cùng các seam/provider liên quan trước 
 - `PreparedRlmTurn` chỉ được dựng ở `loop-rlm/protocol.ts`.
 - Thay implementation bằng provider/plugin, không chồng thêm wrapper ở tầng
   ngoài `AgentRunner`.
+
+## 13. So với commit đầu tiên
+
+So sánh commit khởi tạo `2bb50b2` với branch migration tại `30f4120`:
+
+| Tính năng được thêm | File/folder chính |
+|---|---|
+| RLM trở thành một loop driver của harness | `bundles/loop-drivers/loop-rlm/` |
+| Contract TypeScript ↔ Python và worker JSON-lines persistent | `loop-rlm/protocol.ts`, `loop-rlm/python/worker.py` |
+| Memory multi-turn, workspace và sandbox có seam/provider riêng | `seams/{memory,workspace,sandbox}.ts`, `bundles/providers/{memory-rolling,workspace-local,workspace-docker,sandbox-ipython,sandbox-docker}/` |
+| System prompt được ghép từ các section plugin có thứ tự/version | `seams/prompt.ts`, `bundles/providers/prompt-registry/`, `bundles/prompts/prompt-rlm-data-agent/` |
+| Skill package và lazy resource bridge từ Python về TypeScript | `bundles/providers/{skill-registry,skill-filesystem}/`, `bundles/skills/`, `python/vendor/rlm/rlm/environments/ipython_repl.py` |
+| Tool RLM gọi ngược về host, giữ permission/lifecycle ở TypeScript | `seams/tools.ts`, `bundles/providers/tool-registry/`, `bundles/tools/`, `sandbox-ipython/index.ts` |
+| REST/WS/gRPC nhận `selectedSkill`, metadata, stream event; REST quản lý file workspace | `bundles/adapters/api-{rest,ws,grpc}/` |
+| UI có upload progress, danh sách workspace và artifact đầu ra | `apps/web/src/App.tsx`, `apps/web/src/style.css` |
+| Runtime Python RLM và scientific stack nằm trọn trong repo | `python/rlm_agent/`, `python/vendor/rlm/`, `python/requirements.txt` |
+| Image/Compose độc lập, có cấu hình dev hot-reload và production | `Dockerfile`, `Dockerfile.dev`, `docker-compose*.yml` |
+| Benchmark core, skill, tool, memory, REPL, DABench và multi-turn | `benchmarks/rlm/` |
+| Test migration, worker protocol, REST và UI smoke | `tests/rlm-migration.test.ts`, `tests/rlm-worker-protocol.test.ts`, `tests/api-rest.test.ts`, `apps/web/tests/App.smoke.test.tsx` |
+
+Tóm lại, commit đầu tiên là harness plugin cơ bản; hiện tại repo là một backend
+data-agent/RLM multi-turn, có UI và deployment standalone nhưng vẫn giữ ranh
+giới: TypeScript sở hữu application capability, Python sở hữu RLM execution.
