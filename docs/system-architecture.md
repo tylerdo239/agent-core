@@ -1,8 +1,5 @@
 # Agent Core: kiến trúc hệ thống và bản đồ code
 
-Tài liệu này dành cho người mới vào dự án, đặc biệt là người không quen
-TypeScript. Mục tiêu là trả lời bốn câu hỏi:
-
 1. Hệ thống hiện tại làm gì?
 2. Một request đi qua những thành phần nào?
 3. Mỗi folder/file quan trọng chịu trách nhiệm gì?
