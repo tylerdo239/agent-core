@@ -1,0 +1,462 @@
+{
+  "suite": "ds-multiturn-v1",
+  "description": "10 multi-turn scenarios across data analysis, statistics, ML, deep learning, operations and text domains. Each case is one session; turns build on prior state to test memory, follow-ups and iterative work.",
+  "cases": [
+    {
+      "id": "s01_retail_revenue_analysis",
+      "domain": "data-analysis",
+      "datasets": [
+        "retail_sales.csv"
+      ],
+      "turns": [
+        {
+          "message": "Using retail_sales.csv: what is the total revenue across all rows? End with total_revenue=<value>",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 163302.73,
+                "tolerance": 1
+              }
+            ],
+            "max_iterations": 4,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "Which region generated the highest revenue? Answer with just the region name.",
+          "checks": {
+            "answer_any": [
+              "west"
+            ],
+            "max_iterations": 3,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "What percentage of total revenue came from the Clothing category? Round to one decimal. End with clothing_share=<value>",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 36.4,
+                "tolerance": 0.3
+              }
+            ],
+            "max_iterations": 3,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    },
+    {
+      "id": "s02_sensor_temperature_stats",
+      "domain": "time-series",
+      "datasets": [
+        "sensor_temp.csv"
+      ],
+      "turns": [
+        {
+          "message": "Using sensor_temp.csv: report the mean temperature rounded to two decimals. End with mean_temp=<value>",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 18.0,
+                "tolerance": 0.05
+              }
+            ],
+            "max_iterations": 4,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "Now report the standard deviation of the same temperature column, two decimals. End with std_temp=<value>",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 4.33,
+                "tolerance": 0.05
+              }
+            ],
+            "max_iterations": 5,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "How many readings exceed 24 degrees Celsius? Answer with only the number.",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 27,
+                "tolerance": 0
+              }
+            ],
+            "max_iterations": 5,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    },
+    {
+      "id": "s03_customer_data_cleaning",
+      "domain": "data-quality",
+      "datasets": [
+        "customers_messy.csv"
+      ],
+      "turns": [
+        {
+          "message": "Using customers_messy.csv: how many total rows does the file have (including duplicates)? Answer with only the number.",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 92,
+                "tolerance": 0
+              }
+            ],
+            "max_iterations": 5,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "How many unique customer names are there once duplicates are accounted for? Only the number.",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 80,
+                "tolerance": 0
+              }
+            ],
+            "max_iterations": 5,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "How many rows have a missing (empty) email? Only the number.",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 60,
+                "tolerance": 0
+              }
+            ],
+            "max_iterations": 3,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    },
+    {
+      "id": "s04_marketing_roi",
+      "domain": "business-analytics",
+      "datasets": [
+        "marketing_campaign.csv"
+      ],
+      "turns": [
+        {
+          "message": "Using marketing_campaign.csv: which channel has the highest total conversions? Answer with just the channel name.",
+          "checks": {
+            "answer_any": [
+              "search"
+            ],
+            "max_iterations": 4,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "Different question: which channel has the best ROI, defined as conversions divided by spend_usd? Answer with just the channel name.",
+          "checks": {
+            "answer_any": [
+              "display"
+            ],
+            "max_iterations": 4,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "Compute that best-ROI channel's ROI value (conversions/spend_usd) rounded to four decimals. End with roi=<value>",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 0.1048,
+                "tolerance": 0.002
+              }
+            ],
+            "max_iterations": 3,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    },
+    {
+      "id": "s05_credit_risk_ml",
+      "domain": "machine-learning",
+      "datasets": [
+        "credit_applications.csv"
+      ],
+      "turns": [
+        {
+          "message": "Using credit_applications.csv: train a logistic regression (scikit-learn) to predict 'defaulted' from income_k, debt_k, age using an 80/20 train/test split with random_state=42. Report test accuracy rounded to three decimals. End with accuracy=<value>",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 0.922,
+                "tolerance": 0.03
+              }
+            ],
+            "max_iterations": 8,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "What accuracy would a naive model get by always predicting the majority class on the full dataset? Give it as a fraction of one, three decimals. End with baseline=<value>",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 0.807,
+                "tolerance": 0.01
+              }
+            ],
+            "max_iterations": 8,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "According to the fitted logistic regression, does higher debt_k increase or decrease predicted default probability? Answer with Increase or Decrease, one word.",
+          "checks": {
+            "answer_regex": [
+              "decrease"
+            ],
+            "max_iterations": 8,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    },
+    {
+      "id": "s06_house_price_regression",
+      "domain": "machine-learning",
+      "datasets": [
+        "house_prices.csv"
+      ],
+      "turns": [
+        {
+          "message": "Using house_prices.csv: fit a linear regression predicting price_usd from sqft, bedrooms, age. Use the first 140 rows for training and the rest for testing. Report the test R-squared rounded to three decimals. End with r2=<value>",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 0.979,
+                "tolerance": 0.02
+              }
+            ],
+            "max_iterations": 5,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "Using the same fitted model, predict the price for sqft=2000, bedrooms=3, age=10. Round to the nearest whole dollar. End with predicted_price=<value>",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 380801,
+                "tolerance": 3000
+              }
+            ],
+            "max_iterations": 3,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "What is the Pearson correlation between sqft and price_usd in the full dataset? Three decimals. End with corr=<value>",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 0.958,
+                "tolerance": 0.005
+              }
+            ],
+            "max_iterations": 3,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    },
+    {
+      "id": "s07_pytorch_mlp_training",
+      "domain": "deep-learning",
+      "turns": [
+        {
+          "message": "In Python with torch: set torch.manual_seed(0). Create two Gaussian blobs in 2D (400 points total: 200 at center [2,2], 200 at center [-2,-2], unit variance), labels 0 and 1, shuffle with torch.randperm. Train an MLP 2->16->1 (ReLU, sigmoid output) with Adam lr=0.01 and BCELoss for 200 epochs on all data. Report the final training loss rounded to four decimals. End with final_loss=<value>",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 0.0079,
+                "tolerance": 0.005
+              }
+            ],
+            "max_iterations": 6,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "With the same trained model and seed, what is the training accuracy (fraction of points classified correctly at threshold 0.5)? Four decimals. End with train_accuracy=<value>",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 0.995,
+                "tolerance": 0.01
+              }
+            ],
+            "max_iterations": 3,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "Explain in one sentence why this problem was easy for the MLP.",
+          "checks": {
+            "answer_any": [
+              "linear",
+              "separab"
+            ],
+            "forbidden_tools": [
+              "web_search"
+            ],
+            "max_iterations": 2,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    },
+    {
+      "id": "s08_ab_test_significance",
+      "domain": "statistics",
+      "datasets": [
+        "ab_test_results.csv"
+      ],
+      "turns": [
+        {
+          "message": "Using ab_test_results.csv: compute the conversion rate in percent for each group (control and treatment), one decimal each. End with rates: control_rate=<value>, treatment_rate=<value>",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 11.0,
+                "tolerance": 0.06
+              },
+              {
+                "value": 13.49,
+                "tolerance": 0.06
+              }
+            ],
+            "max_iterations": 5,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "Run a two-proportion z-test on those conversion rates and report the two-sided p-value rounded to five decimals. End with p_value=<value>",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 0.00054,
+                "tolerance": 0.0005
+              }
+            ],
+            "max_iterations": 4,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "Based on that p-value at alpha=0.05, is the lift statistically significant? Answer Yes or No.",
+          "checks": {
+            "answer_regex": [
+              "\\byes\\b"
+            ],
+            "max_iterations": 3,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    },
+    {
+      "id": "s09_inventory_operations",
+      "domain": "operations",
+      "datasets": [
+        "inventory.csv"
+      ],
+      "turns": [
+        {
+          "message": "Using inventory.csv: how many SKUs have stock strictly below their reorder_point? Only the number.",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 12,
+                "tolerance": 0
+              }
+            ],
+            "max_iterations": 4,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "For each below-reorder SKU we must order up to its reorder_point (order quantity = reorder_point - stock). What is the total restock cost in USD given unit_cost? Two decimals. End with restock_cost=<value>",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 28736.25,
+                "tolerance": 0.5
+              }
+            ],
+            "max_iterations": 5,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "List the three SKUs with the largest shortage quantity (reorder_point - stock), most urgent first, as comma-separated SKU codes.",
+          "checks": {
+            "max_iterations": 3,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    },
+    {
+      "id": "s10_review_text_analysis",
+      "domain": "text-analytics",
+      "datasets": [
+        "nlp_reviews.csv"
+      ],
+      "turns": [
+        {
+          "message": "Using nlp_reviews.csv: compute the average rating of reviews containing any positive word (good, great, love, excellent) versus reviews containing any negative word (bad, terrible, hate, poor). Report both averages to two decimals. End with pos_avg=<value>, neg_avg=<value>",
+          "checks": {
+            "numeric_answers": [
+              {
+                "value": 5,
+                "tolerance": 0.01
+              },
+              {
+                "value": 2,
+                "tolerance": 0.01
+              }
+            ],
+            "max_iterations": 5,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "Which group rates higher, positive-word reviews or negative-word reviews? One word answer.",
+          "checks": {
+            "answer_any": [
+              "positive"
+            ],
+            "max_iterations": 2,
+            "max_context_tokens": 30000
+          }
+        },
+        {
+          "message": "Suggest one business action based on these findings in a single sentence.",
+          "checks": {
+            "max_iterations": 2,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    }
+  ]
+}

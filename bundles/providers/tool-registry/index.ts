@@ -39,6 +39,12 @@ export class ToolRegistry extends ToolRegistryService {
   list() {
     return [...this.tools.values()]
   }
+
+  async invoke(name: string, args: Record<string, unknown>) {
+    const tool = this.tools.get(name)
+    if (!tool) throw new Error(`tool "${name}" not found`)
+    return tool.handler(args)
+  }
 }
 
 export const apply = async (ctx: Context) => {

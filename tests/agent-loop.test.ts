@@ -12,6 +12,7 @@ import * as loopDefault from '../bundles/loop-drivers/loop-default/index.ts'
 import * as agentRunner from '../bundles/providers/agent-runner/index.ts'
 import * as skillRegistry from '../bundles/providers/skill-registry/index.ts'
 import * as skillSupportTone from '../bundles/skills/skill-support-tone/index.ts'
+import * as promptRegistry from '../bundles/providers/prompt-registry/index.ts'
 import { LlmCompleteOptions, LlmCompletion, LlmMessage, LlmService } from '../seams/llm.ts'
 import { LoopStep, Session } from '../seams/loop.ts'
 
@@ -44,6 +45,7 @@ describe('Phase 4 — agent loop end-to-end', () => {
     const root = new Context()
     root.plugin(toolRegistry)
     root.plugin(skillRegistry)
+    root.plugin(promptRegistry)
     root.plugin(stateSqlite, { path: ':memory:' })
     root.plugin(toolDatabaseQuery)
     root.plugin(fakeLlm)
@@ -94,6 +96,7 @@ describe('Phase 4 — agent loop end-to-end', () => {
     const root = new Context()
     root.plugin(toolRegistry)
     root.plugin(skillRegistry)
+    root.plugin(promptRegistry)
     root.plugin(stateSqlite, { path: ':memory:' })
     // Cố ý KHÔNG mount toolDatabaseQuery — model vẫn "quyết định" gọi nó.
     class BadCallLlm extends LlmService {
@@ -129,6 +132,7 @@ describe('Phase 4 — agent loop end-to-end', () => {
     const root = new Context()
     root.plugin(toolRegistry)
     root.plugin(skillRegistry)
+    root.plugin(promptRegistry)
     root.plugin(stateSqlite, { path: ':memory:' })
     root.plugin(toolDatabaseQuery)
     root.plugin(fakeLlm)

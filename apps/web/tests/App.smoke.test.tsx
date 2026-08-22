@@ -11,7 +11,7 @@
 // duyệt thật.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
-import { App } from '../src/App.tsx'
+import { App, createSessionCommand } from '../src/App.tsx'
 
 // jsdom tạo đúng HTMLDialogElement cho thẻ <dialog> nhưng KHÔNG implement
 // showModal()/close() (hỗ trợ 1 phần spec Dialog) -- cùng lý do như
@@ -31,6 +31,10 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('Phase 9.4 — App smoke test', () => {
+  it('session mới của UI dùng trực tiếp RLM driver', () => {
+    expect(createSessionCommand()).toMatchObject({ type: 'create_session', driver: 'rlm' })
+  })
+
   it('render không throw; chưa có API key -> tự mở settings dialog (đúng hành vi app.js cũ)', async () => {
     await act(async () => {
       render(<App />)

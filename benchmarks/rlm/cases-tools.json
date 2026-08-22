@@ -1,0 +1,16 @@
+{
+  "suite": "tools-v1",
+  "description": "Tool harness audit: web_search and query_database",
+  "cases": [
+    {"id": "tool_web_search_basic", "turns": [{"message": "Use web_search to find the capital of France. What is it?", "checks": {"answer_any": ["paris"], "required_tools": ["web_search"], "max_iterations": 4}}]},
+    {"id": "tool_web_search_typo", "turns": [{"message": "Use web_search to find info about deepseep_harness (fix typo if needed). What is it?", "checks": {"answer_any": ["deepseek"], "required_tools": ["web_search"], "max_iterations": 5}}]},
+    {"id": "tool_web_search_current", "turns": [{"message": "Who performed at the 2024 Super Bowl halftime show? Use web_search.", "checks": {"answer_any": ["usher"], "required_tools": ["web_search"], "max_iterations": 5}}]},
+    {"id": "tool_web_search_no_tool_needed", "turns": [{"message": "What is 2+2?", "checks": {"answer_any": ["4"], "forbidden_tools": ["web_search"], "max_iterations": 2}}]},
+    {"id": "tool_query_database_simple", "turns": [{"message": "Use query_database to find how many sessions exist.", "checks": {"required_tools": ["query_database"], "max_iterations": 4}}]},
+    {"id": "tool_both_tools", "turns": [{"message": "First use web_search to find who won the 2024 Goodreads Fiction award, then use query_database to see if we have any record of it.", "checks": {"required_tools": ["web_search"], "max_iterations": 6}}]},
+    {"id": "tool_web_search_chain", "turns": [{"message": "Use web_search to find the author of 'James' (2024 Goodreads winner), then find where that author was born.", "checks": {"answer_any": ["percival", "everett"], "required_tools": ["web_search"], "max_iterations": 6}}]},
+    {"id": "tool_no_hallucination", "turns": [{"message": "What is the largest lake in Connecticut? Use web_search to verify, don't guess.", "checks": {"answer_any": ["candlewood"], "required_tools": ["web_search"], "max_iterations": 5}}]},
+    {"id": "tool_error_recovery", "turns": [{"message": "Try to use web_search with a nonsense query 'xyzabc123notarealplace', then recover and search for 'Python programming'.", "checks": {"required_tools": ["web_search"], "max_iterations": 6}}]},
+    {"id": "tool_forbidden_check", "turns": [{"message": "Calculate 10*5. Do not use any tools.", "checks": {"answer_any": ["50"], "forbidden_tools": ["web_search", "query_database"], "max_iterations": 2}}]}
+  ]
+}

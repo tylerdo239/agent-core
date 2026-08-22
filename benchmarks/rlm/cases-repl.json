@@ -1,0 +1,16 @@
+{
+  "suite": "repl-workspace-v1",
+  "description": "REPL and workspace harness audit: execution, subcalls, file ops, artifacts",
+  "cases": [
+    {"id": "repl_simple_math", "turns": [{"message": "Calculate 123*456 in python and report the result.", "checks": {"numeric_answers": [{"value": 56088, "tolerance": 0}], "max_iterations": 3}}]},
+    {"id": "repl_pandas_basic", "turns": [{"message": "Create a pandas DataFrame with columns a=[1,2,3] and b=[4,5,6], report the sum of column b.", "checks": {"numeric_answers": [{"value": 15, "tolerance": 0}], "max_iterations": 4}}]},
+    {"id": "repl_error_recovery", "turns": [{"message": "Try to run print(1/0), catch the error, then correctly compute 1+1.", "checks": {"numeric_answers": [{"value": 2, "tolerance": 0}], "max_iterations": 4}}]},
+    {"id": "repl_subcall_llm", "turns": [{"message": "Use llm_query to ask 'What is the capital of Japan?' and report the answer.", "checks": {"answer_any": ["tokyo"], "max_iterations": 4}}]},
+    {"id": "repl_subcall_rlm", "turns": [{"message": "Use rlm_query to solve: 'What is 15*4? Reply with just the number.'", "checks": {"numeric_answers": [{"value": 60, "tolerance": 0}], "max_iterations": 4}}]},
+    {"id": "repl_persistence", "turns": [{"message": "Set x=42 in python.", "checks": {"max_iterations": 2}}, {"message": "What is x+8? Only the number.", "checks": {"numeric_answers": [{"value": 50, "tolerance": 0}], "max_iterations": 2}}]},
+    {"id": "ws_file_upload_list", "datasets": ["retail_sales.csv"], "turns": [{"message": "List datasets in the workspace. How many are there?", "checks": {"numeric_answers": [{"value": 1, "tolerance": 0}], "max_iterations": 3}}]},
+    {"id": "ws_load_dataset", "datasets": ["sensor_temp.csv"], "turns": [{"message": "Load sensor_temp.csv and report its shape (rows, cols).", "checks": {"answer_any": ["336", "2"], "max_iterations": 4}}]},
+    {"id": "ws_save_artifact", "turns": [{"message": "Create a file at generated/test_output.txt with content 'hello artifact' using save_artifact, then report its path.", "checks": {"answer_any": ["test_output", "generated"], "max_iterations": 4}}]},
+    {"id": "ws_duckdb_query", "datasets": ["retail_sales.csv"], "turns": [{"message": "Use duckdb to query retail_sales.csv: SELECT region, SUM(revenue) GROUP BY region ORDER BY SUM(revenue) DESC LIMIT 1. Report the top region.", "checks": {"answer_any": ["west"], "max_iterations": 5}}]}
+  ]
+}

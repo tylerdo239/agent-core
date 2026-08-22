@@ -3,3 +3,6 @@ dist/
 data/
 *.db
 .env
+reports/
+__pycache__/
+*.py[cod]

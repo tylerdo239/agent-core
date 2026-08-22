@@ -13,7 +13,7 @@ import '../../../seams/storage.ts'
 import '../../../seams/tools.ts'
 import '../../../seams/loop.ts'
 import '../../../seams/skill.ts'
-import { LoopTurnResult, Session } from '../../../seams/loop.ts'
+import { LoopTurnResult, Session, TurnInput } from '../../../seams/loop.ts'
 
 export const inject = ['loop']
 
@@ -21,7 +21,8 @@ const CRITIQUE_PROMPT = 'Hãy rà soát câu trả lời trên, chỉ ra vấn �
 
 export const apply = (ctx: Context) => {
   ctx.loop.register('default', {
-    async runTurn(runCtx: Context, session: Session, userMessage: string): Promise<LoopTurnResult> {
+    async runTurn(runCtx: Context, session: Session, input: TurnInput): Promise<LoopTurnResult> {
+      const userMessage = input.message
       // Phase 15: cùng cơ chế skill-match như loop-default, xem chú thích ở đó.
       const matchedSkills = runCtx.skills.match(userMessage)
       let messages = session.buildPrompt(userMessage, matchedSkills.map((s) => s.instructions))
@@ -70,7 +71,10 @@ export const apply = (ctx: Context) => {
         }
 
         const result = tool
-          ? await tool.handler(response.toolCall.args)
+          ? await runCtx.tools.invoke(response.toolCall.name, response.toolCall.args, {
+              sessionId: session.id,
+              source: 'planner-critic',
+            })
           : { error: `tool "${response.toolCall.name}" not found` }
 
         await runCtx.storage.appendEvent(session.id, {

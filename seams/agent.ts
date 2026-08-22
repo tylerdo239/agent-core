@@ -10,7 +10,7 @@
 // driver, nên `this.ctx` bên trong nó luôn ổn định — đúng nơi để "pin" driver
 // tại thời điểm bắt đầu turn (coding rule B4).
 import { Context, Service } from '@deepseek-ai/cordis'
-import { LoopTurnResult, Session } from './loop.ts'
+import { LoopTurnResult, Session, TurnInput } from './loop.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -23,5 +23,5 @@ export abstract class AgentRunnerService extends Service {
     super(ctx, 'agent')
   }
 
-  abstract runTurn(driverName: string, session: Session, userMessage: string): Promise<LoopTurnResult>
+  abstract runTurn(driverName: string, session: Session, input: string | TurnInput): Promise<LoopTurnResult>
 }

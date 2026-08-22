@@ -88,6 +88,13 @@ interface OpenAIToolCall {
 }
 
 interface OpenAIChatResponse {
+  model?: string;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    cost?: number;
+  };
   choices?: Array<{
     finish_reason?: string;
     message?: {
@@ -141,17 +148,21 @@ export class LlmQwen extends LlmService {
     messages: LlmMessage[],
     options: LlmCompleteOptions = {},
   ): Promise<LlmCompletion> {
-    const { apiKey, baseUrl, model } = this.resolveConfig();
+    const { apiKey, baseUrl, model: configuredModel } = this.resolveConfig();
+    const model = options.model ?? configuredModel;
 
     const body: Record<string, unknown> = {
       model,
       messages: messages.map(mapMessage),
-      max_tokens: this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
+      max_tokens: options.maxTokens ?? this.config.maxTokens ?? DEFAULT_MAX_TOKENS,
       chat_template_kwargs: {
         enable_thinking: this.config.enableThinking ?? false,
       },
       ...this.config.extraBody,
+      ...options.extraBody,
     };
+
+    if (options.temperature !== undefined) body.temperature = options.temperature;
 
     if (options.tools?.length) {
       body.tools = options.tools.map((tool) => ({
@@ -186,6 +197,15 @@ export class LlmQwen extends LlmService {
     return {
       content: message?.content ?? "",
       toolCall,
+      model: data.model ?? model,
+      usage: data.usage
+        ? {
+            inputTokens: data.usage.prompt_tokens,
+            outputTokens: data.usage.completion_tokens,
+            totalTokens: data.usage.total_tokens,
+            cost: data.usage.cost,
+          }
+        : undefined,
     };
   }
 

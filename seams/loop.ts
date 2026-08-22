@@ -28,6 +28,23 @@ declare module '@deepseek-ai/cordis' {
 export interface LoopTurnResult {
   content: string
   steps: number
+  /** Trạng thái cuối của turn. Driver cũ có thể bỏ qua và được hiểu là completed. */
+  status?: 'completed' | 'waiting_user' | 'waiting_approval' | 'failed'
+  /** Payload có cấu trúc cho ask-user/action-approval. */
+  control?: Record<string, unknown>
+  usage?: Record<string, unknown>
+  tracePath?: string
+}
+
+/** Input ổn định của một turn; metadata không bị trộn vào nội dung user. */
+export interface TurnInput {
+  message: string
+  selectedSkill?: string
+  metadata?: Record<string, unknown>
+}
+
+export function normalizeTurnInput(input: string | TurnInput): TurnInput {
+  return typeof input === 'string' ? { message: input } : input
 }
 
 export type LoopStep =
@@ -36,9 +53,20 @@ export type LoopStep =
   // phải nơi loop driver tự quyết định cách hiển thị. UI (web-ui) đọc field
   // này thay vì hardcode theo tên tool.
   | { type: 'model_message'; content: string; toolCall?: LlmToolCall; toolUi?: ToolUiHint }
+  | { type: 'tool_call'; name: string; args: Record<string, unknown>; toolUi?: ToolUiHint }
   | { type: 'tool_result'; name: string; result: unknown; toolUi?: ToolUiHint }
   | { type: 'critic_message'; content: string }
   | { type: 'final'; content: string }
+  | { type: 'turn_started'; runId: string; contextIndex?: number }
+  | { type: 'iteration_started' | 'iteration_completed'; iteration: number; depth?: number; duration?: number }
+  | { type: 'analysis'; content: string; iteration?: number; decisionSummary?: string }
+  | { type: 'code'; code: string; iteration?: number; block?: number }
+  | { type: 'observation'; stdout: string; stderr: string; success: boolean; iteration?: number; block?: number }
+  | { type: 'subcall_result'; data: Record<string, unknown> }
+  | { type: 'context_usage'; data: Record<string, unknown> }
+  | { type: 'memory_updated'; data: Record<string, unknown> }
+  | { type: 'human_decision'; control: Record<string, unknown> }
+  | { type: 'error'; message: string }
 
 /**
  * `runCtx` là tham số BẮT BUỘC, không phải tiện ích — xem coding rule A12.
@@ -51,7 +79,7 @@ export type LoopStep =
  * truyền vào NGAY LÚC GỌI, không phải lúc đăng ký.
  */
 export interface LoopDriver {
-  runTurn(runCtx: Context, session: Session, userMessage: string): Promise<LoopTurnResult>
+  runTurn(runCtx: Context, session: Session, input: TurnInput): Promise<LoopTurnResult>
 }
 
 export abstract class LoopRegistryService extends Service {
@@ -78,6 +106,7 @@ export abstract class LoopRegistryService extends Service {
  */
 export class Session {
   history: LlmMessage[] = []
+  private extensions = new Map<string, unknown>()
 
   constructor(
     public id: string,
@@ -135,5 +164,11 @@ export class Session {
   recordToolResult(name: string, result: unknown) {
     this.history.push({ role: 'tool', content: `[${name}] ${JSON.stringify(result)}` })
     this.trimHistory()
+  }
+
+  /** State có scope theo session của một loop plugin, không làm bẩn contract chung. */
+  extension<T>(key: string, create: () => T): T {
+    if (!this.extensions.has(key)) this.extensions.set(key, create())
+    return this.extensions.get(key) as T
   }
 }

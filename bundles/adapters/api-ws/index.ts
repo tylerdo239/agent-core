@@ -45,7 +45,7 @@ const DEFAULT_MAX_PAYLOAD_BYTES = 1024 * 1024 // 1 MiB
 
 type ClientMessage =
   | { type: 'create_session'; driver?: string; maxSteps?: number; systemPrompt?: string }
-  | { type: 'send_message'; sessionId: string; message: string; driver?: string }
+  | { type: 'send_message'; sessionId: string; message: string; driver?: string; selectedSkill?: string; metadata?: Record<string, unknown> }
 
 function send(socket: WebSocket, payload: unknown) {
   socket.send(JSON.stringify(payload))
@@ -122,7 +122,11 @@ async function handleMessage(ctx: Context, socket: WebSocket, raw: string) {
 
     try {
       const driver = msg.driver ?? session.driver
-      const result = await ctx.agent.runTurn(driver, session, msg.message)
+      const result = await ctx.agent.runTurn(driver, session, {
+        message: msg.message,
+        selectedSkill: msg.selectedSkill,
+        metadata: msg.metadata,
+      })
       send(socket, { type: 'done', sessionId: session.id, result })
     } finally {
       unsub()

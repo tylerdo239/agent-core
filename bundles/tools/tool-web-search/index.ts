@@ -14,6 +14,7 @@
 // thấy kết quả nào, để model xử lý như "không tìm thấy" thay vì lỗi cứng.
 import { Context } from '@deepseek-ai/cordis'
 import '../../../seams/permission.ts'
+import '../../../seams/prompt.ts'
 import '../../../seams/tools.ts'
 
 export interface WebSearchResult {
@@ -22,7 +23,7 @@ export interface WebSearchResult {
   snippet: string
 }
 
-export const inject = ['permission', 'tools']
+export const inject = ['permission', 'tools', 'prompts']
 
 export namespace ToolWebSearch {
   export interface Config {
@@ -91,6 +92,20 @@ function parseResults(html: string, limit: number): WebSearchResult[] {
 
 export const apply = (ctx: Context, config: ToolWebSearch.Config = {}) => {
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
+
+  // Guidance xuyên nhiều lần gọi thuộc chính tool plugin, không thuộc persona
+  // RLM. Khi tool unload, section cũng tự gỡ theo cùng Cordis fiber.
+  ctx.prompts.section({
+    name: 'tool:web_search',
+    order: 110,
+    text: [
+      'Web-search guidance:',
+      '- Use `web_search(query, limit=5)` for current or externally verifiable information; `limit` is capped at 10.',
+      '- The result contains `query` and `results`, where each result has `title`, `url`, and `snippet`.',
+      '- Treat snippets as leads, not complete evidence. Do not claim details absent from the returned text.',
+      '- Cite relevant returned URLs as Markdown links in the final answer.',
+    ].join('\n'),
+  })
 
   ctx.tools.add({
     name: 'web_search',

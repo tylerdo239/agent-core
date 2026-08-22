@@ -23,6 +23,13 @@ export interface LlmMessage {
 export interface LlmCompletion {
   content: string
   toolCall?: LlmToolCall
+  model?: string
+  usage?: {
+    inputTokens?: number
+    outputTokens?: number
+    totalTokens?: number
+    cost?: number
+  }
 }
 
 /** Quảng bá 1 tool cho model — map trực tiếp từ ToolDefinition (seams/tools.ts). */
@@ -35,6 +42,11 @@ export interface LlmToolSpec {
 export interface LlmCompleteOptions {
   /** Tool khả dụng cho lượt gọi này. Rỗng/undefined = model không được đề nghị gọi tool. */
   tools?: LlmToolSpec[]
+  model?: string
+  temperature?: number
+  maxTokens?: number
+  purpose?: 'root' | 'sub' | 'memory'
+  extraBody?: Record<string, unknown>
 }
 
 export abstract class LlmService extends Service {

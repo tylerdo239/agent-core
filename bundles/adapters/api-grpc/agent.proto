@@ -30,11 +30,16 @@ message SendMessageRequest {
   string message = 2;
   // rỗng = dùng driver mặc định của session
   string driver = 3;
+  string selected_skill = 4;
 }
 
 message SendMessageResponse {
   string content = 1;
   int32 steps = 2;
+  string status = 3;
+  string control_json = 4;
+  string usage_json = 5;
+  string trace_path = 6;
 }
 
 // Flatten LoopStep (discriminated union bên TypeScript) thành 1 message

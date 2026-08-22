@@ -1,0 +1,47 @@
+# Dockerfile.dev — Development container: live code + hot reload
+# Dùng cho chỉnh sửa trực tiếp, không cần rebuild khi đổi code.
+# Chạy: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+ARG RLM_PYTHON_IMAGE=data-agent-backend:latest
+FROM ${RLM_PYTHON_IMAGE} AS rlm-python
+
+FROM node:22-slim
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    make g++ sudo default-jre-headless \
+    libgdbm6 libgomp1 libncursesw6 libnsl2 libreadline8 libsqlite3-0 \
+    libssl3 libtcl8.6 libtirpc3 libtk8.6 \
+  && rm -rf /var/lib/apt/lists/*
+
+# Dùng cùng Python/site-packages với data-agent; không phụ thuộc virtualenv
+# symlink trên host.
+COPY --from=rlm-python /usr/local /usr/local
+
+ARG AGENT_UID=1019
+ARG AGENT_GID=1020
+ARG OPENCODE_VERSION=1.18.20
+RUN npm install --global "opencode-ai@${OPENCODE_VERSION}" 2>/dev/null || true
+
+# Cài deps 1 lần (cache layer) — copy package.json trước
+COPY package.json package-lock.json ./
+COPY packages/ui-slots/package.json ./packages/ui-slots/package.json
+COPY packages/ui-react/package.json ./packages/ui-react/package.json
+COPY packages/ui-tool-web-search/package.json ./packages/ui-tool-web-search/package.json
+COPY apps/web/package.json ./apps/web/package.json
+RUN npm ci
+
+# Dev: không COPY source — sẽ mount qua volume trong compose
+# Chỉ cần tạo thư mục data
+RUN groupadd --gid "${AGENT_GID}" agent 2>/dev/null || true \
+ && useradd --uid "${AGENT_UID}" --gid agent --create-home --shell /bin/bash agent 2>/dev/null || true \
+ && printf 'agent ALL=(ALL:ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/agent \
+ && chmod 0440 /etc/sudoers.d/agent \
+ && mkdir -p /app/data && chown -R agent:agent /app
+
+USER agent
+EXPOSE 8787 8788 8790 50051
+VOLUME ["/app/data"]
+
+# Hot reload: tsx --watch tự restart khi file đổi (không cần kill PID 1)
+CMD ["npx", "tsx", "watch", "src/serve.ts"]

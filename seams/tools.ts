@@ -36,6 +36,11 @@ export interface ToolDefinition {
   ui?: ToolUiHint
 }
 
+export interface ToolInvocationContext {
+  sessionId: string
+  source: 'default-loop' | 'planner-critic' | 'rlm' | 'subagent'
+}
+
 export abstract class ToolRegistryService extends Service {
   constructor(ctx: Context) {
     super(ctx, 'tools')
@@ -51,4 +56,10 @@ export abstract class ToolRegistryService extends Service {
   abstract get(name: string): ToolDefinition | undefined
   abstract has(name: string): boolean
   abstract list(): ToolDefinition[]
+  /** Điểm execution duy nhất cho mọi loop/runtime bridge. */
+  abstract invoke(
+    name: string,
+    args: Record<string, unknown>,
+    context: ToolInvocationContext,
+  ): Promise<unknown>
 }

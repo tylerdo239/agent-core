@@ -13,10 +13,16 @@ import '../../../seams/tools.ts'
 import '../../../seams/loop.ts'
 import '../../../seams/skill.ts'
 import { AgentRunnerService } from '../../../seams/agent.ts'
-import { LoopTurnResult, Session } from '../../../seams/loop.ts'
+import { LoopTurnResult, normalizeTurnInput, Session, TurnInput } from '../../../seams/loop.ts'
 
 export class AgentRunner extends AgentRunnerService {
-  async runTurn(driverName: string, session: Session, userMessage: string): Promise<LoopTurnResult> {
+  private activeSessions = new Set<string>()
+
+  async runTurn(driverName: string, session: Session, rawInput: string | TurnInput): Promise<LoopTurnResult> {
+    const input = normalizeTurnInput(rawInput)
+    if (this.activeSessions.has(session.id)) {
+      throw new Error(`session "${session.id}" already has an active turn`)
+    }
     const driver = this.ctx.loop.get(driverName)
     if (!driver) {
       throw new Error(`loop driver "${driverName}" not found`)
@@ -27,11 +33,20 @@ export class AgentRunner extends AgentRunnerService {
     // /sessions/:id/events vì vậy chỉ thấy câu trả lời, mất hết câu hỏi gốc.
     // Ghi Ở ĐÂY (entrypoint ổn định chung cho MỌI driver, coding rule B4) —
     // không lặp lại logic này trong từng loop driver riêng.
-    await this.ctx.storage.appendEvent(session.id, { type: 'user_message', content: userMessage })
-    // Pin: `driver` là tham chiếu cụ thể, không phải "cái tên" — registry có
-    // đổi driver nào đứng sau tên này sau lúc này cũng không ảnh hưởng turn
-    // đang chạy.
-    return driver.runTurn(this.ctx, session, userMessage)
+    this.activeSessions.add(session.id)
+    try {
+      await this.ctx.storage.appendEvent(session.id, {
+        type: 'user_message',
+        content: input.message,
+        selectedSkill: input.selectedSkill,
+      })
+      // Pin: `driver` là tham chiếu cụ thể, không phải "cái tên" — registry có
+      // đổi driver nào đứng sau tên này sau lúc này cũng không ảnh hưởng turn
+      // đang chạy.
+      return await driver.runTurn(this.ctx, session, input)
+    } finally {
+      this.activeSessions.delete(session.id)
+    }
   }
 }
 

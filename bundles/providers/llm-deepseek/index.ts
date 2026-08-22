@@ -60,12 +60,15 @@ export class LlmDeepseek extends LlmService {
   async complete(messages: LlmMessage[], options: LlmCompleteOptions = {}): Promise<LlmCompletion> {
     const apiKey = this.config.apiKey ?? process.env.DEEPSEEK_API_KEY
     const baseUrl = this.config.baseUrl ?? 'https://api.deepseek.com'
-    const model = this.config.model ?? 'deepseek-chat'
+    const model = options.model ?? this.config.model ?? 'deepseek-chat'
 
     const body: Record<string, unknown> = {
       model,
       messages: toWireMessages(messages),
+      ...options.extraBody,
     }
+    if (options.temperature !== undefined) body.temperature = options.temperature
+    if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens
     if (options.tools?.length) {
       body.tools = options.tools.map((tool) => ({
         type: 'function',
@@ -91,6 +94,8 @@ export class LlmDeepseek extends LlmService {
     }
 
     const data = (await res.json()) as {
+      model?: string
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; cost?: number }
       choices: { message: { content: string | null; tool_calls?: WireToolCall[] } }[]
     }
 
@@ -100,6 +105,15 @@ export class LlmDeepseek extends LlmService {
       content: message?.content ?? '',
       toolCall: call
         ? { name: call.function.name, args: JSON.parse(call.function.arguments || '{}') }
+        : undefined,
+      model: data.model ?? model,
+      usage: data.usage
+        ? {
+            inputTokens: data.usage.prompt_tokens,
+            outputTokens: data.usage.completion_tokens,
+            totalTokens: data.usage.total_tokens,
+            cost: data.usage.cost,
+          }
         : undefined,
     }
   }

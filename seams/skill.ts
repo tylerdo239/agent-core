@@ -24,6 +24,29 @@ export interface SkillDefinition {
   instructions: string
   /** Từ khoá kích hoạt, so khớp substring không phân biệt hoa/thường trên tin nhắn user. Rỗng = không bao giờ tự kích hoạt qua match(). */
   triggers: string[]
+  /** Có thể được UI/API chọn trực tiếp cho một turn. Resource con luôn false. */
+  userInvocable?: boolean
+  /** Resource thuộc package; resource không bị đăng ký giả thành skill con. */
+  resources?: SkillResource[]
+}
+
+export type SkillResourceKind = 'asset' | 'reference' | 'checklist' | 'script' | 'template'
+
+export interface SkillResource {
+  path: string
+  kind: SkillResourceKind
+}
+
+export interface SkillResourceContent extends SkillResource {
+  content: string
+  encoding: 'utf8' | 'base64'
+}
+
+export type SkillResourceReader = (path: string) => Promise<SkillResourceContent>
+
+export interface SkillListOptions {
+  userInvocableOnly?: boolean
+  topLevelOnly?: boolean
 }
 
 export abstract class SkillRegistryService extends Service {
@@ -36,10 +59,11 @@ export abstract class SkillRegistryService extends Service {
    * ToolRegistryService.add/SubagentRegistryService.register — implementation
    * PHẢI gắn disposer qua `ctx.effect()` để tự gỡ đúng fiber gọi.
    */
-  abstract register(def: SkillDefinition): void
+  abstract register(def: SkillDefinition, readResource?: SkillResourceReader): void
   abstract get(name: string): SkillDefinition | undefined
   abstract has(name: string): boolean
-  abstract list(): SkillDefinition[]
+  abstract list(options?: SkillListOptions): SkillDefinition[]
   /** Trả về các skill có ≥1 trigger khớp userMessage (substring, không phân biệt hoa/thường). */
   abstract match(userMessage: string): SkillDefinition[]
+  abstract readResource(skillName: string, resourcePath: string): Promise<SkillResourceContent>
 }

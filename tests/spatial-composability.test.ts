@@ -11,6 +11,7 @@ import * as permissionRbac from '../bundles/providers/permission-rbac/index.ts'
 import * as subagentManager from '../bundles/providers/subagent-manager/index.ts'
 import * as subagentReportWriter from '../bundles/subagents/subagent-report-writer/index.ts'
 import * as toolWebSearch from '../bundles/tools/tool-web-search/index.ts'
+import * as promptRegistry from '../bundles/providers/prompt-registry/index.ts'
 import { LlmCompletion, LlmMessage, LlmService } from '../seams/llm.ts'
 
 // Fake LLM: seam thật, provider giả — test spatial composability không được
@@ -32,19 +33,23 @@ describe('spatial composability — tool ↔ storage', () => {
   it('tool tự suspend khi storage bị gỡ, tự resume khi storage quay lại', async () => {
     const root = new Context()
     root.plugin(toolRegistry)
+    root.plugin(promptRegistry)
     const storageFork = root.plugin(stateSqlite, { path: ':memory:' })
     root.plugin(toolDatabaseQuery)
     await settle()
 
     expect(root.tools.has('query_database')).toBe(true)
+    expect(root.prompts.hasSection('tool:query_database')).toBe(true)
 
     await storageFork.dispose()
     await settle()
     expect(root.tools.has('query_database')).toBe(false) // suspend, KHÔNG throw
+    expect(root.prompts.hasSection('tool:query_database')).toBe(false)
 
     root.plugin(stateSqlite, { path: ':memory:' })
     await settle()
     expect(root.tools.has('query_database')).toBe(true) // resume
+    expect(root.prompts.hasSection('tool:query_database')).toBe(true)
   })
 })
 
@@ -86,6 +91,7 @@ describe('spatial composability — tool ↔ permission', () => {
   it('tool tự suspend khi permission bị gỡ, tự resume khi permission quay lại', async () => {
     const root = new Context()
     root.plugin(toolRegistry)
+    root.plugin(promptRegistry)
     const permissionFork = root.plugin(permissionRbac, {
       rules: { 'web-search': ['search'] },
     })
@@ -93,13 +99,16 @@ describe('spatial composability — tool ↔ permission', () => {
     await settle()
 
     expect(root.tools.has('web_search')).toBe(true)
+    expect(root.prompts.hasSection('tool:web_search')).toBe(true)
 
     await permissionFork.dispose()
     await settle()
     expect(root.tools.has('web_search')).toBe(false)
+    expect(root.prompts.hasSection('tool:web_search')).toBe(false)
 
     root.plugin(permissionRbac, { rules: { 'web-search': ['search'] } })
     await settle()
     expect(root.tools.has('web_search')).toBe(true)
+    expect(root.prompts.hasSection('tool:web_search')).toBe(true)
   })
 })

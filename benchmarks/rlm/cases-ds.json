@@ -1,0 +1,127 @@
+{
+  "suite": "ds-analysis-v1",
+  "sources": [
+    {
+      "name": "InfiAgent-DABench (ICML 2024)",
+      "url": "https://github.com/InfiAgent/InfiAgent/tree/main/examples/DA-Agent",
+      "license": "Apache-2.0, validation split only"
+    }
+  ],
+  "cases": [
+    {
+      "id": "dabench_mean_temperature_683",
+      "source": "DABench id=683 (easy, summary statistics)",
+      "datasets": ["ravenna_250715.csv"],
+      "turns": [
+        {
+          "message": "Using the registered dataset ravenna_250715.csv: What is the mean temperature recorded in the dataset? Calculate it to two decimal places. End your answer with a line like: mean_temperature=<value>",
+          "checks": {
+            "numeric_answers": [{"value": 29.14, "tolerance": 0.01}],
+            "forbidden_tools": ["web_search", "query_database"],
+            "max_iterations": 5,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    },
+    {
+      "id": "dabench_missing_values_715",
+      "source": "DABench id=715 (easy, preprocessing)",
+      "datasets": ["Current_Logan.csv"],
+      "turns": [
+        {
+          "message": "Using the registered dataset Current_Logan.csv: What is the percentage of missing values in the \"Unnamed: 8\" column? Missing values are NaN. Round to two decimal places. End your answer with a line like: missing_percentage=<value>",
+          "checks": {
+            "numeric_answers": [{"value": 95.12, "tolerance": 0.01}],
+            "answer_not": ["nan%"],
+            "forbidden_tools": ["web_search", "query_database"],
+            "max_iterations": 5,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    },
+    {
+      "id": "dabench_normality_19",
+      "source": "DABench id=19 (easy, distribution analysis)",
+      "datasets": ["unemployement_industry.csv"],
+      "turns": [
+        {
+          "message": "Using the registered dataset unemployement_industry.csv: Check if the distribution of the \"Mar.2020\" column adheres to a normal distribution. Assume normal if the Fisher-Pearson skewness is between -0.5 and 0.5. Answer with a single word, Yes or No.",
+          "checks": {
+            "answer_regex": ["\\bno\\b"],
+            "answer_not": ["\\byes\\b is my final|the distribution is normal"],
+            "forbidden_tools": ["web_search", "query_database"],
+            "max_iterations": 5,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    },
+    {
+      "id": "dabench_correlation_587",
+      "source": "DABench id=587 (medium, correlation + time parsing)",
+      "datasets": ["20170413_000000_group_statistics.csv"],
+      "turns": [
+        {
+          "message": "Using the registered dataset 20170413_000000_group_statistics.csv: Examine the correlation between the average number of agents talking and the average waiting time for callers. Transform the average waiting time from 'HH:MM:SS' strings to seconds, then compute the Pearson correlation coefficient rounded to three decimals. End your answer with a line like: correlation_coefficient=<value>",
+          "checks": {
+            "numeric_answers": [{"value": 0.639, "tolerance": 0.01}],
+            "forbidden_tools": ["web_search", "query_database"],
+            "max_iterations": 6,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    },
+    {
+      "id": "dabench_feature_engineering_354",
+      "source": "DABench id=354 (easy, feature engineering)",
+      "datasets": ["test_x.csv"],
+      "turns": [
+        {
+          "message": "Using the registered dataset test_x.csv: Create a new feature \"FamilySize\" by summing the IsAlone column with the number of siblings/spouses and the number of parents/children on board (assume each passenger has at least one of each, so add 1 for sibling/spouse and 1 for parent/child). Compute the average FamilySize rounded to one decimal place. End your answer with a line like: average_familysize=<value>",
+          "checks": {
+            "numeric_answers": [{"value": 2.6, "tolerance": 0.05}],
+            "forbidden_tools": ["web_search", "query_database"],
+            "max_iterations": 5,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    },
+    {
+      "id": "dabench_outliers_254",
+      "source": "DABench id=254 (medium, IQR outlier detection)",
+      "datasets": ["gapminder_gdp_asia.csv"],
+      "turns": [
+        {
+          "message": "Using the registered dataset gapminder_gdp_asia.csv: Identify outliers in the gdpPercap_1982 column across countries using the 1.5*IQR rule (below Q1 - 1.5*IQR or above Q3 + 1.5*IQR). Report the outlier country names.",
+          "checks": {
+            "answer_any": ["kuwait", "saudi arabia"],
+            "answer_regex": ["kuwait"],
+            "forbidden_tools": ["web_search", "query_database"],
+            "max_iterations": 5,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    },
+    {
+      "id": "dabench_regression_mse_671",
+      "source": "DABench id=671 (hard, machine learning)",
+      "datasets": ["my_test_01.csv"],
+      "turns": [
+        {
+          "message": "Using the registered dataset my_test_01.csv: Build a linear regression model to predict MedianHouseValue from MedInc, AveRooms, Population, Latitude, Longitude. Split 70% train / 30% test, train on the training set, and evaluate mean squared error (MSE) on the test set rounded to three decimals. End your answer with a line like: mse=<value>",
+          "checks": {
+            "numeric_answers": [{"value": 0.653, "tolerance": 0.3}],
+            "forbidden_tools": ["web_search", "query_database"],
+            "max_iterations": 8,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    }
+  ]
+}

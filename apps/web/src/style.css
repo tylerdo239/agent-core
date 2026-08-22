@@ -532,11 +532,98 @@ button:disabled {
   font-size: 12px;
 }
 
+#workspace-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--alias-border-default);
+  background: var(--alias-bg-subtle);
+  font-size: 12.5px;
+}
+.workspace-bar-left { display: flex; gap: 10px; align-items: center; }
+.workspace-bar-title { font-weight: 600; }
+.workspace-bar-count { color: var(--alias-label-secondary); }
+.workspace-bar-actions { display: flex; gap: 6px; }
+#workspace-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--alias-border-default);
+  background: var(--alias-bg-base);
+  max-height: 96px;
+  overflow-y: auto;
+}
+.workspace-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--alias-border-default);
+  border-radius: 6px;
+  background: var(--alias-bg-subtle);
+  font-size: 12px;
+  color: var(--alias-label-primary);
+  text-decoration: none;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: inherit;
+  cursor: pointer;
+}
+.workspace-file strong { overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.workspace-file:hover { border-color: var(--alias-accent); }
+.workspace-file-size { color: var(--alias-label-secondary); font-size: 11px; }
+.workspace-file-output { border-style: dashed; border-color: var(--alias-state-success); }
+.workspace-file-dataset { border-color: var(--alias-accent); }
+
+#upload-status {
+  padding: 7px 20px 8px;
+  border-bottom: 1px solid var(--alias-border-default);
+  background: var(--alias-bg-subtle);
+  font-size: 12px;
+}
+.upload-status-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 5px;
+  color: var(--alias-label-secondary);
+}
+.upload-success .upload-status-label { color: var(--alias-state-success); }
+.upload-error .upload-status-label { color: var(--alias-state-error); }
+.upload-progress-track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--alias-border-default);
+}
+.upload-progress-bar {
+  height: 100%;
+  background: var(--alias-accent);
+  transition: width 200ms ease;
+}
+.upload-success .upload-progress-bar { background: var(--alias-state-success); }
+#workspace-error { padding: 6px 20px; color: var(--alias-state-error); font-size: 12px; border-bottom: 1px solid var(--alias-border-default); }
+
 #compose-form {
   display: flex;
   gap: 10px;
   padding: 16px 20px 20px;
   border-top: 1px solid var(--alias-border-default);
+}
+
+#skill-select {
+  min-width: 118px;
+  max-width: 180px;
+  border: 1px solid var(--alias-border-default);
+  border-radius: 8px;
+  background: var(--alias-bg-base);
+  color: var(--alias-label-primary);
+  padding: 0 10px;
 }
 
 #compose-input {
