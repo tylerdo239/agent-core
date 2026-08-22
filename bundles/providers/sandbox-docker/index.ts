@@ -9,8 +9,6 @@ export namespace SandboxDocker {
   export interface Config {
     image?: string
     dockerBin?: string
-    workerPath: string
-    dataAgentRoot: string
     agentConfig?: Record<string, unknown>
     networkDisabled?: boolean
     memory?: string
@@ -22,7 +20,7 @@ export namespace SandboxDocker {
   }
 }
 
-const DEFAULT_IMAGE = 'data-agent-backend:latest'
+const DEFAULT_IMAGE = 'agent-core:latest'
 
 function safeName(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9_.-]/g, '-').replace(/^[.-]+|[.-]+$/g, '').slice(0, 40) || 'default'
@@ -31,8 +29,6 @@ function safeName(value: string) {
 export interface DockerWorkerArgs {
   image: string
   containerName: string
-  workerPath: string
-  dataAgentRoot: string
   workspaceRoot: string
   sessionId: string
   agentConfig: Record<string, unknown>
@@ -62,20 +58,17 @@ export function buildDockerWorkerArgs(options: DockerWorkerArgs): string[] {
     ? pythonSafeSessionId(options.sessionId)
     : path.basename(path.resolve(options.workspaceRoot))
   const containerWorkspace = `/workspaces/${workspaceName}`
-  const workerPath = path.resolve(options.workerPath)
   const args = [
     'run', '--rm', '-i', '--init',
     '--name', options.containerName,
     '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges',
     '--workdir', containerWorkspace,
-    '--volume', `${path.resolve(options.dataAgentRoot)}:/app:ro`,
-    '--volume', `${workerPath}:/opt/agent-core/worker.py:ro`,
     '--volume', `${dockerVolume ?? path.resolve(options.workspaceRoot)}:${containerWorkspace}`,
     '--tmpfs', '/tmp:rw,nosuid,nodev,exec,size=2g',
     '--env', 'HOME=/tmp',
-    '--env', 'PYTHONPATH=/app/vendor/rlm:/app',
-    '--env', 'RLM_DATA_AGENT_ROOT=/app',
+    '--env', 'PYTHONPATH=/app/python/vendor/rlm:/app/python',
+    '--env', 'RLM_RUNTIME_ROOT=/app/python',
     '--env', `RLM_WORKSPACE_ROOT=${containerWorkspace}`,
     '--env', `RLM_AGENT_CONFIG_JSON=${JSON.stringify(options.agentConfig)}`,
   ]
@@ -92,7 +85,7 @@ export function buildDockerWorkerArgs(options: DockerWorkerArgs): string[] {
     const gid = typeof process.getgid === 'function' ? process.getgid() : undefined
     if (uid !== undefined && gid !== undefined) args.push('--user', `${uid}:${gid}`)
   }
-  args.push(options.image, 'python', '-u', '/opt/agent-core/worker.py')
+  args.push(options.image, 'python', '-u', '/app/bundles/loop-drivers/loop-rlm/python/worker.py')
   return args
 }
 
@@ -127,8 +120,6 @@ export class SandboxDocker extends SandboxIpython {
       const child = spawn(dockerBin, buildDockerWorkerArgs({
         image,
         containerName,
-        workerPath: config.workerPath,
-        dataAgentRoot: config.dataAgentRoot,
         workspaceRoot: cwd,
         sessionId,
         agentConfig: config.agentConfig ?? {},
@@ -178,8 +169,8 @@ export class SandboxDocker extends SandboxIpython {
       }
     }
     super(ctx, {
-      workerPath: config.workerPath,
-      dataAgentRoot: config.dataAgentRoot,
+      workerPath: '/app/bundles/loop-drivers/loop-rlm/python/worker.py',
+      runtimeRoot: '/app/python',
       agentConfig: config.agentConfig,
       launch,
       closeProcess,

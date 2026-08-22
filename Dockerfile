@@ -1,8 +1,10 @@
-# Reuse đúng Python runtime/dependency đã được đóng gói cho data-agent. Chỉ
-# copy /usr/local (Python + site-packages) sang runtime cuối; source data-agent
-# vẫn đi qua workspace mount và được worker thêm vào sys.path.
-ARG RLM_PYTHON_IMAGE=data-agent-backend:latest
-FROM ${RLM_PYTHON_IMAGE} AS rlm-python
+# Python RLM runtime is built from this repository. A standalone checkout must
+# not depend on a prebuilt sibling data-agent image.
+FROM python:3.11-slim-bookworm AS rlm-python
+WORKDIR /runtime
+COPY python/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Multi-stage: stage "deps" có đủ toolchain build native module
 # (better-sqlite3 cần node-gyp nếu không có prebuilt binary đúng
@@ -46,9 +48,8 @@ FROM node:22-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Virtualenv từ host có thể chứa symlink tuyệt đối tới interpreter không tồn
-# tại trong container. Dùng interpreter thật, self-contained từ image
-# data-agent thay vì bind-mount virtualenv.
+# Copy interpreter/site-packages được build từ python/requirements.txt của
+# chính repo; không bind-mount virtualenv và không phụ thuộc sibling image.
 COPY --from=rlm-python /usr/local /usr/local
 
 # Giữ UID/GID của user trong container trùng với user sở hữu bind mount trên
@@ -83,6 +84,7 @@ COPY package.json ./
 COPY seams ./seams
 COPY bundles ./bundles
 COPY src ./src
+COPY python ./python
 # Chỉ copy dist đã build (Phase 9.6) — KHÔNG copy apps/web/src hay
 # packages/*/src vào runtime, server không cần source phía client, chỉ cần
 # đúng vị trí bundles/adapters/web-ui/index.ts tính DIST_DIR tới

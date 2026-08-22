@@ -37,34 +37,22 @@ Quyền sở hữu quan trọng:
 
 ## 2. Chạy backend
 
-### Prerequisite bắt buộc
-
-Repo được đặt cạnh repo `data-agent`:
-
-```text
-Triadic_DGM/
-  agent-core/
-  data-agent/
-```
-
-Image Python nguồn phải tồn tại trước khi build `agent-core`:
+Repo `agent-core` hiện self-contained: Python adapter, core RLM và dependency
+manifest đều nằm trong `python/`. Chỉ cần clone repo này:
 
 ```bash
-cd ../data-agent
-docker compose build backend
-
-cd ../agent-core
+cd agent-core
 cp .env.example .env
 # Điền OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL_ID, API_KEYS
 docker compose up -d --build
 ```
 
-`agent-core` copy Python + scientific dependencies từ image
-`data-agent-backend:latest`. Trong container, worker luôn chạy bằng:
+Dockerfile tự cài Python + scientific dependencies. Trong container, worker
+chạy bằng:
 
 ```text
 RLM_PYTHON_BIN=/usr/local/bin/python3
-RLM_DATA_AGENT_ROOT=/workspace/Triadic_DGM/data-agent
+RLM_RUNTIME_ROOT=/app/python
 ```
 
 Không trỏ `RLM_PYTHON_BIN` vào `.venv` trên host: virtualenv có thể chứa
@@ -489,14 +477,11 @@ Generated benchmark reports trong `reports/` không phải source code và khôn
 nên commit. Benchmark definitions/runner trong `benchmarks/` có thể commit để
 người backend tái lập kết quả.
 
-## 12. External dependency chưa nằm trong repo này
+## 12. Python runtime trong repo
 
-Python worker import code từ sibling repo `data-agent`, bao gồm
-`triadic_dgm.rlm_agent.harness_adapter` và vendored `rlm`. Vì vậy:
-
-- Frontend-only contributor có thể làm việc với backend đã deploy mà không
-  cần clone `data-agent`.
-- Người muốn tự chạy toàn bộ backend cần đúng working tree `data-agent` tương
-  thích và image `data-agent-backend:latest`.
-- Các thay đổi Python trong `data-agent` phải được publish/commit riêng; push
-  chỉ repo `agent-core` không thể mang theo các file của repo sibling.
+- `python/rlm_agent/` chứa adapter/runtime RLM của application.
+- `python/vendor/rlm/` chứa core RLM đã pin và license upstream.
+- `python/requirements.txt` là dependency contract của worker/image.
+- Frontend contributor không cần đọc Python để dùng public API.
+- Backend contributor có thể clone riêng `agent-core` và build E2E; không còn
+  runtime dependency vào sibling `data-agent`.

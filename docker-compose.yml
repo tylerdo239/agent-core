@@ -1,19 +1,19 @@
 services:
   agent-core:
+    image: "${AGENT_CORE_IMAGE:-agent-core:latest}"
     build:
       context: .
       args:
         AGENT_UID: "${AGENT_UID:-1019}"
         AGENT_GID: "${AGENT_GID:-1020}"
         OPENCODE_VERSION: "${OPENCODE_VERSION:-1.18.20}"
-        RLM_PYTHON_IMAGE: "${RLM_PYTHON_IMAGE:-data-agent-backend:latest}"
     env_file:
       - .env
     environment:
       # Container phải dùng interpreter nằm trong image; không dùng đường
       # dẫn virtualenv bind-mount từ host.
       RLM_PYTHON_BIN: /usr/local/bin/python3
-      RLM_DATA_AGENT_ROOT: /workspace/Triadic_DGM/data-agent
+      RLM_RUNTIME_ROOT: /app/python
     ports:
       - "${PORT_REST:-8787}:8787"
       - "${PORT_WS:-8788}:8788"
@@ -21,8 +21,6 @@ services:
       - "${PORT_WEB_UI:-8790}:8790"
     volumes:
       - agent-core-data:/app/data
-      - ..:/workspace/Triadic_DGM
-      - ./bundles/prompts/prompt-rlm-data-agent/sections:/app/bundles/prompts/prompt-rlm-data-agent/sections:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]

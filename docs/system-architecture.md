@@ -339,15 +339,13 @@ là summary bền hơn dành cho multi-turn RLM.
 | `Dockerfile.dev` | Image development có source mount + watch | Đổi môi trường dev |
 | `docker-compose.yml` | Service/port/volume/env nền | Đổi deployment mặc định |
 | `docker-compose.dev.yml` | Override live mount/hot reload | Đổi workflow dev |
-| `docker-compose.prod.yml` | Override dự kiến cho production-like | Không coi là image standalone khi Python source còn ở sibling repo |
+| `docker-compose.prod.yml` | Override production dùng source đã COPY trong image | Đổi policy deploy/restart |
 | `README.md` | Quick start và giới hạn tổng quát | Thay đổi cách chạy chính |
 | `tsconfig.json` | Luật typecheck TypeScript | Đổi compiler/module settings |
 
-Lưu ý hiện trạng: Compose base mount thư mục cha vào
-`/workspace/Triadic_DGM` để worker import sibling `data-agent`. Do cách Compose
-merge danh sách volume, file `docker-compose.prod.yml` hiện chưa loại bỏ hoàn
-toàn các bind mount của file base. Vì vậy nó là production-like, chưa phải
-artifact production standalone.
+Compose base chỉ mount named volume `agent-core-data`. Dev override mount source
+thuộc chính repo để hot reload; production image chứa cả TypeScript, frontend
+build và Python RLM runtime nên có thể chạy từ một checkout độc lập.
 
 ### 6.2 `src/`
 
@@ -497,13 +495,15 @@ Các test nên đọc đầu tiên:
 - `tests/rlm-migration.test.ts`: hiểu boundary TS ↔ Python.
 - `tests/api-rest.test.ts`, `tests/api-ws.test.ts`: hiểu transport contract.
 
-## 7. Repo `data-agent` còn làm gì?
+## 7. Python RLM được đóng gói thế nào?
 
-Worker hiện import:
+Runtime nằm ngay trong repo:
 
 ```text
-data-agent/triadic_dgm/rlm_agent/harness_adapter.py
-data-agent/vendor/rlm/...
+python/rlm_agent/harness_adapter.py
+python/rlm_agent/agent.py
+python/vendor/rlm/rlm/...
+python/requirements.txt
 ```
 
 `HarnessRLM` là adapter mỏng tới core RLM. Nó nhận prepared context và các
@@ -511,14 +511,10 @@ callback bridge từ harness. Những phần gắn trực tiếp với core RLM/
 extension point vẫn nằm ở Python; orchestration cấp application đã chuyển sang
 TypeScript.
 
-Do đó:
-
-- Push `agent-core` không tự mang theo thay đổi Python của `data-agent`.
-- Người chỉ viết frontend có thể dùng backend đã deploy, không cần clone Python.
-- Người tự build/chạy backend cần sibling `data-agent` đúng version và image
-  `data-agent-backend:latest`.
-- Mục tiêu dài hạn có thể thay tiếp Python internals bằng framework plugin,
-  nhưng không được tạo duplicate registry/memory/workspace trong worker.
+Core RLM được vendor kèm upstream license để branch là một runtime hoàn chỉnh.
+Dockerfile cài requirements và copy source từ chính repo; người dùng không cần
+sibling repo hay prebuilt data-agent image. Khi cập nhật upstream RLM phải cập
+nhật có chủ đích, giữ license và chạy lại E2E.
 
 ## 8. Muốn mở rộng thì sửa đâu?
 
@@ -591,10 +587,7 @@ adapter endpoint
 ## 10. Chạy và kiểm tra
 
 ```bash
-cd /home/phunq/5080_cuda13/Triadic_DGM/data-agent
-docker compose build backend
-
-cd ../agent-core
+cd agent-core
 cp .env.example .env
 # điền OPENAI_* và API_KEYS
 docker compose up -d --build
@@ -607,7 +600,7 @@ Endpoints mặc định:
 | REST | `http://localhost:8787` |
 | WebSocket | `ws://localhost:8788` |
 | Web UI | `http://localhost:8790` |
-| gRPC | `localhost:15052` trên host → `50051` container |
+| gRPC | `localhost:50051` (đổi host port bằng `PORT_GRPC`) |
 
 Kiểm tra code:
 

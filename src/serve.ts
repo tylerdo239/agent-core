@@ -163,7 +163,7 @@ async function main() {
   }
 
   const root = new Context()
-  const dataAgentRoot = path.resolve(process.env.RLM_DATA_AGENT_ROOT ?? path.join(agentCoreRoot, '..', 'data-agent'))
+  const rlmRuntimeRoot = path.resolve(process.env.RLM_RUNTIME_ROOT ?? path.join(agentCoreRoot, 'python'))
   const workspaceBase = path.resolve(process.env.RLM_WORKSPACE_BASE ?? path.join(agentCoreRoot, 'data', 'rlm-workspaces'))
   const rlmWorkerPath = path.join(agentCoreRoot, 'bundles', 'loop-drivers', 'loop-rlm', 'python', 'worker.py')
   const rlmSandboxProvider = process.env.RLM_SANDBOX_PROVIDER ?? 'local'
@@ -266,15 +266,13 @@ async function main() {
     root.plugin(sandboxIpython, {
       pythonBin: process.env.RLM_PYTHON_BIN,
       workerPath: rlmWorkerPath,
-      dataAgentRoot,
+      runtimeRoot: rlmRuntimeRoot,
       agentConfig: rlmAgentConfig,
     })
   } else {
     root.plugin(sandboxDocker, {
       dockerBin: process.env.RLM_DOCKER_BIN,
-      image: process.env.RLM_DOCKER_IMAGE ?? 'data-agent-backend:latest',
-      workerPath: rlmWorkerPath,
-      dataAgentRoot,
+      image: process.env.RLM_DOCKER_IMAGE ?? 'agent-core:latest',
       agentConfig: rlmAgentConfig,
       networkDisabled: optionalBoolean('RLM_DOCKER_NETWORK_DISABLED') ?? true,
       memory: process.env.RLM_DOCKER_MEMORY,

@@ -52,6 +52,9 @@ src/serve.ts   entrypoint boot backend
 npm install
 ```
 
+Local development dùng Node.js 22 trở lên. Cách chạy Docker bên dưới không cần
+Node.js hay Python trên host.
+
 ### Kiểm tra
 
 ```bash
@@ -77,17 +80,14 @@ OPENAI_API_KEY=sk-... OPENAI_BASE_URL=... OPENAI_MODEL_ID=... API_KEYS=key1,key2
 
 Mở `http://localhost:8790`, nhập 1 trong các `API_KEYS` ở nút cấu hình, chat luôn.
 
-Để dùng RLM backend, tạo session với `driver: "rlm"`. Mặc định
-`sandbox-docker` chạy worker bằng image `data-agent-backend:latest`, nên host
-không cần cài Python dependencies. Build image một lần bằng
-`docker compose -f ../data-agent/docker-compose.yml build backend`. Có thể đổi
-image/source bằng `RLM_DOCKER_IMAGE`, `RLM_DATA_AGENT_ROOT`. Mỗi session dùng
-một Docker named volume riêng làm workspace; Node không tạo thư mục workspace
-trên host. Prefix volume có thể đổi bằng `RLM_DOCKER_VOLUME_PREFIX`.
+Để dùng RLM backend, tạo session với `driver: "rlm"`. Compose mặc định chạy
+Python worker persistent ngay trong container `agent-core`; source adapter/core
+RLM nằm trong `python/` và dependencies được Dockerfile tự cài. Host không cần
+Python và không cần clone/build thêm repo nào.
 
-Chỉ khi chủ động đặt `RLM_SANDBOX_PROVIDER=local` mới dùng Python trên host;
-lúc đó `RLM_WORKSPACE_BASE` là thư mục workspace host và `RLM_PYTHON_BIN` phải
-trỏ tới environment đã cài dependencies.
+`RLM_SANDBOX_PROVIDER=docker` là chế độ cô lập nâng cao: mỗi session dùng một
+container/named volume riêng. Khi dùng chế độ này phải cho service truy cập
+Docker daemon và đặt `RLM_DOCKER_IMAGE` tới một image agent-core đã build.
 
 ```bash
 curl -X POST http://localhost:8787/sessions \
@@ -123,13 +123,14 @@ có vai trò khác nhau: `skill-filesystem` đọc package/resource, còn
 Resource không được đăng ký thành skill con. Với RLM, entrypoint của selected
 skill đi trong `PreparedRlmTurn`; `skill_resource("references/...")` đọc lazy
 qua worker → `ctx.skills.readResource()`. Có thể override catalog root bằng
-`RLM_SKILLS_ROOT`; Python `skill_registry.py` chỉ còn cho legacy data-agent.
+`RLM_SKILLS_ROOT`; Python `skill_registry.py` chỉ còn là compatibility code bên
+trong runtime vendored và không sở hữu catalog của harness.
 
 `bundles/loop-drivers/loop-rlm/protocol.ts` là nơi duy nhất dựng context gửi
 sang Python. `HarnessRLM` không tự load selected skill và không persist memory;
 worker chỉ bridge model call về `ctx.llm`. `RLMDataAgent.stream_turn()` vẫn còn
-trong data-agent như compatibility path cho caller cũ, nhưng plugin không gọi
-đường này. Vì vậy có thể thay skill/memory/workspace provider mà không sửa core
+trong `python/rlm_agent` như compatibility path, nhưng plugin không gọi đường
+này. Vì vậy có thể thay skill/memory/workspace provider mà không sửa core
 RLM. Notebook execution, RLM subcall, compaction và human-control hook vẫn nằm
 trong Python vì chúng gắn trực tiếp với lifecycle của core RLM.
 
@@ -174,9 +175,9 @@ Dữ liệu (`data/sessions.db`) lưu trên volume `agent-core-data`, sống só
 
 - `sandbox-docker` cô lập process/filesystem/network cơ bản, nhưng chưa phải sandbox chống adversarial container escape; production public vẫn cần hardening/remote sandbox phù hợp threat model.
 - Compose mặc định chạy `agent-core` và Python RLM worker trong cùng container;
-  Python runtime được copy từ `data-agent-backend:latest` lúc build. Chỉ khi
-  chọn `RLM_SANDBOX_PROVIDER=docker` mới cần Docker socket và hardening theo
-  threat model của môi trường deploy.
+  Python source/dependencies được build hoàn toàn từ repo này. Chỉ khi chọn
+  `RLM_SANDBOX_PROVIDER=docker` mới cần Docker socket và hardening theo threat
+  model của môi trường deploy.
 - Chạy đúng cho **1 instance** — SQLite (file-based) + session registry (in-memory) chưa hỗ trợ multi-instance/scale ngang. Cần thì đổi provider của `ctx.storage`/`ctx.sessions` (Postgres/Redis), business logic không cần sửa.
 - Chưa có rate-limiting (giả định mạng nội bộ, không phải endpoint public).
 - Tool-calling đơn giản hoá: không track `tool_call_id` round-trip chuẩn OpenAI.

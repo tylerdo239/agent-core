@@ -49,17 +49,17 @@ IDs so every score can be audited against the stored event stream and RLM trace.
 ## Runtime
 
 Start the backend with the repository's Docker Compose configuration before
-running the suite. The `agent-core` image already contains the Python runtime
-copied from `data-agent-backend:latest`; do not install Python or patch the
-container manually. See `docs/frontend-backend-handoff.md` for the exact build
-and environment contract.
+running the suite. The image builds its Python runtime from `python/` in this
+repository; do not install Python or patch the container manually. See
+`docs/frontend-backend-handoff.md` for the exact build and environment contract.
 
 ## Where the system prompt actually lives
 
 The REST server renders the RLM system prompt from markdown sections in
 `agent-core/bundles/prompts/prompt-rlm-data-agent/sections/*.md` (identity,
 repl-protocol, turn-policy, evidence-policy, human-control, completion).
-`data-agent/triadic_dgm/rlm_agent/prompt.py` is NOT used by this stack.
+`python/rlm_agent/prompt.py` is only a compatibility prompt used during core
+construction; the prepared harness turn replaces it before model execution.
 
 Two hard-won constraints when editing those sections:
 

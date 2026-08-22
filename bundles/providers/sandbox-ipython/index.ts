@@ -21,7 +21,7 @@ export namespace SandboxIpython {
   export interface Config {
     pythonBin?: string
     workerPath: string
-    dataAgentRoot: string
+    runtimeRoot: string
     agentConfig?: Record<string, unknown>
     /** Cho provider khác tái sử dụng JSONL/lifecycle bridge nhưng thay process boundary. */
     launch?: (options: LaunchOptions) => ChildProcessWithoutNullStreams
@@ -115,7 +115,7 @@ export class SandboxIpython extends SandboxService {
     const cwd = requestedCwd
     const env = {
       ...process.env,
-      RLM_DATA_AGENT_ROOT: path.resolve(this.config.dataAgentRoot),
+      RLM_RUNTIME_ROOT: path.resolve(this.config.runtimeRoot),
       RLM_AGENT_CONFIG_JSON: JSON.stringify(this.config.agentConfig ?? {}),
       RLM_WORKSPACE_ROOT: cwd,
     }

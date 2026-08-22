@@ -61,20 +61,19 @@ python3 agent-core/benchmarks/rlm/run.py                      # core suite, 8787
      one hop per iteration, answer only from observations.
    - turn-policy.md: direct path explicitly excludes real-world facts.
    - repl-protocol.md: never emit JSON-only responses; strict fence format.
-5. Environment rebuilt (see `bootstrap_env.sh`) - container had NO python/docker.
-   venv data deps now include scikit-learn/scipy/statsmodels (iris pipeline).
+5. The runtime is now built from agent-core's own `python/requirements.txt`;
+   it includes scikit-learn/scipy/statsmodels for the iris pipeline.
 
 ## Environment recovery
 
+Do not repair a running container manually. Rebuild the self-contained image:
+
 ```bash
-bash agent-core/benchmarks/rlm/bootstrap_env.sh   # idempotent, run once per fresh container
+docker compose up -d --build
 ```
 
-Covers: standalone CPython 3.12 at /opt/cpython312, rlm/.venv repair, docker
-shim at /usr/local/bin/docker (docker-shim.py), /data-agent symlink, prompt
-section sync into /app, notebook deps (numpy/pandas/pyarrow/duckdb/openpyxl),
-.env additions (RLM_SANDBOX_PROVIDER=local, RLM_PYTHON_BIN).
-docker-compose.yml now also bind-mounts the prompt sections into /app.
+Python source lives in `python/`; dependencies live in
+`python/requirements.txt`; prompt sections are copied into the image.
 
 ## Debugging
 

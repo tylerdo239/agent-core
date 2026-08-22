@@ -2,8 +2,11 @@
 # Dùng cho chỉnh sửa trực tiếp, không cần rebuild khi đổi code.
 # Chạy: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 
-ARG RLM_PYTHON_IMAGE=data-agent-backend:latest
-FROM ${RLM_PYTHON_IMAGE} AS rlm-python
+FROM python:3.11-slim-bookworm AS rlm-python
+WORKDIR /runtime
+COPY python/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
+RUN pip install --no-cache-dir -r requirements.txt
 
 FROM node:22-slim
 WORKDIR /app

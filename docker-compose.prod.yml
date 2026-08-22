@@ -1,6 +1,7 @@
 # docker-compose.prod.yml — Production override: không mount code, chạy image thuần túy
 # Chạy prod: docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
-# (Ghi đè volumes của compose gốc để bỏ mount workspace)
+# Compose base vốn không bind-mount source; override này chỉ nói rõ production
+# dùng Dockerfile chuẩn và named volume cho dữ liệu.
 
 services:
   agent-core:
@@ -8,6 +9,5 @@ services:
       dockerfile: Dockerfile
     volumes:
       - agent-core-data:/app/data
-      # KHÔNG mount ..:/workspace — code nằm trong image, không live
-      # KHÔNG mount prompts — dùng bản đã COPY trong image
+      # Không mount source/prompt — mọi runtime code đã COPY trong image.
     restart: unless-stopped

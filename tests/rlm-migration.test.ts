@@ -247,7 +247,7 @@ describe('RLM backend migration', () => {
     root.plugin(sandboxIpython, {
       pythonBin: 'python3',
       workerPath: worker,
-      dataAgentRoot: directory,
+      runtimeRoot: directory,
     })
     await settle()
     root.tools.add({
@@ -283,31 +283,26 @@ describe('RLM backend migration', () => {
 
   it('sandbox-docker mount đúng source, worker và workspace; không truyền API key', () => {
     const args = buildDockerWorkerArgs({
-      image: 'data-agent-backend:latest',
+      image: 'agent-core:latest',
       containerName: 'agent-core-rlm-s1-test',
-      workerPath: '/repo/agent-core/worker.py',
-      dataAgentRoot: '/repo/data-agent',
       workspaceRoot: '/repo/workspaces/s1',
       sessionId: 's1',
       agentConfig: { api_key: 'host-llm-bridge', programmer_model: 'qwen' },
     })
 
     expect(args.slice(0, 2)).toEqual(['run', '--rm'])
-    expect(args).toContain('/repo/data-agent:/app:ro')
-    expect(args).toContain('/repo/agent-core/worker.py:/opt/agent-core/worker.py:ro')
     expect(args).toContain('/repo/workspaces/s1:/workspaces/s1')
-    expect(args).toContain('RLM_DATA_AGENT_ROOT=/app')
+    expect(args).toContain('RLM_RUNTIME_ROOT=/app/python')
+    expect(args.at(-1)).toBe('/app/bundles/loop-drivers/loop-rlm/python/worker.py')
     expect(args).toContain('--network')
-    expect(args.at(-4)).toBe('data-agent-backend:latest')
+    expect(args.at(-4)).toBe('agent-core:latest')
     expect(args.join(' ')).not.toContain('OPENAI_API_KEY')
   })
 
   it('sandbox-docker dùng named volume thì không bind workspace host', () => {
     const args = buildDockerWorkerArgs({
-      image: 'data-agent-backend:latest',
+      image: 'agent-core:latest',
       containerName: 'agent-core-rlm-s2-test',
-      workerPath: '/repo/agent-core/worker.py',
-      dataAgentRoot: '/repo/data-agent',
       workspaceRoot: 'docker-volume://agent-core-rlm-workspace-s2',
       sessionId: 's2',
       agentConfig: {},

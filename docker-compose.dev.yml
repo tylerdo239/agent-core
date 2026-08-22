@@ -12,11 +12,10 @@ services:
       - ./seams:/app/seams
       - ./bundles:/app/bundles
       - ./src:/app/src
+      - ./python:/app/python:ro
       - ./packages:/app/packages
       - ./apps/web/src:/app/apps/web/src
       - ./apps/web/dist:/app/apps/web/dist
-      - ../data-agent:/data-agent:ro
-      - ../rlm:/workspace/Triadic_DGM/rlm:ro
       # Để prompt sections cũng live
       - ./bundles/prompts/prompt-rlm-data-agent/sections:/app/bundles/prompts/prompt-rlm-data-agent/sections:ro
     # Dev: restart thủ công, không tự restart khi crash để dễ debug

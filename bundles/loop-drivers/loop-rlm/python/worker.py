@@ -52,9 +52,14 @@ def serializable(value: Any) -> Any:
     return value
 
 
-DATA_AGENT_ROOT = Path(os.environ["RLM_DATA_AGENT_ROOT"]).resolve()
-sys.path.insert(0, str(DATA_AGENT_ROOT))
-vendor_rlm = DATA_AGENT_ROOT / "vendor" / "rlm"
+RUNTIME_ROOT = Path(
+    os.environ.get(
+        "RLM_RUNTIME_ROOT",
+        str(Path(__file__).resolve().parents[4] / "python"),
+    )
+).resolve()
+sys.path.insert(0, str(RUNTIME_ROOT))
+vendor_rlm = RUNTIME_ROOT / "vendor" / "rlm"
 if vendor_rlm.is_dir():
     sys.path.insert(0, str(vendor_rlm))
 
@@ -70,8 +75,8 @@ config = json.loads(os.environ.get("RLM_AGENT_CONFIG_JSON", "{}"))
 
 with redirect_stdout(sys.stderr):
     import rlm.core.rlm as core_rlm_module
-    import triadic_dgm.rlm_agent.agent as agent_module
-    from triadic_dgm.rlm_agent.harness_adapter import HarnessRLM
+    import rlm_agent.agent as agent_module
+    from rlm_agent.harness_adapter import HarnessRLM
     from rlm.clients.base_lm import BaseLM
     from rlm.core.types import ModelUsageSummary, UsageSummary
 
