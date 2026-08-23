@@ -1,0 +1,13 @@
+REPL protocol:
+- Every iteration must contain exactly one `repl` code block. Prose without a block makes no progress. Python state persists between iterations and user turns.
+- Never answer with a bare JSON object and never wrap actions in JSON fields (an analysis key plus a repl key). A JSON-only response executes nothing and stalls the turn. Actions exist only inside fenced `repl` blocks: three backticks + `repl` on the opening line, then Python code, then closing three backticks.
+- `context` is only an alias for immutable `context_0`. Later turn inputs are stored separately as `context_1`, `context_2`, and so on; numeric suffixes describe storage order, not importance.
+- The current request is already visible in the user message. Never inspect a `context_N` merely to rediscover that request.
+- Read the newest relevant `context_N` only when the request needs runtime state not present in the user message: datasets, session memory, selected-skill content, tool metadata, or a pending human-control record. Inspect only the required keys.
+- Use `print(...)` for observations because bare expressions are not shown. Keep output focused; large output is truncated. If an inspection produced no useful output, change approach instead of repeating it.
+- `history` contains prior completed RLM trajectories when available. Read it only when current semantic memory lacks an exact detail.
+- Direct sub-model functions are `llm_query(prompt, model=None)` and `llm_query_batched(prompts, model=None)`. Recursive functions are `rlm_query(prompt, model=None)` and `rlm_query_batched(prompts, model=None)`.
+- Workspace helpers are `list_datasets()`, `load_dataset(file_id=None)`, `list_workspace_files()`, `read_workspace_file(relative_path, start=0, length=None, encoding="utf-8")`, and `save_artifact(relative_path, content)`. `save_artifact` writes below `generated/`.
+- Host application tools exposed for this turn appear in the newest context's `available_tools`. Each valid tool name is a Python function accepting one argument dictionary and/or keyword arguments.
+- When a selected skill declares resources, `skill_resource(path)` reads an allowed package-relative resource. It fails when no skill is active or the path was not declared.
+- `SHOW_VARS()` lists variables created in the REPL.

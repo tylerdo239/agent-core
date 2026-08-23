@@ -1,0 +1,204 @@
+import { Context } from '@deepseek-ai/cordis'
+import '../../../seams/sandbox.ts'
+import '../../../seams/storage.ts'
+import '../../../seams/skill.ts'
+import '../../../seams/prompt.ts'
+import '../../../seams/workspace.ts'
+import '../../../seams/turn-memory.ts'
+import { LoopStep, LoopTurnResult, Session, TurnInput } from '../../../seams/loop.ts'
+import { SandboxEvent } from '../../../seams/sandbox.ts'
+import { prepareRlmTurn, RlmSessionState } from './protocol.ts'
+
+function number(value: unknown): number | undefined {
+  return typeof value === 'number' ? value : undefined
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
+function toStep(event: SandboxEvent): LoopStep | undefined {
+  const iteration = number(event.iteration)
+  const block = number(event.block)
+  switch (event.type) {
+    case 'turn_started':
+      return { type: 'turn_started', runId: String(event.run_id ?? ''), contextIndex: number(event.context_index) }
+    case 'iteration_started':
+    case 'iteration_completed':
+      return {
+        type: event.type,
+        iteration: iteration ?? 0,
+        depth: number(event.depth),
+        duration: number(event.duration ?? event.execution_time),
+      }
+    case 'analysis':
+      return {
+        type: 'analysis',
+        content: String(event.content ?? ''),
+        iteration,
+        decisionSummary: typeof event.decision_summary === 'string' ? event.decision_summary : undefined,
+      }
+    case 'code':
+      return { type: 'code', code: String(event.code ?? ''), iteration, block }
+    case 'observation':
+      return {
+        type: 'observation',
+        stdout: String(event.stdout ?? ''),
+        stderr: String(event.stderr ?? ''),
+        success: Boolean(event.success),
+        iteration,
+        block,
+      }
+    case 'tool_call':
+      return {
+        type: 'tool_call',
+        name: String(event.name ?? ''),
+        args: record(event.args),
+        toolUi: record(event.toolUi),
+      }
+    case 'tool_result':
+      return {
+        type: 'tool_result',
+        name: String(event.name ?? ''),
+        result: event.result,
+        toolUi: record(event.toolUi),
+      }
+    case 'subcall_result': {
+      const { type: _type, ...data } = event
+      return { type: 'subcall_result', data }
+    }
+    case 'context_usage': {
+      const { type: _type, ...data } = event
+      return { type: 'context_usage', data }
+    }
+    case 'memory_updated': {
+      const { type: _type, ...data } = event
+      return { type: 'memory_updated', data }
+    }
+    case 'human_decision': {
+      const { type: _type, ...control } = event
+      return { type: 'human_decision', control }
+    }
+    case 'final_answer':
+      return { type: 'final', content: String(event.content ?? '') }
+    case 'error':
+      return { type: 'error', message: String(event.message ?? 'RLM worker failed') }
+    default:
+      return undefined
+  }
+}
+
+export const inject = ['loop']
+
+export const apply = (ctx: Context) => {
+  ctx.loop.register('rlm', {
+    async runTurn(runCtx: Context, session: Session, input: TurnInput): Promise<LoopTurnResult> {
+      // sandbox/workspace chỉ bắt buộc với driver này, không phải với
+      // AgentRunner/loop-default. ctx.get() giữ dependency boundary ở đúng
+      // plugin cần capability và fail rõ nếu composition thiếu provider.
+      const sandbox = runCtx.get('sandbox')
+      const workspace = runCtx.get('workspace')
+      // Merge RLM harness (docs/agent-core-rlm-harness-merge-plan.md mục
+      // 4.1): capability rolling-summary theo session tách khỏi `ctx.memory`
+      // (remember/recall xuyên session/user qua TencentDB Agent Memory,
+      // Phase 25) sang seam riêng `ctx.turnMemory` — 2 khái niệm khác nhau,
+      // không ép chung 1 interface.
+      const memoryService = runCtx.get('turnMemory')
+      const prompts = runCtx.get('prompts')
+      if (!sandbox || !workspace || !memoryService || !prompts) {
+        throw new Error('loop-rlm requires sandbox, workspace, turnMemory and prompt providers')
+      }
+      const selected = input.selectedSkill ? runCtx.skills.get(input.selectedSkill) : undefined
+      if (input.selectedSkill) {
+        if (!selected || !selected.userInvocable) {
+          const available = runCtx.skills
+            .list({ userInvocableOnly: true, topLevelOnly: true })
+            .map((skill) => skill.name)
+          throw new Error(`skill "${input.selectedSkill}" is not user-invocable; available: ${available.join(', ')}`)
+        }
+      }
+
+      await sandbox.openSession(session.id, { cwd: workspace.root(session.id) })
+      const prepared = await prepareRlmTurn({
+        session,
+        input,
+        memory: memoryService,
+        workspace: await workspace.inspect(session.id),
+        skill: selected,
+        tools: runCtx.tools.list(),
+        prompts,
+      })
+      let result: Record<string, unknown> | undefined
+      let steps = 0
+      let finalContent = ''
+
+      try {
+        for await (const event of sandbox.request(session.id, 'prepared_turn', prepared as unknown as Record<string, unknown>)) {
+          if (event.type === '__result__') {
+            result = event
+            continue
+          }
+          await runCtx.storage.appendEvent(session.id, { ...event, source: 'rlm' })
+          const step = toStep(event)
+          if (step) runCtx.emit('agent/step', { sessionId: session.id, step })
+          if (event.type === 'iteration_completed') steps++
+          if (event.type === 'final_answer') finalContent = String(event.content ?? '')
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        await runCtx.storage.appendEvent(session.id, { type: 'error', source: 'rlm', message })
+        runCtx.emit('agent/step', { sessionId: session.id, step: { type: 'error', message } })
+        throw error
+      }
+
+      if (!result) throw new Error('RLM worker ended without a turn result')
+      const status = String(result.status ?? 'failed') as LoopTurnResult['status']
+      const content = String(result.answer ?? finalContent ?? '')
+      const memory = record(result.memory)
+      const state = session.extension<RlmSessionState>('loop:rlm', () => ({ contextIndex: 0, historyIndex: 0 }))
+      const contextIndex = number(memory.context_index)
+      const historyIndex = number(memory.history_index)
+      if (contextIndex !== undefined) await memoryService.recordContext(session.id, contextIndex)
+      state.contextIndex = number(memory.next_context_index) ?? state.contextIndex
+      state.historyIndex = number(memory.next_history_index) ?? state.historyIndex
+      const control = record(result.control)
+      state.pendingControl = Object.keys(control).length ? control : undefined
+      if (status !== 'failed' && Object.keys(memory).length) {
+        const contexts = await memoryService.sourceContexts(session.id, contextIndex)
+        const completed = await memoryService.completeTurn(session.id, {
+          state: String(memory.state ?? status ?? 'completed'),
+          request: String(memory.request ?? input.message),
+          outcome: memory.outcome,
+          trajectory: record(memory.trajectory),
+          contexts,
+          historyIndex,
+        })
+        const event = {
+          type: 'memory_updated',
+          source: 'rlm',
+          quality: completed.update.quality,
+          summary: completed.update.summary,
+          turn: completed.turn,
+        }
+        await runCtx.storage.appendEvent(session.id, event)
+        runCtx.emit('agent/step', {
+          sessionId: session.id,
+          step: { type: 'memory_updated', data: event },
+        })
+      }
+      if (status === 'completed') session.recordAssistant(content)
+      return {
+        content,
+        steps,
+        status,
+        control: Object.keys(control).length ? control : undefined,
+        usage: record(result.usage),
+        tracePath: typeof result.trace_path === 'string' ? result.trace_path : undefined,
+      }
+    },
+  })
+
+  ctx.logger('loop-rlm').info('activated')
+}

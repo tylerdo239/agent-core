@@ -17,13 +17,14 @@ import '../../../seams/tools.ts'
 import '../../../seams/loop.ts'
 import '../../../seams/skill.ts'
 import { MemoryEntry } from '../../../seams/memory.ts'
-import { LoopTurnResult, Session } from '../../../seams/loop.ts'
+import { LoopTurnResult, Session, TurnInput } from '../../../seams/loop.ts'
 
 export const inject = ['loop']
 
 export const apply = (ctx: Context) => {
   ctx.loop.register('default', {
-    async runTurn(runCtx: Context, session: Session, userMessage: string): Promise<LoopTurnResult> {
+    async runTurn(runCtx: Context, session: Session, input: TurnInput): Promise<LoopTurnResult> {
+      const userMessage = input.message
       // Phase 15: skill match trên ĐÚNG tin nhắn user của lượt này — driver
       // không tự ráp prompt, chỉ đưa instructions đã match vào buildPrompt()
       // (coding rule B6, xem chú thích tại seams/loop.ts).
@@ -80,7 +81,10 @@ export const apply = (ctx: Context) => {
         }
 
         const result = tool
-          ? await tool.handler(response.toolCall.args)
+          ? await runCtx.tools.invoke(response.toolCall.name, response.toolCall.args, {
+              sessionId: session.id,
+              source: 'default-loop',
+            })
           : { error: `tool "${response.toolCall.name}" not found` }
 
         await runCtx.storage.appendEvent(session.id, {

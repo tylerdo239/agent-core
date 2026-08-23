@@ -11,7 +11,7 @@
 // chat (không hiện LoginForm)".
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, render, screen } from '@testing-library/react'
-import { App } from '../src/App.tsx'
+import { App, createSessionCommand } from '../src/App.tsx'
 
 // jsdom tạo đúng HTMLDialogElement cho thẻ <dialog> nhưng KHÔNG implement
 // showModal()/close() (hỗ trợ 1 phần spec Dialog) -- cùng lý do như
@@ -33,6 +33,10 @@ afterEach(() => {
 })
 
 describe('Phase 9.4 — App smoke test', () => {
+  it('session mới của UI dùng trực tiếp RLM driver', () => {
+    expect(createSessionCommand()).toMatchObject({ type: 'create_session', driver: 'rlm' })
+  })
+
   it('render không throw; chưa đăng nhập -> hiện LoginForm', async () => {
     await act(async () => {
       render(<App />)

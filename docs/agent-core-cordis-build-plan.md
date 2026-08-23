@@ -2294,10 +2294,66 @@ kẻ tấn công, không thay thế việc đóng đúng lỗ hổng authz.
 
 **Deliverable Phase 26**: 1 doc audit đầy đủ + 1 plan rate-limiting đầy đủ
 (seam `ctx.ratelimit`, provider `ratelimit-memory`, bảng limit cụ thể theo
-endpoint, thứ tự build 6 bước). **CHƯA implement bất kỳ finding hay
-rate-limit nào** — đúng scope user yêu cầu ("lên plan" cho rate limit),
-chờ quyết định của user về việc triển khai (đặc biệt A1 đổi signature
-`ToolHandler`, ảnh hưởng mọi tool bundle hiện có).
+endpoint, thứ tự build 6 bước). Rate-limiting vẫn CHƯA implement (đúng
+scope "lên plan"). **Cập nhật (Phase 27)**: Finding A1 (đổi signature
+`ToolHandler` nhận thêm `ToolInvocationContext`, sửa `query_database`) và
+Finding A2 dạng workspace-file đã ĐƯỢC FIX THẬT — không phải chủ động làm
+riêng, mà là cơ hội tự nhiên xuất hiện lúc merge nhánh RLM harness (nhánh
+đó tự thêm `ToolInvocationContext`/`invoke()` cho mục đích khác, tận dụng
+luôn hạ tầng đó để vá đúng chỗ).
+
+---
+
+## Phase 27 — Merge nhánh `feat/rlm-harness-migration` (data-agent RLM đa lượt, Python) vào `dev` — ĐÃ MERGE, ĐÃ VERIFY DOCKER
+
+User: "fetch repo chính, xem logic nhánh rlm-harness-migration đang conflict
+chưa merge được, lên plan kết hợp vào dev" → sau đó "sửa các chỗ không phù
+hợp luôn đi và merge". Chi tiết đầy đủ (logic nhánh, flow, 21 file cả 2 bên
+cùng sửa, 13 file conflict marker thật, quyết định thiết kế, gap phát hiện
+lúc build/chạy Docker thật) ở
+[`docs/agent-core-rlm-harness-merge-plan.md`](agent-core-rlm-harness-merge-plan.md)
+— không lặp lại ở đây.
+
+Nhánh đó rẽ ra từ commit thứ 2 của repo (trước Auth/Postgres, trước Memory/
+security audit) — biến agent-core thành 1 data-agent RLM đa lượt: loop
+driver thứ 3 (`loop-rlm`) bridge sang 1 process Python persistent chạy
+core RLM thật (REPL, iteration, subcall, context compaction), 4 seam mới
+(`workspace`/`sandbox`/`prompt`/rolling-memory), ~20 skill data-science,
+`ctx.tools.invoke()` làm cổng execution chung cho cả TS lẫn Python.
+
+**2 quyết định thiết kế đã chọn** (theo khuyến nghị đã đề xuất trong plan):
+tách `ctx.turnMemory` (seam mới, rolling-summary theo session cho RLM)
+khỏi `ctx.memory` hiện có (remember/recall xuyên session/user qua
+TencentDB, Phase 25) — 2 capability khác nhau, không ép chung 1 interface;
+tách sudo/OpenCode CLI sang riêng `Dockerfile.dev`, giữ `Dockerfile` chính
+(production) không có sudo, đúng lớp phòng thủ non-root đã build từ đầu.
+
+**Sửa thêm lúc merge, không chỉ resolve text** (đúng cơ hội, không phải
+việc riêng): Finding A1 (`docs/agent-core-rate-limit-and-security-audit.md`
+— tool đọc transcript session bất kỳ) fix thật bằng cách mở rộng
+`ToolHandler` nhận `ToolInvocationContext`, `query_database` bỏ hẳn
+`sessionId` từ model, luôn dùng session THẬT của turn. Endpoint mới
+`/sessions/:id/files` (workspace file, merge từ RLM) thiếu `canAccessSession()`
+— vá cùng lúc, thêm 2 test 403 xác nhận.
+
+**2 gap thật phát hiện lúc build/chạy Docker thật** (không có trong dự
+đoán ban đầu): named volume cũ (`agent-core-data`) không ghi được với
+`AGENT_UID` mới do owner UID cũ khác — fix `chown` 1 lần, ghi chú cho ai
+upgrade từ image cũ; và bug do chính tôi gây ra lúc tách sudo — lỡ xoá
+nhầm cả các lib hệ thống (`libsqlite3-0` và tương tự) mà Python runtime
+thật sự cần (không chỉ OpenCode dùng) — phát hiện qua chạy 1 turn
+`driver: "rlm"` thật, crash `libsqlite3.so.0`, fix bằng khôi phục đúng bộ
+lib gốc.
+
+**Deliverable Phase 27: ĐÃ VERIFY THẬT** — `npm run typecheck` sạch,
+`npm test` 193/193 pass (36 file, từ 180). `docker compose build` +
+`docker compose up` — cả 3 container healthy. 1 turn RLM thật qua Python
+worker: signup → session `driver:"rlm"` → gửi "2+2 bằng mấy?" → nhận đúng
+`"content":"4"`, `status:"completed"`, `tracePath` thật; xác nhận
+`data/rlm-memory/<id>.json` (ctx.turnMemory) và `data/rlm-workspaces/<id>/`
+(ctx.workspace) được tạo đúng qua `docker exec` đọc trực tiếp filesystem.
+Security fix xác nhận sống: user B gọi `GET /sessions/<id của A>/files` →
+`403` thật qua curl. Tài khoản test dọn qua đúng `DELETE /users/:id`.
 
 ---
 
@@ -2332,6 +2388,7 @@ chờ quyết định của user về việc triển khai (đặc biệt A1 đ�
 | 24    | Auth thật nhiều người dùng: Postgres, role admin/user, admin panel — ĐÃ BUILD | User: cần module Auth quản lý user + UI, Postgres thay SQLite |
 | 25    | Tích hợp `ctx.memory` với TencentDB Agent Memory (MemoryCore) — ĐÃ BUILD | User: tập trung phần tích hợp với memory như đã plan |
 | 26    | Security audit thật (authn/authz) + plan rate-limiting — ĐÃ AUDIT | User: lên plan rate limit + kiểm tra security authn/authz các plugin |
+| 27    | Merge `feat/rlm-harness-migration` (data-agent RLM đa lượt, Python) vào `dev` — ĐÃ MERGE | User: lên plan kết hợp nhánh RLM, sau đó sửa + merge thật |
 
 ## Rủi ro cần theo dõi trong quá trình build
 

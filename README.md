@@ -4,7 +4,7 @@ Backend framework cho AI agent, build trên [`@deepseek-ai/cordis`](https://www.
 
 ## Tính năng
 
-- **Agent loop** kiểu ReAct (model ↔ tool ↔ storage), có sẵn 2 driver hot-swap được cho nhau lúc đang chạy: `loop-default` (mặc định) và `loop-planner-critic` (thêm 1 lượt tự phê bình trước khi chốt câu trả lời).
+- **Agent loop** có 3 driver: `default` (ReAct), `planner-critic`, và `rlm` (persistent RLM/IPython được chuyển từ `data-agent`).
 - **3 giao thức API dùng chung 1 core**: REST, WebSocket (stream từng bước xử lý real-time), gRPC (unary + server-streaming).
 - **Web UI React** đầy đủ: sidebar lịch sử hội thoại (resume lại session cũ), stream real-time theo từng bước, UI riêng cho từng loại tool-call (kiến trúc slot-registry mở rộng được).
 - **Tool registry** mở rộng được — sẵn 2 tool thật: tìm kiếm web (DuckDuckGo, không cần API key) và tra cứu dữ liệu đã lưu.
@@ -32,7 +32,7 @@ Backend framework cho AI agent, build trên [`@deepseek-ai/cordis`](https://www.
 Tách biệt **seam** (interface thuần, seams/) khỏi **provider** (implementation thật, bundles/) — code nghiệp vụ chỉ phụ thuộc vào interface, đổi implementation không ảnh hưởng phần còn lại của hệ thống (đổi LLM provider, đổi loop driver, đổi storage backend... đều không sửa business logic).
 
 ```
-seams/      interface thuần: llm, storage, memory, tools, permission, sandbox, subagents, skill, loop, agent, sessions, auth
+seams/      interface thuần: llm, storage, memory, turn-memory, workspace, prompt, tools, permission, sandbox, subagents, skill, loop, agent, sessions, auth
 bundles/
 ├── providers/     implement 1 seam cụ thể (ctx.<key> = instance thật)
 ├── tools/         tool đăng ký vào ctx.tools
@@ -59,6 +59,9 @@ src/serve.ts   entrypoint boot backend
 ```bash
 npm install
 ```
+
+Local development dùng Node.js 22 trở lên. Cách chạy Docker bên dưới không cần
+Node.js hay Python trên host.
 
 ### Kiểm tra
 
@@ -89,6 +92,71 @@ OPENAI_API_KEY=sk-... OPENAI_BASE_URL=... OPENAI_MODEL_ID=... DATABASE_URL=postg
 ```
 
 Mở `http://localhost:8790`, đăng ký tài khoản đầu tiên (tự động thành `admin`), chat luôn.
+
+Để dùng RLM backend, tạo session với `driver: "rlm"`. Compose mặc định chạy
+Python worker persistent ngay trong container `agent-core`; source adapter/core
+RLM nằm trong `python/` và dependencies được Dockerfile tự cài. Host không cần
+Python và không cần clone/build thêm repo nào.
+
+`RLM_SANDBOX_PROVIDER=docker` là chế độ cô lập nâng cao: mỗi session dùng một
+container/named volume riêng. Khi dùng chế độ này phải cho service truy cập
+Docker daemon và đặt `RLM_DOCKER_IMAGE` tới một image agent-core đã build.
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8787/auth/login \
+  -H 'content-type: application/json' -d '{"username":"...","password":"..."}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
+curl -X POST http://localhost:8787/sessions \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"driver":"rlm"}'
+```
+
+Request message nhận thêm `selectedSkill` và `metadata`; mọi event RLM được
+lưu qua `ctx.storage` đồng thời stream qua `agent/step`.
+
+Luồng RLM dùng contract `prepared_turn`, không để Python dựng một application
+backend thứ hai:
+
+```text
+AgentRunner → loop-rlm
+            → ctx.skills + ctx.workspace + ctx.turnMemory + ctx.tools
+            → ctx.prompts.render({ driver: 'rlm' })
+            → PreparedRlmTurn { prompt }
+            → sandbox worker → HarnessRLM → core RLM/IPython
+            ← outcome + trajectory
+            → ctx.turnMemory.completeTurn() + ctx.storage
+```
+
+RLM giữ Python REPL làm action space chính. Tool ứng dụng không được copy vào
+container: `PreparedRlmTurn` chỉ quảng bá metadata, IPython inject proxy Python
+và chuyển lời gọi `web_search(...)` qua broker → worker `__host_tool__` →
+`ctx.tools.invoke()`. Nhờ vậy permission, lifecycle, implementation và UI hint
+vẫn thuộc plugin TypeScript; dataset computation vẫn chạy local trong REPL.
+
+Skill package canonical nằm tại `bundles/skills/<name>/SKILL.md`. Hai provider
+có vai trò khác nhau: `skill-filesystem` đọc package/resource, còn
+`skill-registry` giữ catalog trong RAM và cung cấp `get()`/`readResource()`.
+Resource không được đăng ký thành skill con. Với RLM, entrypoint của selected
+skill đi trong `PreparedRlmTurn`; `skill_resource("references/...")` đọc lazy
+qua worker → `ctx.skills.readResource()`. Có thể override catalog root bằng
+`RLM_SKILLS_ROOT`; Python `skill_registry.py` chỉ còn là compatibility code bên
+trong runtime vendored và không sở hữu catalog của harness.
+
+`bundles/loop-drivers/loop-rlm/protocol.ts` là nơi duy nhất dựng context gửi
+sang Python. `HarnessRLM` không tự load selected skill và không persist memory;
+worker chỉ bridge model call về `ctx.llm`. `RLMDataAgent.stream_turn()` vẫn còn
+trong `python/rlm_agent` như compatibility path, nhưng plugin không gọi đường
+này. Vì vậy có thể thay skill/memory/workspace provider mà không sửa core
+RLM. Notebook execution, RLM subcall, compaction và human-control hook vẫn nằm
+trong Python vì chúng gắn trực tiếp với lifecycle của core RLM.
+
+Prompt của active RLM harness thuộc TypeScript: `prompt-registry` ghép các
+section `{ name, order, text }`; base RLM/data/control policy thuộc
+`bundles/prompts/prompt-rlm-data-agent`, còn mỗi tool plugin tự sở hữu section
+guidance của nó. Mỗi `PreparedRlmTurn` chỉ mang **một** `prompt` đã render và
+version hash để trace. Request, memory snapshot, selected skill và tool metadata
+chỉ nằm trong `context_N`, không bị copy vào system prompt. Python gọi
+`set_system_prompt(prompt)`; `prompt.py`, `_build_root_prompt()` chỉ còn phục vụ
+compatibility path `RLMDataAgent.stream_turn()`.
 
 Dev nhanh cho riêng UI (hot reload, không cần build lại mỗi lần sửa):
 
@@ -122,11 +190,12 @@ Dữ liệu hội thoại (`data/sessions.db`) lưu trên volume `agent-core-dat
 
 ## Giới hạn hiện tại
 
-- `ctx.memory` đã có provider thật (`memory-tencentdb`, TÙY CHỌN — xem `docs/agent-core-memory-integration-plan.md`), đã verify end-to-end qua `docker compose up --build` thật (3 container) + 1 lượt remember→recall thật qua curl (nêu 1 sự thật ở tin nhắn 1, model tự nhớ lại đúng ở tin nhắn 2 — cô lập đúng theo từng user, không rò rỉ giữa các user). `ctx.sandbox` vẫn mới có interface (`seams/`), chưa có provider thật.
+- `ctx.memory` đã có provider thật (`memory-tencentdb`, TÙY CHỌN — xem `docs/agent-core-memory-integration-plan.md`), đã verify end-to-end qua `docker compose up --build` thật (3 container) + 1 lượt remember→recall thật qua curl (nêu 1 sự thật ở tin nhắn 1, model tự nhớ lại đúng ở tin nhắn 2 — cô lập đúng theo từng user, không rò rỉ giữa các user). `ctx.turnMemory` (rolling summary theo session cho `loop-rlm`, KHÁC `ctx.memory` — xem `docs/agent-core-rlm-harness-merge-plan.md` mục 4.1) có provider `memory-rolling`.
+- `sandbox-docker`/`sandbox-ipython` cô lập process/filesystem/network cơ bản, nhưng chưa phải sandbox chống adversarial container escape; production public vẫn cần hardening/remote sandbox phù hợp threat model. Compose mặc định chạy `agent-core` và Python RLM worker trong cùng container; Python source/dependencies được build hoàn toàn từ repo này. Chỉ khi chọn `RLM_SANDBOX_PROVIDER=docker` mới cần Docker socket và hardening theo threat model của môi trường deploy.
 - Chạy đúng cho **1 instance** cho phần event-log/session — SQLite (file-based) + session registry (in-memory) chưa hỗ trợ multi-instance/scale ngang. Cần thì đổi provider của `ctx.storage`/`ctx.sessions` (Postgres/Redis), business logic không cần sửa. Riêng `ctx.auth` đã dùng Postgres sẵn (tự chọn cho module này khi build).
 - `GET /sessions` chỉ liệt kê session còn "sống" trong session-registry (in-memory, TTL trượt, mất khi restart) — **không phải** kho lưu lịch sử vĩnh viễn. Transcript vẫn còn trong SQLite (`ctx.storage`) nếu nhớ đúng session id, nhưng không được liệt kê lại sau khi session hết TTL/restart.
 - Chưa có rate-limiting — trước đây chấp nhận được vì không có endpoint public nào không cần key; giờ `POST /auth/signup`/`/auth/login` là 2 endpoint public thật đầu tiên (chỉ cần username/password, không cần token trước), brute-force là bề mặt tấn công mới chưa có giới hạn tần suất. Plan cụ thể (seam `ctx.ratelimit`, số/endpoint) ở `docs/agent-core-rate-limit-and-security-audit.md`.
-- **Audit security thật đã chạy, còn 2 finding mức CAO chưa xử lý** (xem `docs/agent-core-rate-limit-and-security-audit.md`): (1) tool `query_database` đọc được transcript của BẤT KỲ session nào qua tool-call, không check ownership (bỏ qua lớp bảo vệ đã có ở REST/WS/gRPC); (2) session storage (SQLite) không có khái niệm chủ sở hữu, kết hợp việc REST/gRPC cho phép client tự chọn session id — 1 user có thể "nhận" lại id đã hết TTL của user khác và đọc transcript cũ của họ.
+- **Audit security thật đã chạy** (xem `docs/agent-core-rate-limit-and-security-audit.md`) — Finding A1 (tool đọc transcript session bất kỳ, kể cả qua workspace file) đã fix lúc merge nhánh RLM harness (xem `docs/agent-core-rlm-harness-merge-plan.md` mục 3.1/3.2). Còn mở: session storage (SQLite) không có khái niệm chủ sở hữu — 1 user có thể "nhận" lại id session đã hết TTL của user khác và đọc transcript cũ của họ (Finding A2).
 - Tool-calling đơn giản hoá: không track `tool_call_id` round-trip chuẩn OpenAI.
 
 ## Tài liệu thêm
@@ -139,3 +208,6 @@ Lịch sử build chi tiết (thiết kế, đánh đổi, bug thật phát hi�
 - [`docs/agent-core-ui-architecture.md`](docs/agent-core-ui-architecture.md) — cách chia package Web UI (mirror cấu trúc dsh), quy ước scaffold package mới
 - [`docs/agent-core-memory-integration-plan.md`](docs/agent-core-memory-integration-plan.md) — plan tích hợp TencentDB Agent Memory vào `ctx.memory` (đã build + đã verify end-to-end thật qua Docker — xem Phase 25 trong build-plan)
 - [`docs/agent-core-rate-limit-and-security-audit.md`](docs/agent-core-rate-limit-and-security-audit.md) — audit security thật (authn/authz toàn bộ plugin, file:line + kịch bản khai thác cụ thể) + plan rate-limiting (seam `ctx.ratelimit` mới, chưa implement — xem Phase 26 trong build-plan)
+- [`docs/agent-core-rlm-harness-merge-plan.md`](docs/agent-core-rlm-harness-merge-plan.md) — merge RLM harness (data-agent Python đa lượt) vào `dev`: logic/flow, quyết định thiết kế, gap thật phát hiện lúc merge
+- [`docs/system-architecture.md`](docs/system-architecture.md) — kiến trúc RLM harness (loop-rlm/sandbox/workspace/prompt), request flow, ownership và tác dụng từng folder/file quan trọng
+- [`docs/frontend-backend-handoff.md`](docs/frontend-backend-handoff.md) — contract REST/WebSocket/workspace và checklist bàn giao cho đội frontend

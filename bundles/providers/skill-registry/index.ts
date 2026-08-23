@@ -7,17 +7,17 @@
 // skill tự gỡ khi fiber đăng ký nó unload, tự đăng ký lại khi fiber đó
 // active lại, đúng spatial composability không cần code thủ công thêm.
 import { Context } from '@deepseek-ai/cordis'
-import { SkillDefinition, SkillRegistryService } from '../../../seams/skill.ts'
+import { SkillDefinition, SkillListOptions, SkillRegistryService, SkillResourceReader } from '../../../seams/skill.ts'
 
 export class SkillRegistry extends SkillRegistryService {
-  private skills = new Map<string, SkillDefinition>()
+  private skills = new Map<string, { definition: SkillDefinition; readResource?: SkillResourceReader }>()
 
-  register(def: SkillDefinition) {
+  register(def: SkillDefinition, readResource?: SkillResourceReader) {
     this.ctx.effect(() => {
       if (this.skills.has(def.name)) {
         throw new Error(`skill "${def.name}" already registered`)
       }
-      this.skills.set(def.name, def)
+      this.skills.set(def.name, { definition: def, readResource })
       this.ctx.logger('skill-registry').info('registered skill "%s"', def.name)
       return () => {
         this.skills.delete(def.name)
@@ -27,15 +27,18 @@ export class SkillRegistry extends SkillRegistryService {
   }
 
   get(name: string) {
-    return this.skills.get(name)
+    return this.skills.get(name)?.definition
   }
 
   has(name: string) {
     return this.skills.has(name)
   }
 
-  list() {
-    return [...this.skills.values()]
+  list(options: SkillListOptions = {}) {
+    return [...this.skills.values()].map((entry) => entry.definition).filter((skill) => {
+      if (options.userInvocableOnly && !skill.userInvocable) return false
+      return true
+    })
   }
 
   match(userMessage: string) {
@@ -43,6 +46,15 @@ export class SkillRegistry extends SkillRegistryService {
     return this.list().filter((skill) =>
       skill.triggers.some((trigger) => haystack.includes(trigger.toLowerCase())),
     )
+  }
+
+  async readResource(skillName: string, resourcePath: string) {
+    const entry = this.skills.get(skillName)
+    if (!entry) throw new Error(`skill "${skillName}" not found`)
+    const resource = entry.definition.resources?.find((item) => item.path === resourcePath)
+    if (!resource) throw new Error(`resource "${resourcePath}" not found in skill "${skillName}"`)
+    if (!entry.readResource) throw new Error(`skill "${skillName}" has no resource reader`)
+    return entry.readResource(resourcePath)
   }
 }
 

@@ -1,0 +1,78 @@
+{
+  "suite": "skills-v1",
+  "description": "Skill harness audit: 12 scenarios covering 11 core skills. Each case explicitly selects a skill to verify it is visible, invocable, and improves the workflow.",
+  "cases": [
+    {
+      "id": "skill_analyze_simple_lookup",
+      "skill": "analyze",
+      "datasets": ["retail_sales.csv"],
+      "turns": [{"message": "/analyze Total revenue for East region in retail_sales.csv? Report the sum.", "checks": {"numeric_answers": [{"value": 40339, "tolerance": 500}], "max_iterations": 5}}]
+    },
+    {
+      "id": "skill_explore_data_profile",
+      "skill": "explore-data",
+      "datasets": ["customers_messy.csv"],
+      "turns": [{"message": "/explore-data Profile customers_messy.csv: report row count, column types, and top quality issue.", "checks": {"answer_any": ["92", "missing", "duplicate"], "max_iterations": 6}}]
+    },
+    {
+      "id": "skill_validate_data_qa",
+      "skill": "validate-data",
+      "datasets": ["retail_sales.csv"],
+      "turns": [{"message": "/validate-data QA retail_sales.csv for methodology: check for missing values, outliers in revenue, and aggregation reconciliation.", "checks": {"answer_any": ["revenue", "missing"], "max_iterations": 6}}]
+    },
+    {
+      "id": "skill_data_scientist_e2e",
+      "skill": "data-scientist",
+      "datasets": ["credit_applications.csv"],
+      "turns": [{"message": "/data-scientist Run a rigorous end-to-end workflow on credit_applications.csv: from problem framing through modeling to predict defaulted, with validation and report.", "checks": {"answer_any": ["accuracy", "model"], "max_iterations": 8}}]
+    },
+    {
+      "id": "skill_pandas_expert_clean",
+      "skill": "analyze",
+      "datasets": ["customers_messy.csv"],
+      "turns": [{"message": "/pandas-expert Clean customers_messy.csv: deduplicate, fix email casing, and show cleaned shape.", "checks": {"numeric_answers": [{"value": 80, "tolerance": 0}], "max_iterations": 6}}]
+    },
+    {
+      "id": "skill_sql_to_insights",
+      "skill": "analyze",
+      "datasets": ["retail_sales.csv"],
+      "turns": [{"message": "/sql-to-insights Use DuckDB to query retail_sales.csv: which category has highest total revenue? Provide SQL and result.", "checks": {"answer_any": ["clothing"], "max_iterations": 6}}]
+    },
+    {
+      "id": "skill_data_quality_audit",
+      "skill": "validate-data",
+      "datasets": ["customers_messy.csv"],
+      "turns": [{"message": "/data-quality-audit Audit customers_messy.csv for nulls, duplicates, and freshness. List rule violations.", "checks": {"answer_any": ["duplicate", "null", "missing"], "max_iterations": 6}}]
+    },
+    {
+      "id": "skill_ml_feature_engineering",
+      "skill": "data-scientist",
+      "datasets": ["credit_applications.csv"],
+      "turns": [{"message": "/ml-feature-engineering On credit_applications.csv, engineer leakage-safe features for defaulted prediction and describe preprocessing.", "checks": {"answer_any": ["feature", "leakage", "scale"], "max_iterations": 6}}]
+    },
+    {
+      "id": "skill_scikit_learn_ml",
+      "skill": "data-scientist",
+      "datasets": ["house_prices.csv"],
+      "turns": [{"message": "/scikit-learn-machine-learning Train a regression model on house_prices.csv (sqft, bedrooms, age -> price) with cross-validation and report best score.", "checks": {"answer_any": ["r2", "score", "regression"], "max_iterations": 7}}]
+    },
+    {
+      "id": "skill_time_series",
+      "skill": "analyze",
+      "datasets": ["sensor_temp.csv"],
+      "turns": [{"message": "/time-series-analysis Analyze sensor_temp.csv for trend, seasonality, and anomalies. Summarize findings.", "checks": {"answer_any": ["trend", "season", "anomaly"], "max_iterations": 6}}]
+    },
+    {
+      "id": "skill_cohort",
+      "skill": "analyze",
+      "datasets": ["retail_sales.csv"],
+      "turns": [{"message": "/cohort-analysis Do a cohort analysis on retail_sales.csv grouped by region over time. Describe retention/behavior.", "checks": {"answer_any": ["cohort", "region"], "max_iterations": 6}}]
+    },
+    {
+      "id": "skill_funnel",
+      "skill": "analyze",
+      "datasets": ["marketing_campaign.csv"],
+      "turns": [{"message": "/funnel-analysis Analyze marketing_campaign.csv as a funnel: spend -> clicks -> conversions. Report drop-off.", "checks": {"answer_any": ["funnel", "conversion", "drop"], "max_iterations": 6}}]
+    }
+  ]
+}

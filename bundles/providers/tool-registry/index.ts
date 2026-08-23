@@ -9,7 +9,7 @@
 // dependency), và tự đăng ký lại khi fiber đó active lại — đúng spatial
 // composability, không cần code thủ công nào khác ở phía tool.
 import { Context } from '@deepseek-ai/cordis'
-import { ToolDefinition, ToolRegistryService } from '../../../seams/tools.ts'
+import { ToolDefinition, ToolInvocationContext, ToolRegistryService } from '../../../seams/tools.ts'
 
 export class ToolRegistry extends ToolRegistryService {
   private tools = new Map<string, ToolDefinition>()
@@ -38,6 +38,17 @@ export class ToolRegistry extends ToolRegistryService {
 
   list() {
     return [...this.tools.values()]
+  }
+
+  // Finding A1 (docs/agent-core-rate-limit-and-security-audit.md) fix:
+  // `context` PHẢI truyền xuống handler -- bản gốc RLM nhận rồi bỏ, khiến
+  // tool không có cách nào biết session/nguồn gọi thật, phải tin dữ liệu
+  // model tự cho trong `args` (query_database từng đọc args.sessionId --
+  // đọc được transcript BẤT KỲ session nào, xem tool-database-query).
+  async invoke(name: string, args: Record<string, unknown>, context: ToolInvocationContext) {
+    const tool = this.tools.get(name)
+    if (!tool) throw new Error(`tool "${name}" not found`)
+    return tool.handler(args, context)
   }
 }
 

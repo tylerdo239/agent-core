@@ -11,7 +11,16 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-export type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>
+// Merge RLM harness (xem docs/agent-core-rate-limit-and-security-audit.md
+// Finding A1 + docs/agent-core-rlm-harness-merge-plan.md mục 3.2/7.3): bản
+// gốc RLM thêm `ToolInvocationContext` (sessionId/source) qua `invoke()`
+// nhưng KHÔNG truyền xuống handler -- tool nào tự đọc `sessionId` từ
+// `args` (model tự cho) thay vì context CHỦ ĐỘNG bị đọc BẤT KỲ session nào,
+// không phải giả thuyết (xem tool-database-query, đã sửa cùng lúc với thay
+// đổi này). `context` bắt buộc (không optional) -- mọi lời gọi tool ĐỀU đi
+// qua `ToolRegistryService.invoke()`, không còn cách nào gọi handler mà
+// thiếu context.
+export type ToolHandler = (args: Record<string, unknown>, context: ToolInvocationContext) => Promise<unknown>
 
 /**
  * Phase 8.5 — metadata hiển thị THUẦN (không phải logic nghiệp vụ), để
@@ -36,6 +45,11 @@ export interface ToolDefinition {
   ui?: ToolUiHint
 }
 
+export interface ToolInvocationContext {
+  sessionId: string
+  source: 'default-loop' | 'planner-critic' | 'rlm' | 'subagent'
+}
+
 export abstract class ToolRegistryService extends Service {
   constructor(ctx: Context) {
     super(ctx, 'tools')
@@ -51,4 +65,10 @@ export abstract class ToolRegistryService extends Service {
   abstract get(name: string): ToolDefinition | undefined
   abstract has(name: string): boolean
   abstract list(): ToolDefinition[]
+  /** Điểm execution duy nhất cho mọi loop/runtime bridge. */
+  abstract invoke(
+    name: string,
+    args: Record<string, unknown>,
+    context: ToolInvocationContext,
+  ): Promise<unknown>
 }

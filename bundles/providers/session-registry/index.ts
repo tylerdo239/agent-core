@@ -48,7 +48,13 @@ export class SessionRegistry extends SessionRegistryService {
   [Service.init]() {
     const sweepIntervalMs = this.config.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS
     const interval = setInterval(() => this.sweepExpired(Date.now()), sweepIntervalMs)
-    return () => clearInterval(interval)
+    return () => {
+      clearInterval(interval)
+      for (const id of this.entries.keys()) {
+        this.ctx.emit('session/disposed', { id, reason: 'provider_disposed' })
+      }
+      this.entries.clear()
+    }
   }
 
   create(opts: CreateSessionOptions = {}) {
@@ -58,6 +64,7 @@ export class SessionRegistry extends SessionRegistryService {
     }
     const session = new Session(id, opts.maxSteps ?? 8, opts.systemPrompt, opts.driver ?? 'default', opts.maxHistoryMessages, opts.ownerId)
     this.entries.set(id, { session, lastActiveAt: Date.now() })
+    this.ctx.emit('session/created', session)
     this.ctx.logger('session-registry').info('created session "%s" (driver=%s)', id, session.driver)
     return session
   }
@@ -74,7 +81,9 @@ export class SessionRegistry extends SessionRegistryService {
   }
 
   remove(id: string) {
-    return this.entries.delete(id)
+    const removed = this.entries.delete(id)
+    if (removed) this.ctx.emit('session/disposed', { id, reason: 'removed' })
+    return removed
   }
 
   /** Gọi từ sweep định kỳ (xem `apply`) — không phải API public của seam. */
@@ -82,6 +91,7 @@ export class SessionRegistry extends SessionRegistryService {
     for (const [id, entry] of this.entries) {
       if (now - entry.lastActiveAt > this.ttlMs) {
         this.entries.delete(id)
+        this.ctx.emit('session/disposed', { id, reason: 'expired' })
         this.ctx.logger('session-registry').info('sweep: removed expired session "%s" (idle > %dms)', id, this.ttlMs)
       }
     }

@@ -33,19 +33,32 @@
 // trường tương ứng nếu muốn dùng lại, không cần sửa gì khác (đúng tinh thần
 // spatial composability: đổi provider của 1 seam không ảnh hưởng phần còn
 // lại của hệ thống).
+import path from 'node:path'
+import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { Context, Logger } from '@deepseek-ai/cordis'
+import { parseJsonObjectEnv } from './env.ts'
 import * as toolRegistry from '../bundles/providers/tool-registry/index.ts'
 import * as stateSqlite from '../bundles/providers/state-sqlite/index.ts'
 import * as permissionRbac from '../bundles/providers/permission-rbac/index.ts'
 import * as llmQwen from '../bundles/providers/llm-qwen/index.ts'
 import * as subagentManager from '../bundles/providers/subagent-manager/index.ts'
 import * as skillRegistry from '../bundles/providers/skill-registry/index.ts'
+import * as skillFilesystem from '../bundles/providers/skill-filesystem/index.ts'
+import * as promptRegistry from '../bundles/providers/prompt-registry/index.ts'
+import * as promptRlmDataAgent from '../bundles/prompts/prompt-rlm-data-agent/index.ts'
+import * as memoryRolling from '../bundles/providers/memory-rolling/index.ts'
+import * as workspaceLocal from '../bundles/providers/workspace-local/index.ts'
+import * as workspaceDocker from '../bundles/providers/workspace-docker/index.ts'
+import * as sandboxIpython from '../bundles/providers/sandbox-ipython/index.ts'
+import * as sandboxDocker from '../bundles/providers/sandbox-docker/index.ts'
 // skill-support-tone: ví dụ #1 cho ctx.skills — chèn hướng dẫn giọng văn hỗ
 // trợ khi tin nhắn user có dấu hiệu khiếu nại/sự cố. Xem bundles/skills/
 // skill-support-tone cho danh sách trigger + nội dung instructions đầy đủ.
 import * as skillSupportTone from '../bundles/skills/skill-support-tone/index.ts'
 import * as loopRegistry from '../bundles/providers/loop-registry/index.ts'
 import * as loopDefault from '../bundles/loop-drivers/loop-default/index.ts'
+import * as loopRlm from '../bundles/loop-drivers/loop-rlm/index.ts'
 import * as agentRunner from '../bundles/providers/agent-runner/index.ts'
 import * as toolDatabaseQuery from '../bundles/tools/tool-database-query/index.ts'
 // tool-web-search: search thật qua DuckDuckGo HTML endpoint (không cần API
@@ -59,6 +72,16 @@ import * as apiRest from '../bundles/adapters/api-rest/index.ts'
 import * as apiWs from '../bundles/adapters/api-ws/index.ts'
 import * as apiGrpc from '../bundles/adapters/api-grpc/index.ts'
 import * as webUi from '../bundles/adapters/web-ui/index.ts'
+
+const agentCoreRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const localEnvPath = path.join(agentCoreRoot, '.env')
+if (existsSync(localEnvPath)) {
+  // `npm run serve` phải tự đủ: đọc đúng config thuộc agent-core, không yêu
+  // cầu user source file của repo khác. Environment đã export vẫn giữ
+  // precedence theo hành vi chuẩn của process.loadEnvFile().
+  process.loadEnvFile(localEnvPath)
+  console.log(`[config] loaded ${localEnvPath}`)
+}
 
 function requireEnv(name: string): string {
   const value = process.env[name]
@@ -89,18 +112,19 @@ function optionalBoolean(name: string): boolean | undefined {
 function optionalJsonObject(name: string): Record<string, unknown> | undefined {
   const raw = process.env[name]
   if (!raw) return undefined
-  let parsed: unknown
   try {
-    parsed = JSON.parse(raw)
+    const parsed = parseJsonObjectEnv(raw)
+    if (parsed.repaired) {
+      console.warn(
+        `WARN: env var ${name} bị shell bỏ dấu nháy quanh JSON keys; `
+        + 'đã sửa an toàn. Không dùng source/export-xargs để nạp file .env.',
+      )
+    }
+    return parsed.value
   } catch (err: any) {
     console.error(`FATAL: env var ${name} phải là JSON hợp lệ — lỗi parse: ${err.message}`)
     process.exit(1)
   }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    console.error(`FATAL: env var ${name} phải là JSON object (vd. {"key":"value"}), nhận được: ${raw}`)
-    process.exit(1)
-  }
-  return parsed as Record<string, unknown>
 }
 
 // Module memory (ctx.memory, TÙY CHỌN — xem
@@ -182,12 +206,23 @@ async function main() {
   // Module auth (nhiều người dùng thật): API_KEYS dùng chung đã bị THAY THẾ
   // hoàn toàn bằng tài khoản Postgres (đăng ký/đăng nhập, xem bundles/
   // providers/auth-users) — không còn env var nào cần thiết lập trước cho
-  // auth, tài khoản tạo qua POST /auth/signup lúc chạy.
+  // auth, tài khoản tạo qua POST /auth/signup lúc chạy. Merge RLM harness:
+  // `auth-apikey`/`API_KEYS` bị XOÁ HẲN (xem
+  // docs/agent-core-rlm-harness-merge-plan.md mục 4.2) — nhánh RLM rẽ ra
+  // trước khi module auth Postgres tồn tại nên chưa từng biết auth-users.
   const databaseUrl = requireEnv('DATABASE_URL')
+  // Parse một lần tại composition root rồi truyền cùng một giá trị chuẩn
+  // cho host LLM và Docker/RLM worker.
+  const openaiExtraBody = optionalJsonObject('OPENAI_EXTRA_BODY')
 
   const root = new Context()
+  const rlmRuntimeRoot = path.resolve(process.env.RLM_RUNTIME_ROOT ?? path.join(agentCoreRoot, 'python'))
+  const workspaceBase = path.resolve(process.env.RLM_WORKSPACE_BASE ?? path.join(agentCoreRoot, 'data', 'rlm-workspaces'))
+  const rlmWorkerPath = path.join(agentCoreRoot, 'bundles', 'loop-drivers', 'loop-rlm', 'python', 'worker.py')
+  const rlmSandboxProvider = process.env.RLM_SANDBOX_PROVIDER ?? 'local'
 
   const exporter = {
+    levels: { default: Number(process.env.LOG_LEVEL ?? 1) },
     export: (message: Parameters<typeof Logger.format>[1]) => {
       const line = `[${message.name}] ${Logger.format(exporter, message)}`
       if (message.type === 'error') console.error(line)
@@ -224,7 +259,7 @@ async function main() {
     // toàn (shallow merge, không deep-merge), OPENAI_ENABLE_THINKING bị lờ
     // đi. Đặt field enable_thinking đúng NGAY TRONG OPENAI_EXTRA_BODY nếu
     // dùng cả 2, tránh set khác giá trị nhau ở 2 chỗ.
-    extraBody: optionalJsonObject('OPENAI_EXTRA_BODY'),
+    extraBody: openaiExtraBody,
     // Phase 8.3: retry cho lỗi transient (network/429/5xx) — không retry
     // 4xx khác (auth/request sai, fail y hệt lần nữa).
     maxRetries: optionalNumber('OPENAI_MAX_RETRIES'),
@@ -233,8 +268,24 @@ async function main() {
   root.plugin(subagentManager)
   root.plugin(skillRegistry)
   root.plugin(skillSupportTone)
+  root.plugin(skillFilesystem, {
+    root: process.env.RLM_SKILLS_ROOT ?? path.join(agentCoreRoot, 'bundles', 'skills'),
+  })
+  root.plugin(promptRegistry)
+  root.plugin(promptRlmDataAgent)
+  root.plugin(memoryRolling, {
+    basePath: process.env.RLM_MEMORY_PATH ?? path.join(agentCoreRoot, 'data', 'rlm-memory'),
+  })
+  if (rlmSandboxProvider === 'local') {
+    root.plugin(workspaceLocal, { basePath: workspaceBase })
+  } else {
+    root.plugin(workspaceDocker, {
+      volumePrefix: process.env.RLM_DOCKER_VOLUME_PREFIX ?? 'agent-core-rlm-workspace',
+    })
+  }
   root.plugin(loopRegistry)
   root.plugin(loopDefault)
+  root.plugin(loopRlm)
   // Muốn hot-swap sang loop-planner-critic khi đang chạy: KHÔNG mount cả 2
   // cùng lúc (cùng đăng ký tên 'default', mount lần 2 sẽ throw "already
   // registered") — dispose fiber loop-default trước, đúng pattern
@@ -274,6 +325,51 @@ async function main() {
     console.log('MEMORY_CORE_URL không được set — bỏ qua module memory (ctx.memory không mount, tuỳ chọn).')
   }
 
+  // RLM harness (ctx.turnMemory đã mount qua memoryRolling ở trên, TÁCH
+  // KHỎI ctx.memory — xem docs/agent-core-rlm-harness-merge-plan.md mục
+  // 4.1): sandbox process bridge cho loop-rlm.
+  const rlmAgentConfig = {
+    // Model calls được worker bridge ngược về ctx.llm; không đưa API key vào
+    // environment/argv của container RLM.
+    api_key: 'host-llm-bridge',
+    base_url_programmer: '',
+    programmer_model: openaiModelId,
+    rlm: {
+      environment: process.env.RLM_ENVIRONMENT ?? 'ipython',
+      kernel_mode: process.env.RLM_KERNEL_MODE ?? 'subprocess',
+      max_iterations: optionalNumber('RLM_MAX_ITERATIONS') ?? 8,
+      max_depth: optionalNumber('RLM_MAX_DEPTH') ?? 1,
+      max_timeout: optionalNumber('RLM_MAX_TIMEOUT') ?? 300,
+      cell_timeout: optionalNumber('RLM_CELL_TIMEOUT') ?? 300,
+      max_errors: optionalNumber('RLM_MAX_ERRORS') ?? 5,
+      max_concurrent_subcalls: optionalNumber('RLM_MAX_CONCURRENT_SUBCALLS') ?? 4,
+      compaction_threshold_pct: optionalNumber('RLM_COMPACTION_THRESHOLD_PCT') ?? 0.8,
+      model_context_tokens: optionalNumber('RLM_MODEL_CONTEXT_TOKENS') ?? 30_000,
+      max_output_tokens: optionalNumber('RLM_MAX_OUTPUT_TOKENS') ?? 2_048,
+      sub_max_output_tokens: optionalNumber('RLM_SUB_MAX_OUTPUT_TOKENS') ?? 4_096,
+      memory_max_output_tokens: optionalNumber('RLM_MEMORY_MAX_OUTPUT_TOKENS') ?? 1_200,
+    },
+  }
+  if (rlmSandboxProvider === 'local') {
+    root.plugin(sandboxIpython, {
+      pythonBin: process.env.RLM_PYTHON_BIN,
+      workerPath: rlmWorkerPath,
+      runtimeRoot: rlmRuntimeRoot,
+      agentConfig: rlmAgentConfig,
+    })
+  } else {
+    root.plugin(sandboxDocker, {
+      dockerBin: process.env.RLM_DOCKER_BIN,
+      image: process.env.RLM_DOCKER_IMAGE ?? 'agent-core:latest',
+      agentConfig: rlmAgentConfig,
+      networkDisabled: optionalBoolean('RLM_DOCKER_NETWORK_DISABLED') ?? true,
+      memory: process.env.RLM_DOCKER_MEMORY,
+      cpus: optionalNumber('RLM_DOCKER_CPUS'),
+      pidsLimit: optionalNumber('RLM_DOCKER_PIDS_LIMIT'),
+      removeWorkspaceVolumeOnClose: optionalBoolean('RLM_DOCKER_REMOVE_VOLUME_ON_CLOSE') ?? true,
+      extraBody: openaiExtraBody ? JSON.stringify(openaiExtraBody) : undefined,
+    })
+  }
   root.plugin(toolDatabaseQuery)
   root.plugin(toolWebSearch, {
     // Audit fix: trước đây không có timeout, fetch() có thể treo cả turn vô

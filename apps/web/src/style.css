@@ -66,3 +66,293 @@ button:disabled {
     scroll-behavior: auto !important;
   }
 }
+
+.tool-row[data-state='ok'] .tool-row-header,
+.tool-row[data-state='error'] .tool-row-header {
+  cursor: pointer;
+}
+
+.tool-row-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.tool-row-icon-error {
+  color: var(--alias-state-error);
+}
+
+.tool-row-title {
+  flex-shrink: 0;
+  color: var(--alias-label-primary);
+  font-weight: 600;
+}
+
+.tool-row-sep {
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.tool-row-summary {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+}
+
+.tool-row[data-state='error'] .tool-row-summary {
+  color: var(--alias-state-error);
+}
+
+.tool-row-chevron {
+  flex-shrink: 0;
+  opacity: 0.5;
+  transition: transform 0.15s;
+}
+
+.tool-row-chevron-open {
+  transform: rotate(90deg);
+}
+
+.tool-row-body {
+  padding: 10px 14px;
+  border: 1px solid var(--alias-border-default);
+  border-top: none;
+  border-radius: 0 0 10px 10px;
+  background: var(--alias-bg-base);
+}
+
+/* Danh sách "nguồn tham khảo" đánh số — mirror WebBlock thật của dsh: <ol>
+   đơn giản (link + snippet), KHÔNG dùng card/favicon dạng lưới. */
+.tool-sources {
+  margin: 0;
+  padding-left: 1.8em;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.tool-source-link {
+  color: var(--alias-accent);
+  font-size: 13.5px;
+  word-break: break-word;
+}
+
+.tool-source-link:hover {
+  text-decoration: underline;
+}
+
+.tool-source-snippet {
+  margin-top: 2px;
+  color: var(--alias-label-secondary);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+/* Card IN/OUT chung cho các tool không có card riêng (query_database...). */
+.tool-io {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+}
+
+.tool-io-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.tool-io-label {
+  flex-shrink: 0;
+  width: 26px;
+  color: var(--alias-label-secondary);
+  font-weight: 600;
+}
+
+.tool-io-text {
+  min-width: 0;
+  color: var(--alias-label-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg-error {
+  align-self: stretch;
+  background: #fdeeee;
+  border: 1px solid var(--alias-state-error);
+  color: var(--alias-state-error);
+  font-size: 13px;
+}
+
+.msg-system {
+  align-self: center;
+  color: var(--alias-label-secondary);
+  font-size: 12px;
+}
+
+#workspace-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--alias-border-default);
+  background: var(--alias-bg-subtle);
+  font-size: 12.5px;
+}
+.workspace-bar-left { display: flex; gap: 10px; align-items: center; }
+.workspace-bar-title { font-weight: 600; }
+.workspace-bar-count { color: var(--alias-label-secondary); }
+.workspace-bar-actions { display: flex; gap: 6px; }
+#workspace-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--alias-border-default);
+  background: var(--alias-bg-base);
+  max-height: 96px;
+  overflow-y: auto;
+}
+.workspace-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--alias-border-default);
+  border-radius: 6px;
+  background: var(--alias-bg-subtle);
+  font-size: 12px;
+  color: var(--alias-label-primary);
+  text-decoration: none;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: inherit;
+  cursor: pointer;
+}
+.workspace-file strong { overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.workspace-file:hover { border-color: var(--alias-accent); }
+.workspace-file-size { color: var(--alias-label-secondary); font-size: 11px; }
+.workspace-file-output { border-style: dashed; border-color: var(--alias-state-success); }
+.workspace-file-dataset { border-color: var(--alias-accent); }
+
+#upload-status {
+  padding: 7px 20px 8px;
+  border-bottom: 1px solid var(--alias-border-default);
+  background: var(--alias-bg-subtle);
+  font-size: 12px;
+}
+.upload-status-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 5px;
+  color: var(--alias-label-secondary);
+}
+.upload-success .upload-status-label { color: var(--alias-state-success); }
+.upload-error .upload-status-label { color: var(--alias-state-error); }
+.upload-progress-track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--alias-border-default);
+}
+.upload-progress-bar {
+  height: 100%;
+  background: var(--alias-accent);
+  transition: width 200ms ease;
+}
+.upload-success .upload-progress-bar { background: var(--alias-state-success); }
+#workspace-error { padding: 6px 20px; color: var(--alias-state-error); font-size: 12px; border-bottom: 1px solid var(--alias-border-default); }
+
+#compose-form {
+  display: flex;
+  gap: 10px;
+  padding: 16px 20px 20px;
+  border-top: 1px solid var(--alias-border-default);
+}
+
+#skill-select {
+  min-width: 118px;
+  max-width: 180px;
+  border: 1px solid var(--alias-border-default);
+  border-radius: 8px;
+  background: var(--alias-bg-base);
+  color: var(--alias-label-primary);
+  padding: 0 10px;
+}
+
+#compose-input {
+  flex: 1;
+  background: var(--alias-bg-base);
+  border: 1px solid var(--alias-border-default);
+  color: var(--alias-label-primary);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 14px;
+}
+
+#compose-input:focus {
+  outline: none;
+  border-color: var(--alias-accent);
+}
+
+/* `dialog`/`dialog::backdrop` đã chuyển vào packages/ui-primitives/src/
+   Modal.module.css (scoped qua CSS Modules, thêm sau audit UI) — không còn
+   global rule ở đây nữa. */
+
+#settings-form {
+  padding: 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#settings-form h2 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+#settings-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--alias-label-secondary);
+}
+
+#settings-form input {
+  background: var(--alias-bg-subtle);
+  border: 1px solid var(--alias-border-default);
+  color: var(--alias-label-primary);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+#settings-form input:focus {
+  outline: none;
+  border-color: var(--alias-accent);
+}
+
+.hint {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--alias-label-secondary);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}

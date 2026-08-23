@@ -1,0 +1,25 @@
+# docker-compose.dev.yml — Override cho development
+# Chạy dev:  docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+# Chạy prod: docker compose up --build  (chỉ dùng Dockerfile gốc, không mount code)
+
+services:
+  agent-core:
+    build:
+      dockerfile: Dockerfile.dev
+    # Mount toàn bộ source để edit live — thay đổi là thấy ngay (tsx --watch)
+    volumes:
+      - agent-core-data:/app/data
+      - ./seams:/app/seams
+      - ./bundles:/app/bundles
+      - ./src:/app/src
+      - ./python:/app/python:ro
+      - ./packages:/app/packages
+      - ./apps/web/src:/app/apps/web/src
+      - ./apps/web/dist:/app/apps/web/dist
+      # Để prompt sections cũng live
+      - ./bundles/prompts/prompt-rlm-data-agent/sections:/app/bundles/prompts/prompt-rlm-data-agent/sections:ro
+    # Dev: restart thủ công, không tự restart khi crash để dễ debug
+    restart: "no"
+    # Hot reload cần polling trong Docker
+    environment:
+      - CHOKIDAR_USEPOLLING=1

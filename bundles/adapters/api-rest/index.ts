@@ -40,6 +40,8 @@ import '../../../seams/permission.ts'
 import '../../../seams/auth.ts'
 import { AuthIdentity } from '../../../seams/auth.ts'
 import { Session } from '../../../seams/loop.ts'
+import '../../../seams/skill.ts'
+import '../../../seams/workspace.ts'
 
 export namespace ApiRest {
   export interface Config {
@@ -52,23 +54,30 @@ export namespace ApiRest {
   }
 }
 
-export const inject = ['sessions', 'agent', 'storage', 'auth', 'permission']
+export const inject = ['sessions', 'agent', 'storage', 'auth', 'permission', 'skills', 'workspace']
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024 // 1 MiB
+const FILE_MAX_BODY_BYTES = 70 * 1024 * 1024 // 70 MiB for uploads
 
-async function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<Record<string, unknown>> {
+async function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
   const chunks: Buffer[] = []
   let total = 0
   for await (const chunk of req) {
-    total += (chunk as Buffer).length
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    total += buffer.length
     if (total > maxBytes) {
       throw Object.assign(new Error(`request body exceeds ${maxBytes} bytes`), { status: 413 })
     }
-    chunks.push(chunk as Buffer)
+    chunks.push(buffer)
   }
-  if (!chunks.length) return {}
+  return Buffer.concat(chunks)
+}
+
+async function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<Record<string, unknown>> {
+  const body = await readBody(req, maxBytes)
+  if (!body.length) return {}
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    return JSON.parse(body.toString('utf8'))
   } catch {
     throw Object.assign(new Error('invalid JSON body'), { status: 400 })
   }
@@ -108,7 +117,7 @@ export const apply = async (ctx: Context, config: ApiRest.Config = {}) => {
   const server = createServer((req, res) => {
     res.setHeader('access-control-allow-origin', corsOrigin)
     res.setHeader('access-control-allow-methods', 'GET, POST, PATCH, DELETE, OPTIONS')
-    res.setHeader('access-control-allow-headers', 'content-type, authorization')
+    res.setHeader('access-control-allow-headers', 'content-type, authorization, x-file-name')
     if (req.method === 'OPTIONS') {
       res.writeHead(204)
       return res.end()
@@ -210,6 +219,13 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse, m
     return res.end()
   }
 
+  if (req.method === 'GET' && pathname === '/skills') {
+    const skills = ctx.skills
+      .list({ userInvocableOnly: true, topLevelOnly: true })
+      .map(({ name, description }) => ({ name, description }))
+    return sendJson(res, 200, { skills })
+  }
+
   if (req.method === 'POST' && pathname === '/sessions') {
     const body = await readJsonBody(req, maxBodyBytes)
     const session = ctx.sessions.create({
@@ -233,8 +249,71 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse, m
       return sendJson(res, 400, { error: '"message" (string) is required' })
     }
     const driver = typeof body.driver === 'string' ? body.driver : session.driver
-    const result = await ctx.agent.runTurn(driver, session, body.message)
+    const result = await ctx.agent.runTurn(driver, session, {
+      message: body.message,
+      selectedSkill: typeof body.selectedSkill === 'string' ? body.selectedSkill : undefined,
+      metadata: body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
+        ? body.metadata as Record<string, unknown>
+        : undefined,
+    })
     return sendJson(res, 200, result)
+  }
+
+  const filesMatch = pathname.match(/^\/sessions\/([^/]+)\/files(?:\/(.+))?$/)
+  if (filesMatch) {
+    const session = ctx.sessions.get(filesMatch[1])
+    if (!session) return sendJson(res, 404, { error: `session "${filesMatch[1]}" not found` })
+    // Merge RLM harness (docs/agent-core-rate-limit-and-security-audit.md
+    // Finding A1/A2, docs/agent-core-rlm-harness-merge-plan.md mục 3.1):
+    // khối /sessions/:id/files merge sạch từ nhánh RLM (không có conflict
+    // marker) nhưng KHÔNG có ownership check, khác /messages và /events
+    // ngay dưới đây — bất kỳ token hợp lệ nào cũng đọc/ghi/liệt kê được
+    // file (dataset thật) của BẤT KỲ session nào nếu biết/đoán đúng id.
+    // Thêm đúng cùng check đã áp dụng cho 2 endpoint kia.
+    if (!canAccessSession(identity!, session)) return sendJson(res, 403, { error: 'forbidden' })
+    const subPath = filesMatch[2] ? decodeURIComponent(filesMatch[2]) : null
+
+    if (req.method === 'GET' && !subPath) {
+      const files = await ctx.workspace.listFiles(filesMatch[1])
+      const snapshot = await ctx.workspace.inspect(filesMatch[1])
+      return sendJson(res, 200, { files, datasets: snapshot.resources?.datasets ?? [], artifacts: snapshot.resources?.artifacts ?? [] })
+    }
+
+    if (req.method === 'GET' && subPath) {
+      try {
+        const buf = await ctx.workspace.readFile(filesMatch[1], subPath)
+        const ext = subPath.split('.').pop()?.toLowerCase() ?? ''
+        const mime: Record<string, string> = { csv: 'text/csv', tsv: 'text/tab-separated-values', json: 'application/json', txt: 'text/plain', html: 'text/html', png: 'image/png', jpg: 'image/jpeg', pdf: 'application/pdf' }
+        res.writeHead(200, { 'content-type': mime[ext] ?? 'application/octet-stream', 'content-disposition': `attachment; filename="${encodeURIComponent(subPath.split('/').pop()!)}"` })
+        return res.end(buf)
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e)
+        return sendJson(res, 404, { error: msg })
+      }
+    }
+
+    if (req.method === 'POST' && !subPath) {
+      let filename = ''
+      let buf: Buffer
+      if ((req.headers['content-type'] ?? '').split(';', 1)[0].trim().toLowerCase() === 'application/octet-stream') {
+        const rawName = Array.isArray(req.headers['x-file-name']) ? req.headers['x-file-name'][0] : req.headers['x-file-name']
+        try { filename = decodeURIComponent(String(rawName ?? '')) } catch { filename = '' }
+        buf = await readBody(req, FILE_MAX_BODY_BYTES)
+      } else {
+        // Backward-compatible JSON path for non-browser clients. Base64 adds
+        // roughly 4/3 overhead, so the request limit must be larger than the
+        // decoded file limit.
+        const body = await readJsonBody(req, Math.ceil(FILE_MAX_BODY_BYTES * 4 / 3) + 1024)
+        filename = typeof body.filename === 'string' ? body.filename : ''
+        const content = typeof body.content === 'string' ? body.content : ''
+        if (!content) return sendJson(res, 400, { error: 'filename and content are required' })
+        buf = body.encoding === 'utf8' ? Buffer.from(content, 'utf8') : Buffer.from(content, 'base64')
+      }
+      if (!filename) return sendJson(res, 400, { error: 'filename is required' })
+      if (buf.byteLength > FILE_MAX_BODY_BYTES) return sendJson(res, 413, { error: 'file too large' })
+      const result = await ctx.workspace.writeFile(filesMatch[1], filename, buf)
+      return sendJson(res, 201, result)
+    }
   }
 
   const eventsMatch = pathname.match(/^\/sessions\/([^/]+)\/events$/)

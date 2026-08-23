@@ -22,9 +22,17 @@ plan).
 
 ## Phần A — Security audit (đã chạy thật, không phải giả thuyết)
 
-### A1. [CAO] `tool-database-query` đọc được transcript của BẤT KỲ session nào, không check ownership
+### A1. [ĐÃ FIX] `tool-database-query` đọc được transcript của BẤT KỲ session nào, không check ownership
 
-**File**: `bundles/tools/tool-database-query/index.ts:25-28`
+> **Cập nhật**: đã fix thật lúc merge `feat/rlm-harness-migration` (xem
+> `docs/agent-core-rlm-harness-merge-plan.md` mục 8.2) — nhánh đó tự thêm
+> `ToolInvocationContext`/`ctx.tools.invoke()` cho mục đích khác (trace
+> nguồn gọi tool), tận dụng luôn hạ tầng đó để truyền `sessionId` thật
+> xuống handler thay vì tin `args.sessionId` model tự cho. Giữ nguyên nội
+> dung finding gốc bên dưới làm hồ sơ — mô tả đúng lỗ hổng CŨ đã tồn tại.
+
+**File**: `bundles/tools/tool-database-query/index.ts:25-28` (trạng thái
+LÚC PHÁT HIỆN — đã sửa, xem file thật hiện tại để biết code mới)
 
 ```ts
 async handler(args) {

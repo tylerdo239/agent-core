@@ -21,8 +21,44 @@ import * as sessionRegistry from '../bundles/providers/session-registry/index.ts
 import * as authUsers from '../bundles/providers/auth-users/index.ts'
 import * as apiRest from '../bundles/adapters/api-rest/index.ts'
 import { LlmCompleteOptions, LlmCompletion, LlmMessage, LlmService } from '../seams/llm.ts'
+import { WorkspaceService, type WorkspaceSnapshot } from '../seams/workspace.ts'
 
 const DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://postgres:test@127.0.0.1:5433/agent_core_test'
+
+class FakeWorkspace extends WorkspaceService {
+  private files = new Map<string, Map<string, Buffer>>()
+  root(sessionId: string) { return `/fake/${sessionId}` }
+  private session(sessionId: string) {
+    let files = this.files.get(sessionId)
+    if (!files) { files = new Map(); this.files.set(sessionId, files) }
+    return files
+  }
+  listDatasets(sessionId: string) {
+    return [...this.session(sessionId).keys()]
+      .filter((name) => /\.(csv|tsv|xlsx|xls|parquet)$/i.test(name))
+      .map((filename) => ({ id: filename.replace(/\.[^.]+$/, ''), filename, path: filename }))
+  }
+  listArtifacts(sessionId: string) {
+    return [...this.session(sessionId).keys()].filter((name) => name.startsWith('generated/'))
+  }
+  async inspect(sessionId: string): Promise<WorkspaceSnapshot> {
+    return { datasets: [], resources: { datasets: this.listDatasets(sessionId), artifacts: this.listArtifacts(sessionId) } }
+  }
+  async writeFile(sessionId: string, filename: string, content: Buffer) {
+    this.session(sessionId).set(filename, Buffer.from(content))
+    return { path: filename, size: content.byteLength }
+  }
+  async readFile(sessionId: string, filePath: string) {
+    const value = this.session(sessionId).get(filePath)
+    if (!value) throw new Error(`file ${filePath} not found`)
+    return Buffer.from(value)
+  }
+  async listFiles(sessionId: string) {
+    return [...this.session(sessionId)].map(([filePath, content]) => ({ path: filePath, size: content.byteLength, mtime: '2026-01-01T00:00:00.000Z' }))
+  }
+}
+
+const fakeWorkspace = (ctx: Context) => { ctx.plugin(FakeWorkspace) }
 
 class FakeLlm extends LlmService {
   async complete(messages: LlmMessage[], options: LlmCompleteOptions = {}): Promise<LlmCompletion> {
@@ -33,6 +69,25 @@ class FakeLlm extends LlmService {
 const fakeLlm = (ctx: Context) => {
   ctx.plugin(FakeLlm)
 }
+const fakeSkills = Object.assign(
+  (ctx: Context) => {
+    ctx.skills.register({
+      name: 'analyze',
+      description: 'Analyze a concrete data question',
+      instructions: 'Analyze carefully.',
+      triggers: [],
+      userInvocable: true,
+    })
+    ctx.skills.register({
+      name: 'internal-helper',
+      description: 'Internal only',
+      instructions: 'Internal.',
+      triggers: [],
+      userInvocable: false,
+    })
+  },
+  { inject: ['skills'] },
+)
 
 async function settle() {
   // Auth-users giờ làm I/O mạng thật (Postgres qua pg.Pool), khác các provider
@@ -86,6 +141,7 @@ async function bootApp(databaseUrl: string, port = 0, extraConfig: Partial<apiRe
   const root = new Context()
   root.plugin(toolRegistry)
   root.plugin(skillRegistry)
+  root.plugin(fakeSkills)
   root.plugin(stateSqlite, { path: ':memory:' })
   root.plugin(fakeLlm)
   root.plugin(loopRegistry)
@@ -94,6 +150,7 @@ async function bootApp(databaseUrl: string, port = 0, extraConfig: Partial<apiRe
   root.plugin(sessionRegistry)
   root.plugin(permissionRbac, { rules: { admin: ['admin:users:manage'] } })
   root.plugin(authUsers, { connectionString: databaseUrl })
+  root.plugin(fakeWorkspace)
   const config: apiRest.ApiRest.Config = { port, ...extraConfig }
   const fiber = root.plugin(apiRest, config)
   // LƯU Ý: `fiber.await()` CHỈ đợi công việc load ĐANG chạy dở — nếu fiber
@@ -126,6 +183,21 @@ afterEach(async () => {
 })
 
 describe('Phase 6.1 — REST API', () => {
+  it('liệt kê đúng skill mà UI được phép chọn', async () => {
+    await withFreshSchemaUrl(async (databaseUrl) => {
+      const { fiber, config } = await bootApp(databaseUrl)
+      cleanup = () => fiber.dispose()
+      const base = `http://127.0.0.1:${config.port}`
+      const { token } = await signupToken(base, 'alice')
+
+      const response = await fetch(`${base}/skills`, { headers: { authorization: `Bearer ${token}` } })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({
+        skills: [{ name: 'analyze', description: 'Analyze a concrete data question' }],
+      })
+    })
+  })
+
   it('signup (đầu tiên -> admin) -> tạo session, gửi message, đọc lại event — qua HTTP thật', async () => {
     await withFreshSchemaUrl(async (databaseUrl) => {
       const { fiber, config } = await bootApp(databaseUrl)
@@ -167,6 +239,82 @@ describe('Phase 6.1 — REST API', () => {
       expect(eventsRes.status).toBe(200)
       const { events } = await eventsRes.json()
       expect(events.map((e: any) => e.type)).toEqual(['user_message', 'model_message'])
+    })
+  })
+
+  it('upload binary -> hiện trong workspace -> tải lại đúng nội dung', async () => {
+    await withFreshSchemaUrl(async (databaseUrl) => {
+      const { fiber, config } = await bootApp(databaseUrl)
+      cleanup = () => fiber.dispose()
+      const base = `http://127.0.0.1:${config.port}`
+      const { token } = await signupToken(base, 'alice')
+      const AUTH_HEADER = { authorization: `Bearer ${token}` }
+
+      await fetch(`${base}/sessions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...AUTH_HEADER },
+        body: JSON.stringify({ id: 'files-1' }),
+      })
+
+      const uploaded = await fetch(`${base}/sessions/files-1/files`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/octet-stream',
+          'x-file-name': encodeURIComponent('sales data.csv'),
+          ...AUTH_HEADER,
+        },
+        body: 'region,revenue\nAPAC,42\n',
+      })
+      expect(uploaded.status).toBe(201)
+      expect(await uploaded.json()).toEqual({ path: 'sales data.csv', size: 23 })
+
+      const listed = await fetch(`${base}/sessions/files-1/files`, { headers: AUTH_HEADER })
+      expect(listed.status).toBe(200)
+      expect(await listed.json()).toMatchObject({
+        files: [{ path: 'sales data.csv', size: 23 }],
+        datasets: [{ filename: 'sales data.csv' }],
+      })
+
+      const downloaded = await fetch(`${base}/sessions/files-1/files/${encodeURIComponent('sales data.csv')}`, { headers: AUTH_HEADER })
+      expect(downloaded.status).toBe(200)
+      expect(await downloaded.text()).toBe('region,revenue\nAPAC,42\n')
+    })
+  })
+
+  // Finding A1/A2 (docs/agent-core-rate-limit-and-security-audit.md,
+  // docs/agent-core-rlm-harness-merge-plan.md mục 3.1): khối
+  // /sessions/:id/files merge từ nhánh RLM thiếu canAccessSession() — user
+  // khác (không phải chủ session) từng đọc/ghi được file của session đó chỉ
+  // cần biết đúng id. Khoá lại hành vi 403 đã thêm lúc merge.
+  it('403 khi user khác truy cập workspace file của session không phải mình', async () => {
+    await withFreshSchemaUrl(async (databaseUrl) => {
+      const { fiber, config } = await bootApp(databaseUrl)
+      cleanup = () => fiber.dispose()
+      const base = `http://127.0.0.1:${config.port}`
+      const { token: aliceToken } = await signupToken(base, 'alice')
+      const { token: bobToken } = await signupToken(base, 'bob')
+
+      await fetch(`${base}/sessions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${aliceToken}` },
+        body: JSON.stringify({ id: 'alice-files' }),
+      })
+
+      const listAsBob = await fetch(`${base}/sessions/alice-files/files`, {
+        headers: { authorization: `Bearer ${bobToken}` },
+      })
+      expect(listAsBob.status).toBe(403)
+
+      const uploadAsBob = await fetch(`${base}/sessions/alice-files/files`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/octet-stream',
+          'x-file-name': encodeURIComponent('leak.csv'),
+          authorization: `Bearer ${bobToken}`,
+        },
+        body: 'a,b\n1,2\n',
+      })
+      expect(uploadAsBob.status).toBe(403)
     })
   })
 
@@ -237,6 +385,7 @@ describe('Phase 6.1 — REST API', () => {
       expect(preflight.status).toBe(204)
       expect(preflight.headers.get('access-control-allow-origin')).toBe('*')
       expect(preflight.headers.get('access-control-allow-headers')).toContain('authorization')
+      expect(preflight.headers.get('access-control-allow-headers')).toContain('x-file-name')
 
       const health = await fetch(`${base}/health`)
       expect(health.headers.get('access-control-allow-origin')).toBe('*')

@@ -63,8 +63,12 @@ function stepToProto(sessionId: string, step: LoopStep) {
   if (step.type === 'tool_result') {
     return { ...base, tool_result_name: step.name, tool_result_json: JSON.stringify(step.result), tool_ui_json: step.toolUi ? JSON.stringify(step.toolUi) : '' }
   }
-  // critic_message | final
-  return { ...base, content: step.content }
+  if (step.type === 'critic_message' || step.type === 'final') {
+    return { ...base, content: step.content }
+  }
+  // Proto cũ là shape phẳng; event RLM giàu cấu trúc được giữ nguyên dưới
+  // dạng JSON trong content cho tới khi client proto nâng cấp riêng từng field.
+  return { ...base, content: JSON.stringify(step) }
 }
 
 function extractBearerToken(metadata: grpc.Metadata): string | undefined {
@@ -131,8 +135,18 @@ export const apply = async (ctx: Context, config: ApiGrpc.Config = {}) => {
       }
       try {
         const driver = req.driver || session.driver
-        const result = await ctx.agent.runTurn(driver, session, req.message)
-        callback(null, result)
+        const result = await ctx.agent.runTurn(driver, session, {
+          message: req.message,
+          selectedSkill: req.selected_skill || undefined,
+        })
+        callback(null, {
+          content: result.content,
+          steps: result.steps,
+          status: result.status ?? 'completed',
+          control_json: result.control ? JSON.stringify(result.control) : '',
+          usage_json: result.usage ? JSON.stringify(result.usage) : '',
+          trace_path: result.tracePath ?? '',
+        })
       } catch (err: any) {
         callback({ code: grpc.status.INTERNAL, message: err.message })
       }
@@ -162,7 +176,10 @@ export const apply = async (ctx: Context, config: ApiGrpc.Config = {}) => {
 
       try {
         const driver = req.driver || session.driver
-        await ctx.agent.runTurn(driver, session, req.message)
+        await ctx.agent.runTurn(driver, session, {
+          message: req.message,
+          selectedSkill: req.selected_skill || undefined,
+        })
         call.end()
       } catch (err: any) {
         call.destroy(Object.assign(new Error(err.message), { code: grpc.status.INTERNAL }))

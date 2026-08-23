@@ -1,0 +1,35 @@
+# Runtime used by the persistent RLM/IPython worker. Keep this list owned by
+# agent-core: a standalone checkout must not inherit dependencies from the
+# sibling data-agent repository.
+dill>=0.3.7
+ipykernel>=6.0.0
+ipython>=8.0.0
+jupyter_client>=8.0.0
+python-dotenv>=1.2.1
+rich>=13.0.0
+
+# Data-analysis action space advertised by the bundled skills.
+numpy<2
+pandas>=2.2.3
+pyarrow
+duckdb
+pandera
+matplotlib
+seaborn
+pillow
+scikit-learn
+scipy
+statsmodels
+openpyxl
+PyYAML
+nbformat
+pydantic
+transformers
+sentence-transformers
+flaml==2.6.0
+lightgbm==4.7.0
+xgboost-cpu==2.1.4
+
+# torch is installed separately from the CPU-only index in Dockerfile and
+# Dockerfile.dev. Listing it here would make pip pull multi-gigabyte CUDA
+# wheels even though this service does not expose a GPU to the worker.

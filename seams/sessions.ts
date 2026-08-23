@@ -12,6 +12,10 @@ declare module '@deepseek-ai/cordis' {
   interface Context {
     sessions: SessionRegistryService
   }
+  interface Events {
+    'session/created'(session: Session): void
+    'session/disposed'(event: { id: string; reason: 'removed' | 'expired' | 'provider_disposed' }): void
+  }
 }
 
 export interface CreateSessionOptions {

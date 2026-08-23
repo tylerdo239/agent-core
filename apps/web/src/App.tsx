@@ -49,12 +49,42 @@ interface LoopStep {
   // reconstructItems()). Gộp chung interface để dùng lại 1 type cho cả 2
   // nguồn (LoopStep từ WS 'step' và StoredEvent từ REST), tránh 2 kiểu dữ
   // liệu gần giống nhau song song.
-  type: 'user_message' | 'model_message' | 'tool_result' | 'critic_message' | 'final'
+  type:
+    | 'user_message'
+    | 'model_message'
+    | 'tool_result'
+    | 'critic_message'
+    | 'final'
+    | 'final_answer'
+    | 'analysis'
+    | 'code'
+    | 'observation'
+    | 'human_decision'
+    | 'error'
+    | 'turn_started'
+    | 'iteration_started'
+    | 'iteration_completed'
+    | 'subcall_result'
+    | 'context_usage'
+    | 'memory_updated'
   content?: string
   toolCall?: { name: string; args: Record<string, unknown> }
   toolUi?: ToolUiHint
   name?: string
   result?: unknown
+  message?: string
+  control?: { question?: string; reason?: string; action?: string }
+  question?: string
+  reason?: string
+}
+
+export const UI_AGENT_DRIVER = 'rlm'
+
+export function createSessionCommand() {
+  return {
+    type: 'create_session',
+    driver: UI_AGENT_DRIVER,
+  }
 }
 
 type ChatItem =
@@ -76,6 +106,15 @@ function genId(): string {
 }
 
 type ConnStatus = 'connecting' | 'connected' | 'disconnected'
+type SkillOption = { name: string; description: string }
+type WorkspaceFile = { path: string; size: number; mtime: string }
+type WorkspaceDataset = { filename: string; path?: string }
+type UploadState = {
+  phase: 'uploading' | 'success' | 'error'
+  filename: string
+  progress: number
+  message?: string
+}
 
 function toolRowSummary(item: Extract<ChatItem, { kind: 'tool' }>): string {
   if (item.state === 'error') return item.errorText ?? 'lỗi'
@@ -99,13 +138,122 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsDraft, setSettingsDraft] = useState<Settings>(settings)
   const [adminPanelOpen, setAdminPanelOpen] = useState(false)
+  // Module auth (Phase 24): server GET /sessions là nguồn sự thật, KHÔNG
+  // phải localStorage nữa (loadSessionHistory() cũ) — xem
+  // packages/ui-sidebar/src/sessionHistory.ts.
   const [sessions, setSessions] = useState<SessionSummary[]>([])
+  const [skills, setSkills] = useState<SkillOption[]>([])
+  const [selectedSkill, setSelectedSkill] = useState('')
+  const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([])
+  const [workspaceDatasets, setWorkspaceDatasets] = useState<WorkspaceDataset[]>([])
+  const [workspaceArtifacts, setWorkspaceArtifacts] = useState<string[]>([])
+  const [workspaceLoading, setWorkspaceLoading] = useState(false)
+  const [workspaceError, setWorkspaceError] = useState('')
+  const [uploadState, setUploadState] = useState<UploadState | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const { toasts, push: pushToast } = useToasts()
+
+  async function refreshWorkspaceFiles(sid: string) {
+    // Module auth: `Settings` không còn `apiKey` (Phase 24) — danh tính là
+    // `auth.token`. Hàm này chỉ thực sự được gọi từ chỗ đã qua gate `!auth`
+    // (WS handler trong connect()/resumeSession, hoặc nút bấm trong JSX sau
+    // gate) nhưng là function declaration riêng, TS không tự narrow qua
+    // ranh giới hàm — guard tường minh.
+    if (!auth) return
+    setWorkspaceLoading(true)
+    try {
+      const res = await fetch(`${settings.restUrl}/sessions/${sid}/files`, { headers: { authorization: `Bearer ${auth.token}` } })
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`)
+      const data = (await res.json()) as { files: WorkspaceFile[]; datasets: WorkspaceDataset[]; artifacts: string[] }
+      setWorkspaceFiles(data.files ?? [])
+      setWorkspaceDatasets(data.datasets ?? [])
+      setWorkspaceArtifacts(data.artifacts ?? [])
+      setWorkspaceError('')
+    } catch (error: unknown) {
+      setWorkspaceError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setWorkspaceLoading(false)
+    }
+  }
+
+  async function handleFileUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    if (!auth) return
+    const file = event.target.files?.[0]
+    if (!file) return
+    let sid = sessionId
+    if (!sid) {
+      // Tự tạo session nếu chưa có (user chưa chat gì đã muốn upload)
+      try {
+        const res = await fetch(`${settings.restUrl}/sessions`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${auth.token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ driver: UI_AGENT_DRIVER }),
+        })
+        if (!res.ok) throw new Error(await res.text())
+        const data = (await res.json()) as { id: string }
+        sid = data.id
+        setSessionId(sid)
+        sessionIdRef.current = sid
+        setStatus('connected')
+      } catch (e: unknown) {
+        pushToast(`Không tạo được session: ${e instanceof Error ? e.message : String(e)}`, 'error')
+        return
+      }
+    }
+    if (file.size > 70 * 1024 * 1024) { pushToast('File quá lớn (tối đa 70 MiB).', 'error'); return }
+    setUploadState({ phase: 'uploading', filename: file.name, progress: 0 })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest()
+        xhr.open('POST', `${settings.restUrl}/sessions/${sid}/files`)
+        xhr.setRequestHeader('authorization', `Bearer ${auth.token}`)
+        xhr.setRequestHeader('content-type', 'application/octet-stream')
+        xhr.setRequestHeader('x-file-name', encodeURIComponent(file.name))
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            setUploadState({ phase: 'uploading', filename: file.name, progress: Math.round((e.loaded / e.total) * 100) })
+          }
+        }
+        xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(xhr.responseText || `HTTP ${xhr.status}`)))
+        xhr.onerror = () => reject(new Error('Network error'))
+        xhr.send(file)
+      })
+      await refreshWorkspaceFiles(sid)
+      setUploadState({ phase: 'success', filename: file.name, progress: 100, message: 'Đã upload và đăng ký trong workspace.' })
+      pushToast(`Đã tải lên ${file.name}`, 'default')
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e)
+      setUploadState({ phase: 'error', filename: file.name, progress: 0, message })
+      pushToast(`Upload thất bại: ${message}`, 'error')
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  async function downloadWorkspaceFile(filePath: string) {
+    if (!sessionId || !auth) return
+    try {
+      const response = await fetch(`${settings.restUrl}/sessions/${sessionId}/files/${encodeURIComponent(filePath)}`, {
+        headers: { authorization: `Bearer ${auth.token}` },
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`)
+      const url = URL.createObjectURL(await response.blob())
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = filePath.split('/').pop() || 'download'
+      anchor.click()
+      URL.revokeObjectURL(url)
+    } catch (error: unknown) {
+      pushToast(`Không tải được ${filePath}: ${error instanceof Error ? error.message : String(error)}`, 'error')
+    }
+  }
 
   const wsRef = useRef<WebSocket | null>(null)
   const activeToolItemIdRef = useRef<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
+  const sessionIdRef = useRef<string | null>(null)
+  useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
   // Session hiện tại đã có tin nhắn user đầu tiên chưa — chỉ cập nhật title
   // lịch sử ĐÚNG 1 LẦN cho câu hỏi đầu tiên, không ghi đè bằng câu hỏi sau.
   const titledSessionIdsRef = useRef<Set<string>>(new Set())
@@ -138,6 +286,15 @@ export function App() {
   // kết nối WS nào, nên chỉ cần bỏ qua bước create_session là đủ.
   function connect(current: Settings, token: string, resumeSessionId?: string) {
     setStatus('connecting')
+    void fetch(`${current.restUrl}/skills`, {
+      headers: { authorization: `Bearer ${token}` },
+    })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        return res.json() as Promise<{ skills: SkillOption[] }>
+      })
+      .then((payload) => setSkills(payload.skills))
+      .catch(() => setSkills([]))
     setSessionId(resumeSessionId ?? null)
     activeToolItemIdRef.current = null
 
@@ -150,7 +307,7 @@ export function App() {
         setStatus('connected')
         return
       }
-      ws.send(JSON.stringify({ type: 'create_session', systemPrompt: 'Bạn là trợ lý hữu ích, trả lời ngắn gọn.' }))
+      ws.send(JSON.stringify(createSessionCommand()))
     })
 
     ws.addEventListener('message', (event) => {
@@ -165,6 +322,7 @@ export function App() {
         // GET /sessions tiếp theo sẽ thấy đúng session này; thêm ngay ở đây
         // để UI phản hồi tức thời, không đợi round-trip fetch lại.
         setSessions((prev) => [{ id: msg.id, createdAt: Date.now(), title: 'Cuộc trò chuyện mới' }, ...prev])
+        refreshWorkspaceFiles(msg.id)
         return
       }
 
@@ -175,6 +333,8 @@ export function App() {
 
       if (msg.type === 'done') {
         setTurnInFlight(false)
+        const sid = sessionIdRef.current ?? (msg as { sessionId?: string }).sessionId
+        if (sid) refreshWorkspaceFiles(String(sid))
         return
       }
 
@@ -249,6 +409,18 @@ export function App() {
       setItems((prev) => [...prev, { kind: 'assistant', id: genId(), text: step.content ?? '', ts: Date.now() }])
       return
     }
+    if (step.type === 'analysis' && step.content) {
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `🔍 ${step.content}` }])
+      return
+    }
+    if (step.type === 'human_decision') {
+      const text = step.control?.question || step.control?.reason || step.control?.action || 'RLM đang chờ quyết định của bạn.'
+      setItems((prev) => [...prev, { kind: 'system', id: genId(), text }])
+      return
+    }
+    if (step.type === 'error') {
+      setItems((prev) => [...prev, { kind: 'error', id: genId(), text: `Lỗi RLM: ${step.message ?? 'không xác định'}` }])
+    }
   }
 
   function startNewChat(current: Settings, token: string) {
@@ -299,6 +471,22 @@ export function App() {
       }
       if (step.type === 'critic_message') {
         result.push({ kind: 'critic', id: genId(), text: `🔍 đang rà soát: ${step.content}` })
+        continue
+      }
+      if (step.type === 'final_answer') {
+        result.push({ kind: 'assistant', id: genId(), text: step.content ?? '' })
+        continue
+      }
+      if (step.type === 'human_decision') {
+        result.push({
+          kind: 'system',
+          id: genId(),
+          text: step.control?.question || step.question || step.control?.reason || step.reason || 'RLM đang chờ quyết định của bạn.',
+        })
+        continue
+      }
+      if (step.type === 'error') {
+        result.push({ kind: 'error', id: genId(), text: `Lỗi RLM: ${step.message ?? 'không xác định'}` })
       }
     }
     return result
@@ -309,6 +497,7 @@ export function App() {
   // WS mới bỏ qua create_session (session đã tồn tại server-side).
   async function resumeSession(id: string) {
     if (id === sessionId || !auth) return
+    refreshWorkspaceFiles(id)
     try {
       const res = await fetch(`${settings.restUrl}/sessions/${id}/events`, {
         headers: { authorization: `Bearer ${auth.token}` },
@@ -373,7 +562,12 @@ export function App() {
       const title = cacheSessionTitle(sessionId, text)
       setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, title } : s)))
     }
-    ws.send(JSON.stringify({ type: 'send_message', sessionId, message: text }))
+    ws.send(JSON.stringify({
+      type: 'send_message',
+      sessionId,
+      message: text,
+      selectedSkill: selectedSkill || undefined,
+    }))
   }
 
   function handleSettingsSubmit(event: React.FormEvent) {
@@ -407,6 +601,17 @@ export function App() {
   const statusLabel =
     status === 'connected' && sessionId ? `đã kết nối — session ${sessionId.slice(0, 8)}` : status === 'connecting' ? 'đang kết nối...' : 'mất kết nối'
   const statusTone = status === 'connected' ? 'success' : status === 'disconnected' ? 'error' : 'neutral'
+  const datasetPaths = new Set(workspaceDatasets.flatMap((dataset) => [dataset.path, dataset.filename].filter(Boolean) as string[]))
+  const artifactPaths = new Set(workspaceArtifacts)
+  const workspaceEntries = [
+    ...workspaceFiles,
+    ...workspaceArtifacts
+      .filter((artifact) => !workspaceFiles.some((file) => file.path === artifact))
+      .map((artifact) => ({ path: artifact, size: 0, mtime: '' })),
+  ].map((file) => ({
+    ...file,
+    kind: artifactPaths.has(file.path) ? 'output' as const : datasetPaths.has(file.path) || datasetPaths.has(file.path.split('/').pop() ?? '') ? 'dataset' as const : 'file' as const,
+  }))
 
   // Module auth: chưa đăng nhập -> thay TOÀN BỘ khung chat bằng màn hình
   // đăng nhập/đăng ký — đặt SAU mọi hook (đúng rules of hooks), TRƯỚC JSX
@@ -459,9 +664,74 @@ export function App() {
                 {statusLabel}
               </Pill>
             </div>
+            {/* Workspace bar (nhánh RLM harness merge) — vùng chrome cố định,
+                không cuộn theo message, nên đặt trong header thay vì children
+                của AppFrame (children = vùng #messages cuộn được, xem
+                packages/ui-layout/src/AppFrame.tsx). */}
+            <div id="workspace-bar">
+              <div className="workspace-bar-left">
+                <span className="workspace-bar-title">Workspace</span>
+                {workspaceDatasets.length > 0 && <span className="workspace-bar-count">{workspaceDatasets.length} dataset(s)</span>}
+                {workspaceArtifacts.length > 0 && <span className="workspace-bar-count">{workspaceArtifacts.length} output(s)</span>}
+                {workspaceEntries.length === 0 && <span className="workspace-bar-count" style={{ opacity: 0.6 }}>chưa có file</span>}
+                {workspaceLoading && <span className="workspace-bar-count">đang cập nhật…</span>}
+              </div>
+              <div className="workspace-bar-actions">
+                <input ref={fileInputRef} type="file" accept=".csv,.tsv,.xlsx,.xls,.parquet,.json,.txt" style={{ display: 'none' }} onChange={handleFileUpload} />
+                <Button variant="default" disabled={status !== 'connected' && !sessionId} onClick={() => fileInputRef.current?.click()}>📎 Upload file</Button>
+                <Button variant="default" disabled={!sessionId} onClick={() => sessionId && refreshWorkspaceFiles(sessionId)}>↻ Refresh</Button>
+              </div>
+            </div>
+            {uploadState && (
+              <div id="upload-status" className={`upload-${uploadState.phase}`} role="status" aria-live="polite">
+                <div className="upload-status-label">
+                  <span>{uploadState.phase === 'uploading' ? `Đang upload ${uploadState.filename}` : uploadState.phase === 'success' ? `✓ ${uploadState.filename}` : `✕ ${uploadState.filename}`}</span>
+                  <span>{uploadState.phase === 'uploading' ? `${uploadState.progress}%` : uploadState.message}</span>
+                </div>
+                <div className="upload-progress-track">
+                  <div className="upload-progress-bar" style={{ width: `${uploadState.progress}%` }} />
+                </div>
+              </div>
+            )}
+            {workspaceError && <div id="workspace-error" role="alert">Không đọc được workspace: {workspaceError}</div>}
+            <div id="workspace-files">
+              {workspaceEntries.length === 0 && uploadState?.phase !== 'uploading' && (
+                <span className="workspace-empty">Chưa có file — bấm 📎 Upload để thêm CSV/Excel</span>
+              )}
+              {workspaceEntries.map((file) => (
+                <button
+                  key={file.path}
+                  type="button"
+                  className={`workspace-file workspace-file-${file.kind}`}
+                  onClick={() => downloadWorkspaceFile(file.path)}
+                  title={`Tải ${file.path}${file.size ? ` · ${(file.size / 1024).toFixed(1)} KB` : ''}`}
+                >
+                  <span>{file.kind === 'output' ? '📦 Output' : file.kind === 'dataset' ? '▦ Dataset' : '📄 File'}</span>
+                  <strong>{file.path}</strong>
+                  {file.size > 0 && <span className="workspace-file-size">{(file.size / 1024).toFixed(1)} KB</span>}
+                </button>
+              ))}
+            </div>
           </>
         }
-        footer={<Composer value={composerText} onChange={setComposerText} onSubmit={handleSubmit} disabled={!composerEnabled} />}
+        footer={
+          <>
+            <select
+              id="skill-select"
+              aria-label="Chọn skill"
+              title={selectedSkill ? skills.find((skill) => skill.name === selectedSkill)?.description : 'Để agent tự chọn workflow'}
+              disabled={!composerEnabled}
+              value={selectedSkill}
+              onChange={(event) => setSelectedSkill(event.target.value)}
+            >
+              <option value="">Tự động</option>
+              {skills.map((skill) => (
+                <option key={skill.name} value={skill.name}>{skill.name}</option>
+              ))}
+            </select>
+            <Composer value={composerText} onChange={setComposerText} onSubmit={handleSubmit} disabled={!composerEnabled} />
+          </>
+        }
       >
         {items.length === 0 && <EmptyState />}
         {items.map((item) => {

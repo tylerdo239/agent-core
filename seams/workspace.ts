@@ -1,0 +1,53 @@
+import { Context, Service } from '@deepseek-ai/cordis'
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    workspace: WorkspaceService
+  }
+}
+
+export interface WorkspaceDataset {
+  id: string
+  filename: string
+  path: string
+  metadataFile?: string
+  createdAt?: string
+  active?: boolean
+}
+
+/** Dữ liệu workspace đã được đọc một lần ở đầu turn để dựng RLM context. */
+export interface WorkspaceSnapshot {
+  /** Chỉ context đầu tiên cần nội dung đầy đủ; các turn sau dùng manifest trong memory. */
+  datasets: Array<Record<string, unknown>>
+  activeDataset?: Record<string, unknown>
+  resources: {
+    datasets: Array<Record<string, unknown>>
+    artifacts: string[]
+  }
+}
+
+/** Canonical per-session filesystem layout used by data-agent loops and adapters. */
+export abstract class WorkspaceService extends Service {
+  constructor(ctx: Context) {
+    super(ctx, 'workspace')
+  }
+
+  abstract root(sessionId: string): string
+  abstract listDatasets(sessionId: string): WorkspaceDataset[]
+  abstract listArtifacts(sessionId: string): string[]
+  /**
+   * Snapshot canonical dùng để chuẩn bị một turn. Provider local đọc host FS;
+   * provider Docker đọc named volume qua sandbox worker. Consumer không cần
+   * biết workspace đang nằm ở đâu.
+   */
+  abstract inspect(sessionId: string): Promise<WorkspaceSnapshot>
+
+  /** Lưu file do user upload vào workspace. Tabular files được đăng ký vào index.json. */
+  abstract writeFile(sessionId: string, filename: string, content: Buffer): Promise<{ path: string; size: number }>
+
+  /** Đọc nội dung file trong workspace (kể cả generated artifacts). */
+  abstract readFile(sessionId: string, filePath: string): Promise<Buffer>
+
+  /** Liệt kê mọi file trong workspace (datasets + artifacts + file thường). */
+  abstract listFiles(sessionId: string): Promise<Array<{ path: string; size: number; mtime: string }>>
+}
