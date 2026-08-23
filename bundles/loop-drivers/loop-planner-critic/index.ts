@@ -13,6 +13,7 @@ import '../../../seams/storage.ts'
 import '../../../seams/tools.ts'
 import '../../../seams/loop.ts'
 import '../../../seams/skill.ts'
+import { MemoryEntry } from '../../../seams/memory.ts'
 import { LoopTurnResult, Session } from '../../../seams/loop.ts'
 
 export const inject = ['loop']
@@ -24,7 +25,13 @@ export const apply = (ctx: Context) => {
     async runTurn(runCtx: Context, session: Session, userMessage: string): Promise<LoopTurnResult> {
       // Phase 15: cùng cơ chế skill-match như loop-default, xem chú thích ở đó.
       const matchedSkills = runCtx.skills.match(userMessage)
-      let messages = session.buildPrompt(userMessage, matchedSkills.map((s) => s.instructions))
+      // Memory integration: cùng cơ chế `ctx.get('memory')` (API chính thức
+      // Cordis, không throw khi chưa mount) như loop-default -- xem chú
+      // thích đầy đủ ở đó và tại bundles/providers/agent-runner.
+      const recalled: MemoryEntry[] =
+        (await runCtx.get('memory')?.recall(session.id, userMessage, 3, { userId: session.ownerId })) ?? []
+      const memoryNotes = recalled.map((m) => `Đã ghi nhớ trước đó: ${m.text}`)
+      let messages = session.buildPrompt(userMessage, [...matchedSkills.map((s) => s.instructions), ...memoryNotes])
       let steps = 0
 
       while (steps < session.maxSteps) {

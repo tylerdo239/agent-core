@@ -21,6 +21,43 @@ services:
       timeout: 5s
       retries: 5
 
+  # Module memory (ctx.memory, TÙY CHỌN — xem docs/agent-core-memory-integration-plan.md):
+  # TencentDB Agent Memory MemoryCore, image build sẵn công khai trên Docker
+  # Hub, đa kiến trúc, không cần login. Data local (SQLite nội bộ image, chưa
+  # cần Postgres/vector DB riêng) — named volume riêng. LLM riêng cho việc
+  # trích xuất/tóm tắt: TÁI DÙNG THẲNG proxy Qwen3.5 agent-core đang dùng
+  # (biến OPENAI_*) làm mặc định — chấp nhận rủi ro "thinking mode" đã ghi rõ
+  # trong docs/agent-core-memory-integration-plan.md mục 5, KHÔNG áp dụng
+  # patch source (tracked riêng ở memory-db/MemoryCore/docs/agent-core-llm-adapter.md,
+  # ngoài phạm vi phase này). `agent-core` KHÔNG có `depends_on` container
+  # này — memory-tencentdb provider tự resilient (lazy connect, remember/
+  # recall best-effort, không throw) nên không cần chờ đồng bộ lúc boot như
+  # Postgres (auth-users cần schema migration đồng bộ lúc init, memory thì
+  # không).
+  memory-core:
+    image: agentmemory/memory-core:latest
+    environment:
+      TDAI_GATEWAY_PORT: "8420"
+      TDAI_GATEWAY_HOST: "0.0.0.0"
+      # Để trống có chủ đích: memory-core chỉ lắng nghe trong network nội bộ
+      # docker-compose (không publish port ra host), không cần thêm 1 lớp
+      # bearer admin nữa cho model triển khai "mạng nội bộ, tin cậy" đã chốt
+      # xuyên suốt project (xem README "Production hardening"/"Giới hạn hiện tại").
+      TDAI_GATEWAY_API_KEY: ""
+      TDAI_DATA_DIR: /data/tdai-memory
+      # LLM riêng cho trích xuất/tóm tắt nội bộ — mặc định TÁI DÙNG proxy Qwen
+      # agent-core đang dùng (xem docs/agent-core-memory-integration-plan.md
+      # mục 6 cho lý do/rủi ro). Đổi 3 biến này để switch provider khác,
+      # KHÔNG cần sửa code (đã xác nhận qua đọc source, xem
+      # memory-db/MemoryCore/docs/agent-core-llm-adapter.md mục 2).
+      TDAI_LLM_BASE_URL: ${OPENAI_BASE_URL}
+      TDAI_LLM_API_KEY: ${OPENAI_API_KEY}
+      TDAI_LLM_MODEL: ${OPENAI_MODEL_ID}
+    volumes:
+      - agent-core-memory-core-data:/data/tdai-memory
+    # Image có sẵn HEALTHCHECK riêng (curl GET /health cổng 8420, xác nhận
+    # qua `docker inspect` thật, không đoán) — không cần định nghĩa lại.
+
   agent-core:
     build: .
     depends_on:
@@ -30,6 +67,11 @@ services:
       - .env
     environment:
       DATABASE_URL: postgres://agent_core:${POSTGRES_PASSWORD}@postgres:5432/agent_core_users
+      # Tuỳ chọn — bỏ trống/không set 3 dòng dưới thì ctx.memory không mount,
+      # hệ thống chạy y hệt như không có module memory (xem src/serve.ts).
+      MEMORY_CORE_URL: ${MEMORY_CORE_URL:-http://memory-core:8420}
+      MEMORY_CORE_API_KEY: ${MEMORY_CORE_API_KEY:-}
+      MEMORY_CORE_SERVICE_ID: ${MEMORY_CORE_SERVICE_ID:-default}
     ports:
       - "${PORT_REST:-8787}:8787"
       - "${PORT_WS:-8788}:8788"
@@ -48,3 +90,4 @@ services:
 volumes:
   agent-core-data:
   agent-core-postgres-data:
+  agent-core-memory-core-data:

@@ -20,6 +20,7 @@ Backend framework cho AI agent, build trên [`@deepseek-ai/cordis`](https://www.
 | Backend | TypeScript, [`@deepseek-ai/cordis`](https://www.npmjs.com/package/@deepseek-ai/cordis) (DI/plugin/lifecycle), Node.js |
 | Storage | SQLite (`better-sqlite3`, event log hội thoại), WAL mode |
 | Auth | PostgreSQL (`pg`) — tài khoản/token người dùng thật (`ctx.auth`, `bundles/providers/auth-users`) |
+| Memory | TencentDB Agent Memory / MemoryCore (`@tencentdb-agent-memory/memory-sdk-ts-v2`) — nhớ ngữ cảnh theo từng user, TÙY CHỌN (`ctx.memory`, `bundles/providers/memory-tencentdb`) |
 | Realtime | `ws` (WebSocket), `@grpc/grpc-js` + `@grpc/proto-loader` (gRPC) |
 | LLM | OpenAI-compatible API (DeepSeek, Qwen qua proxy nội bộ) — thêm provider khác qua seam `ctx.llm` |
 | Frontend | React, Vite, CSS Modules (design-token system riêng, 3 tầng: static → alias → specific) |
@@ -79,6 +80,8 @@ Cần đủ 4 biến môi trường sau — thiếu 1 trong 4 là service dừng
 
 Không chạy qua `docker compose` thì cần tự có 1 Postgres reachable trước — cách nhanh nhất: `docker compose up postgres -d` (chỉ khởi động đúng service Postgres, không cần build cả app) rồi trỏ `DATABASE_URL` vào đó.
 
+Module memory (`ctx.memory`) **hoàn toàn tùy chọn** — bỏ trống, hệ thống chạy y hệt không có nó. Muốn bật: set thêm `MEMORY_CORE_URL` + `MEMORY_CORE_API_KEY` (bắt buộc đủ cả 2, thiếu 1 trong 2 là service dừng ngay lúc boot) trỏ vào 1 MemoryCore đang chạy (`docker compose up memory-core -d` cho local, hoặc dùng chung stack `docker compose up --build` bên dưới).
+
 ```bash
 npm run build:web   # build Web UI ra apps/web/dist — bắt buộc trước lần chạy đầu, hoặc sau khi sửa apps/web
 docker compose up postgres -d   # cần Postgres reachable trước khi serve — xem trên
@@ -100,7 +103,7 @@ cp .env.example .env   # điền OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL_I
 docker compose up --build
 ```
 
-`docker-compose.yml` khởi 2 container: `postgres` (tài khoản/token, healthcheck `pg_isready`) và `agent-core` (chờ Postgres healthy mới boot).
+`docker-compose.yml` khởi 3 container: `postgres` (tài khoản/token, healthcheck `pg_isready`), `memory-core` (ctx.memory, TÙY CHỌN — image có sẵn healthcheck riêng, không cần cấu hình gì thêm nếu không dùng) và `agent-core` (chờ Postgres healthy mới boot — KHÔNG chờ `memory-core`, memory-tencentdb tự resilient nên không cần đồng bộ khởi động).
 
 | Port | Giao thức |
 |---|---|
@@ -119,10 +122,11 @@ Dữ liệu hội thoại (`data/sessions.db`) lưu trên volume `agent-core-dat
 
 ## Giới hạn hiện tại
 
-- `ctx.memory` (lưu trữ/truy xuất ngữ cảnh dài hạn) và `ctx.sandbox` mới có interface (`seams/`), chưa có provider thật.
+- `ctx.memory` đã có provider thật (`memory-tencentdb`, TÙY CHỌN — xem `docs/agent-core-memory-integration-plan.md`), đã verify end-to-end qua `docker compose up --build` thật (3 container) + 1 lượt remember→recall thật qua curl (nêu 1 sự thật ở tin nhắn 1, model tự nhớ lại đúng ở tin nhắn 2 — cô lập đúng theo từng user, không rò rỉ giữa các user). `ctx.sandbox` vẫn mới có interface (`seams/`), chưa có provider thật.
 - Chạy đúng cho **1 instance** cho phần event-log/session — SQLite (file-based) + session registry (in-memory) chưa hỗ trợ multi-instance/scale ngang. Cần thì đổi provider của `ctx.storage`/`ctx.sessions` (Postgres/Redis), business logic không cần sửa. Riêng `ctx.auth` đã dùng Postgres sẵn (tự chọn cho module này khi build).
 - `GET /sessions` chỉ liệt kê session còn "sống" trong session-registry (in-memory, TTL trượt, mất khi restart) — **không phải** kho lưu lịch sử vĩnh viễn. Transcript vẫn còn trong SQLite (`ctx.storage`) nếu nhớ đúng session id, nhưng không được liệt kê lại sau khi session hết TTL/restart.
-- Chưa có rate-limiting — trước đây chấp nhận được vì không có endpoint public nào không cần key; giờ `POST /auth/signup`/`/auth/login` là 2 endpoint public thật đầu tiên (chỉ cần username/password, không cần token trước), brute-force là bề mặt tấn công mới chưa có giới hạn tần suất.
+- Chưa có rate-limiting — trước đây chấp nhận được vì không có endpoint public nào không cần key; giờ `POST /auth/signup`/`/auth/login` là 2 endpoint public thật đầu tiên (chỉ cần username/password, không cần token trước), brute-force là bề mặt tấn công mới chưa có giới hạn tần suất. Plan cụ thể (seam `ctx.ratelimit`, số/endpoint) ở `docs/agent-core-rate-limit-and-security-audit.md`.
+- **Audit security thật đã chạy, còn 2 finding mức CAO chưa xử lý** (xem `docs/agent-core-rate-limit-and-security-audit.md`): (1) tool `query_database` đọc được transcript của BẤT KỲ session nào qua tool-call, không check ownership (bỏ qua lớp bảo vệ đã có ở REST/WS/gRPC); (2) session storage (SQLite) không có khái niệm chủ sở hữu, kết hợp việc REST/gRPC cho phép client tự chọn session id — 1 user có thể "nhận" lại id đã hết TTL của user khác và đọc transcript cũ của họ.
 - Tool-calling đơn giản hoá: không track `tool_call_id` round-trip chuẩn OpenAI.
 
 ## Tài liệu thêm
@@ -133,3 +137,5 @@ Lịch sử build chi tiết (thiết kế, đánh đổi, bug thật phát hi�
 - [`docs/agent-core-cordis-coding-rules.md`](docs/agent-core-cordis-coding-rules.md)
 - [`docs/ui-plugin-build-guide.md`](docs/ui-plugin-build-guide.md) — quy trình build 1 UI-plugin mới cho Web UI
 - [`docs/agent-core-ui-architecture.md`](docs/agent-core-ui-architecture.md) — cách chia package Web UI (mirror cấu trúc dsh), quy ước scaffold package mới
+- [`docs/agent-core-memory-integration-plan.md`](docs/agent-core-memory-integration-plan.md) — plan tích hợp TencentDB Agent Memory vào `ctx.memory` (đã build + đã verify end-to-end thật qua Docker — xem Phase 25 trong build-plan)
+- [`docs/agent-core-rate-limit-and-security-audit.md`](docs/agent-core-rate-limit-and-security-audit.md) — audit security thật (authn/authz toàn bộ plugin, file:line + kịch bản khai thác cụ thể) + plan rate-limiting (seam `ctx.ratelimit` mới, chưa implement — xem Phase 26 trong build-plan)

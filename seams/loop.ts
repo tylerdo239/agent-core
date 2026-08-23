@@ -119,23 +119,33 @@ export class Session {
   }
 
   /**
-   * `extraSystemNotes` (Phase 15, seams/skill.ts): nội dung skill đã match
-   * cho ĐÚNG lượt này — chèn làm message role 'system' riêng, ngay sau
-   * system prompt gốc (nếu có), TRƯỚC lịch sử hội thoại cũ. KHÔNG ghi vào
-   * `this.history` — skill được match lại mỗi lượt dựa trên tin nhắn hiện
-   * tại, chèn cố định vào history sẽ lặp lại nội dung này ở mọi lượt sau dù
-   * không còn liên quan. Vẫn tuân coding rule B6 (buildPrompt là nơi DUY
-   * NHẤT ráp prompt) — loop driver truyền skill đã match vào đây, không tự
-   * ráp mảng message rời rạc.
+   * `extraSystemNotes` (Phase 15, seams/skill.ts; Phase 25, ctx.memory): nội
+   * dung skill đã match + memory đã recall cho ĐÚNG lượt này — gộp CHUNG VỚI
+   * system prompt gốc (nếu có) thành ĐÚNG 1 message role 'system' duy nhất ở
+   * đầu mảng. KHÔNG ghi vào `this.history` — skill/memory được match/recall
+   * lại mỗi lượt dựa trên tin nhắn hiện tại, chèn cố định vào history sẽ lặp
+   * lại nội dung này ở mọi lượt sau dù không còn liên quan.
+   *
+   * Gap thật phát hiện qua verify Docker end-to-end (không phải giả thuyết):
+   * lúc `ctx.memory.recall()` trả về ≥2 kết quả (2 message role 'system'
+   * RIÊNG BIỆT được chèn, bản cũ), proxy Qwen (vLLM/litellm) trả 400 thật:
+   * "System message must be at the beginning." — xác nhận trực tiếp bằng
+   * curl thẳng vào proxy với 2 message role 'system'. Bug này CÓ TRƯỚC memory
+   * (từ Phase 15), chỉ chưa lộ ra vì trước đó không có tình huống nào tạo
+   * ≥2 note cùng lúc (chỉ có 1 skill duy nhất trong repo). Fix chung: MỌI
+   * note luôn gộp vào ĐÚNG 1 system message đầu mảng, không bao giờ phát
+   * sinh message 'system' thứ 2 nữa, bất kể bao nhiêu skill/memory note khớp
+   * cùng lúc.
    */
   buildPrompt(userMessage: string, extraSystemNotes: string[] = []): LlmMessage[] {
     this.history.push({ role: 'user', content: userMessage })
     this.trimHistory()
     if (extraSystemNotes.length === 0) return [...this.history]
     const hasLeadingSystem = this.history[0]?.role === 'system'
-    const insertAt = hasLeadingSystem ? 1 : 0
-    const notes: LlmMessage[] = extraSystemNotes.map((content) => ({ role: 'system', content }))
-    return [...this.history.slice(0, insertAt), ...notes, ...this.history.slice(insertAt)]
+    const leadingContent = hasLeadingSystem ? [this.history[0].content] : []
+    const merged: LlmMessage = { role: 'system', content: [...leadingContent, ...extraSystemNotes].join('\n\n') }
+    const rest = hasLeadingSystem ? this.history.slice(1) : this.history
+    return [merged, ...rest]
   }
 
   recordAssistant(content: string, toolCall?: LlmToolCall) {

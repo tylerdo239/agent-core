@@ -2100,6 +2100,207 @@ curl CSS bundle chứa đúng class `dateGroupLabel`.
 
 ---
 
+## Phase 24 — Auth thật nhiều người dùng: Postgres, username/password, role admin/user, admin panel — ĐÃ BUILD
+
+User: storage/memory production-ready chưa để thêm module Auth quản lý user
++ UI. Quyết định giữa chừng: `bundles/providers/auth-apikey` (shared key
+phẳng) **thay thế hoàn toàn**, không mở rộng — schema SQLite ban đầu đề
+xuất bị bác ngay khi thấy nhỏ, chốt dùng **Postgres** riêng cho user/token
+(KHÔNG đụng SQLite của `ctx.storage`, event log hội thoại vẫn nguyên).
+
+**`seams/auth.ts`** rewrite (breaking): `verify()` từ `boolean` đồng bộ
+thành `Promise<AuthIdentity | undefined>` bất đồng bộ — bắt buộc vì
+Postgres qua `pg` là promise-based. Thêm `signup`/`login`/`logout`/
+`listUsers`/`setRole`/`setActive`/`deleteUser`, tất cả async. `Session`
+(seams/loop.ts) + `CreateSessionOptions` (seams/sessions.ts) thêm
+`ownerId?: string` — set DUY NHẤT bởi adapter từ identity đã verify, không
+bao giờ tin trường do client tự khai trong body (coding rule B1).
+
+**`bundles/providers/auth-users`** (MỚI, thay `auth-apikey` đã XOÁ) —
+`pg.Pool`, 2 bảng `users`/`auth_tokens` (`ON DELETE CASCADE`),
+`scryptSync`+`timingSafeEqual` cho mật khẩu, token bearer opaque
+(`randomBytes(32)`) tra theo `sha256(token)` (không lưu raw token). User
+đầu tiên ký hiệu ngay thành `admin` (bootstrap), còn lại mặc định `user`.
+Guard "admin cuối cùng": chặn hạ quyền/deactivate/xoá nếu đó là admin
+active cuối cùng còn lại.
+
+**Endpoint mới**: `POST /auth/signup|login|logout`, `GET /sessions` (chỉ
+sessions của chính actor), `GET/PATCH/DELETE /users` (chỉ admin, gate qua
+`ctx.permission.check(role, 'admin:users:manage')` — **seam permission
+không đổi gì**, RBAC đã đủ tổng quát từ Phase 2). Fix an ninh thật:
+`canAccessSession(identity, session)` thêm vào cả 3 adapter (REST/WS/gRPC)
+— trước đó bất kỳ token hợp lệ nào cũng đọc được session của người khác,
+đã verify bằng curl thật ra 403 đúng chỗ.
+
+`docker-compose.yml` thêm service `postgres:16-alpine` (`depends_on:
+condition: service_healthy`, named volume `agent-core-postgres-data`).
+Frontend: `packages/ui-primitives/TextField.tsx` (mới), package
+`packages/ui-auth` (`LoginForm`/`SignupForm`/`AdminUsersPanel`/
+`authState`/`authApi`), `Sidebar.tsx` thêm user row + trigger admin panel,
+`App.tsx` thêm gate `if (!auth) return <LoginForm/>|<SignupForm/>` (đặt
+SAU mọi hook, không vi phạm rules-of-hooks).
+
+**Deliverable Phase 24: ĐÃ XONG** — test Postgres cô lập theo
+`CREATE DATABASE`/`DROP DATABASE` mỗi test (`CREATE SCHEMA`+`search_path`
+đã thử trước, KHÔNG hoạt động đáng tin cậy với `pg.Pool`, verify bằng lỗi
+Postgres thật). `npm test` 170/170 pass, `npm run typecheck` sạch. Verify
+thật qua curl: signup đầu → admin, signup thứ 2 → role `user`, 403 chéo
+user thường trên `/users` và trên session người khác, 200 + đổi role cho
+admin. Tài khoản `admin`/`Ab@123456` đã seed thật, 4 tài khoản test dọn qua
+đúng `DELETE /users/:id`. Commit `06e6d39` (113 file, không kèm
+Co-Authored-By theo yêu cầu riêng của user — user tự commit dưới danh
+tính git của họ).
+
+---
+
+## Phase 25 — Tích hợp `ctx.memory` với TencentDB Agent Memory (MemoryCore) — ĐÃ BUILD
+
+User: tập trung phần tích hợp với memory như đã plan (xem
+`docs/agent-core-memory-integration-plan.md` cho bối cảnh đầy đủ — vì sao
+chọn MemoryCore, kiến trúc đề xuất, 4 quyết định đã chốt, rủi ro).
+MemoryCore (`memory-db/MemoryCore`, MIT, Tencent, port 8420) — chỉ dùng
+thành phần L0 (raw conversation + BM25 search)/L1 (fact extraction nền);
+KHÔNG dùng MemoryKnowledge/MemoryPanel/MemoryProxy (không cần, agent-core
+đã tự ráp prompt riêng).
+
+**`seams/memory.ts`** thêm `MemoryContext { userId?: string }` — `remember`/
+`recall` giờ nhận thêm context tuỳ chọn, map từ `Session.ownerId` để cô lập
+theo từng người dùng thật (không phải theo `sessionId` suông).
+
+**`bundles/providers/memory-tencentdb`** (MỚI) — wrap SDK chính thức
+`@tencentdb-agent-memory/memory-sdk-ts-v2`, dùng `V3MemoryClient`
+(strict-isolation: bind `teamId`/`agentId` cấp deployment lúc khởi tạo,
+`withIsolation({ userId })` phái sinh client theo từng user per-call, KHÔNG
+tạo 1 client/user). Timeout (coding rule A17): đã đọc thẳng
+`node_modules/.../dist/http.js` xác nhận `HttpTransport` tự có
+`AbortController` quanh mỗi fetch, không cần bọc thêm lớp giả.
+`remember()`/`recall()` best-effort tuyệt đối — lỗi/timeout chỉ log rồi
+nuốt (remember) hoặc trả mảng rỗng (recall), KHÔNG BAO GIỜ throw lên loop
+driver (memory là enhancement, không nằm trên critical path của turn).
+
+**Nối vào loop thật** — tái dùng ĐÚNG cơ chế `extraSystemNotes` đã xây cho
+skill (Phase 15), không phát minh cơ chế ráp prompt mới (coding rule B6):
+`loop-default`/`loop-planner-critic` gọi `ctx.memory?.recall(...)` rồi gộp
+kết quả vào cùng mảng `extraSystemNotes` với skill instructions.
+`bundles/providers/agent-runner` gọi `ctx.memory?.remember(...)` ngay sau
+khi ghi event `user_message` — KHÔNG await (nền, không chặn latency turn),
+có `.catch(() => {})` vì `serve.ts` có
+`process.on('unhandledRejection', ...) => process.exit(1)` cho toàn
+service. `'memory'` KHÔNG có trong `inject` của agent-runner/loop-driver —
+seam optional có chủ đích.
+
+**Gap thật #1 phát hiện qua verify Docker end-to-end thật** (không phải giả
+thuyết, không phải test đơn vị): dù `memory-tencentdb` đã mount thành công
+(log "ready" hẳn hoi) và cấu hình đúng 100%, `remember()`/`recall()` gọi
+qua `agent-runner`/`loop-default` KHÔNG BAO GIỜ thực sự tới được provider —
+xác nhận bằng cách gửi tin nhắn thật qua REST rồi xem log request thật của
+container `memory-core`: không có request nào cả. Nguyên nhân: đọc property
+`ctx.memory` trực tiếp THROW ("cannot get property \"memory\" without
+inject") ngay cả khi service ĐÃ mount ở nơi khác trong app — Cordis gate
+truy cập theo `inject` của ĐÚNG fiber đang đọc (spatial composability), không
+theo "có tồn tại đâu đó trong app hay không". try/catch bọc ngoài (bản đầu
+tiên) NUỐT ÂM THẦM lỗi này mỗi lần, im lặng vô hiệu hoá toàn bộ tính năng.
+Fix: dùng `ctx.get('memory', strict?)` — API chính thức của Cordis
+(`node_modules/@deepseek-ai/cordis/src/reflect.ts`) đọc service KHÔNG cần
+khai inject, trả `undefined` êm ái nếu chưa mount — đúng cơ chế "optional
+dependency" Cordis cung cấp sẵn, áp dụng ở cả `bundles/providers/agent-runner`
+và cả 2 loop driver, bỏ hẳn lớp try/catch tự chế không cần thiết nữa.
+
+**Gap thật #2 phát hiện cùng đợt verify** (cũng thực nghiệm, không phải giả
+thuyết): sau khi fix gap #1, `recall()` trả về ≥2 kết quả khiến
+`buildPrompt()` (bản cũ, Phase 15) chèn 2 message role `'system'` RIÊNG BIỆT
+— proxy Qwen (vLLM/litellm) trả 400 thật: `"System message must be at the
+beginning."`, xác nhận bằng curl trực tiếp vào proxy với 2 message system.
+Bug này CÓ TỪ Phase 15 (chỉ chưa lộ ra vì repo trước đó chỉ có đúng 1 skill,
+chưa từng có tình huống ≥2 note cùng lúc). Fix chung tại `seams/loop.ts`
+`Session.buildPrompt()`: gộp system prompt gốc (nếu có) + toàn bộ
+`extraSystemNotes` thành ĐÚNG 1 message role `'system'` duy nhất ở đầu mảng
+(nối bằng `\n\n`), không bao giờ phát sinh message system thứ 2 nữa bất kể
+bao nhiêu skill/memory note khớp cùng lúc. 3 test mới trong
+`tests/session-lifecycle.test.ts` khoá lại hành vi này.
+
+**Docker/serve.ts (mới trong phase này)**: `docker-compose.yml` thêm
+service `memory-core` (image `agentmemory/memory-core:latest`, xác nhận
+thật qua `docker inspect` là image có sẵn HEALTHCHECK riêng cổng 8420,
+không cần định nghĩa lại; KHÔNG có `depends_on` giữa `agent-core` và
+`memory-core` — cả 2 start song song, memory-tencentdb tự resilient nên
+không cần đợi đồng bộ như Postgres). `src/serve.ts` mount `ctx.memory`
+HOÀN TOÀN tuỳ chọn: chỉ khi `MEMORY_CORE_URL`+`MEMORY_CORE_API_KEY` được
+set (thiếu 1 trong 2 → exit(1) lúc boot, set đủ cả 2 hoặc bỏ trống cả 2);
+trước khi mount, tự gọi bootstrap 1 lần
+`POST /v3/internal/meta/user/init-admin` (idempotent — 409 vẫn tính là
+thành công) với retry-with-backoff (5 lần) vì thiếu `depends_on` đồng bộ;
+bootstrap thất bại hẳn KHÔNG làm service exit(1) — chỉ log cảnh báo rồi bỏ
+qua việc mount, agent-core vẫn chạy đầy đủ chức năng khác (đúng triết lý
+memory optional xuyên suốt).
+
+**Gap thật #3** (cũng phát hiện qua log Docker thật của chính container
+`memory-core`, không phải đọc source suông): request bootstrap ban đầu
+(chỉ gửi body `{username, user_key}`) bị MemoryCore trả 400
+`"missing_instance_id"`. Đọc thẳng
+`memory-db/MemoryCore/src/metadata/router/instance.ts` xác nhận route
+`/v3/internal/meta/user/init-admin` resolve `instance_id` TỪ HEADER
+`x-tdai-service-id` (không phải field body) — fix bằng cách thêm header đó
+vào request bootstrap, dùng đúng giá trị `MEMORY_CORE_SERVICE_ID`.
+
+**Deliverable Phase 25: ĐÃ VERIFY THẬT qua `docker compose up --build`** (3
+container: postgres/agent-core/memory-core, cả 3 healthy, log
+`[memory-tencentdb] ready`) **+ 1 lượt remember→recall thật qua curl REST**:
+tin nhắn 1 nêu 1 sự thật ("màu yêu thích là màu tím") → tin nhắn 2 hỏi lại
+trong CÙNG session → model trả lời đúng "tím" (nhớ lại thành công qua
+memory-core thật, log request `POST /v3/conversation/search` +
+`POST /v3/conversation/add` thật trên container `memory-core`). Verify thêm
+cô lập theo user: user khác, session khác, hỏi cùng câu → model trả lời
+đúng "không biết" (KHÔNG rò rỉ memory giữa các user). `npm test` 180/180
+pass (từ 170: +7 `tests/memory-tencentdb.test.ts`, +3
+`tests/session-lifecycle.test.ts` cho gap #2), `npm run typecheck` sạch.
+4 tài khoản test tạo trong lúc verify đã dọn qua đúng `DELETE /users/:id`.
+
+---
+
+## Phase 26 — Security audit thật (authn/authz toàn plugin) + plan rate-limiting — ĐÃ AUDIT, CHƯA IMPLEMENT
+
+User: "Lên plan update rate limit cho API và kiểm tra security cho authen
+author của các plugin" — audit là hành động thật (đã đọc từng file, không
+đoán), rate-limit chỉ dừng ở plan (chưa implement). Toàn bộ chi tiết
+(finding, file:line, kịch bản khai thác, fix đề xuất, thiết kế seam
+`ctx.ratelimit` + provider + số cụ thể từng endpoint) nằm ở
+[`docs/agent-core-rate-limit-and-security-audit.md`](agent-core-rate-limit-and-security-audit.md)
+— không lặp lại ở đây, chỉ tóm tắt mức độ:
+
+- **[CAO] A1**: `tool-database-query` đọc được transcript của BẤT KỲ
+  session nào qua tool-call, không check ownership — bỏ qua hoàn toàn lớp
+  `canAccessSession()` đã build cho REST/WS/gRPC. Gốc rễ: `ToolHandler`
+  (seams/tools.ts) không có tham số session/identity.
+- **[CAO] A2**: ownership chỉ tồn tại ở `ctx.sessions` (in-memory, TTL
+  sweep) — `ctx.storage` (SQLite) không có khái niệm chủ sở hữu, cộng với
+  REST/gRPC cho phép client tự chọn session id → 1 user có thể "nhận" lại
+  id đã bị sweep của user khác và đọc được transcript cũ của họ.
+- **[CAO] A3**: `login()` timing side-channel (chỉ chạy `scryptSync` khi
+  username tồn tại) — lộ được username hợp lệ dù message lỗi cố tình chung
+  chung.
+- **[CAO] A4**: không có rate-limiting ở bất kỳ đâu — brute-force + DoS tự
+  gây ra qua chính `scrypt` (cố tình tốn CPU) trên `/auth/login`/`/auth/signup`.
+- **[TRUNG BÌNH] A5**: handler lỗi chung echo thẳng `err.message` cho MỌI
+  lỗi 500 chưa lường trước — rò rỉ chi tiết nội bộ tiềm ẩn.
+- **[TRUNG BÌNH] A6**: gRPC chạy `createInsecure()` — token đi plaintext
+  (đã biết từ mục "Rủi ro cần theo dõi", nhắc lại cụ thể hơn ở đây).
+- **[THẤP] A7/A8**: `memory-tencentdb` fallback `'anonymous'` là dead code
+  hiện tại nhưng là bẫy tiềm ẩn; chính sách mật khẩu chỉ có độ dài tối
+  thiểu (chấp nhận được, không phải lỗi, miễn A4 được xử lý).
+
+A1/A2 nên xử lý ĐỘC LẬP, không phụ thuộc rate-limit — rate-limit làm chậm
+kẻ tấn công, không thay thế việc đóng đúng lỗ hổng authz.
+
+**Deliverable Phase 26**: 1 doc audit đầy đủ + 1 plan rate-limiting đầy đủ
+(seam `ctx.ratelimit`, provider `ratelimit-memory`, bảng limit cụ thể theo
+endpoint, thứ tự build 6 bước). **CHƯA implement bất kỳ finding hay
+rate-limit nào** — đúng scope user yêu cầu ("lên plan" cho rate limit),
+chờ quyết định của user về việc triển khai (đặc biệt A1 đổi signature
+`ToolHandler`, ảnh hưởng mọi tool bundle hiện có).
+
+---
+
 ## Timeline đề xuất (tham khảo, điều chỉnh theo tốc độ thật của bạn)
 
 | Phase | Nội dung                                                                 | Ưu tiên                                   |
@@ -2128,6 +2329,9 @@ curl CSS bundle chứa đúng class `dateGroupLabel`.
 | 21    | SearchModal: ghim vị trí trên (chống nhảy), nút X đóng, click-outside đóng — ĐÃ BUILD | Follow-up thứ 3: modal nhảy vị trí + chưa đóng được ngoài Esc |
 | 22    | Restructure Web UI: 4 package mới (ui-sidebar/ui-layout/ui-conversation/ui-settings-general), mirror ranh giới package thật của dsh — ĐÃ BUILD | User: sao cấu trúc dsh chia package mà source này chỉ 1 folder web |
 | 23    | Sidebar: nhóm lịch sử theo ngày (Hôm nay/Hôm qua/dd-MM) — ĐÃ BUILD | User: list history chưa có filter theo ngày như dsh |
+| 24    | Auth thật nhiều người dùng: Postgres, role admin/user, admin panel — ĐÃ BUILD | User: cần module Auth quản lý user + UI, Postgres thay SQLite |
+| 25    | Tích hợp `ctx.memory` với TencentDB Agent Memory (MemoryCore) — ĐÃ BUILD | User: tập trung phần tích hợp với memory như đã plan |
+| 26    | Security audit thật (authn/authz) + plan rate-limiting — ĐÃ AUDIT | User: lên plan rate limit + kiểm tra security authn/authz các plugin |
 
 ## Rủi ro cần theo dõi trong quá trình build
 

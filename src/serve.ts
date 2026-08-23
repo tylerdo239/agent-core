@@ -54,6 +54,7 @@ import * as toolDatabaseQuery from '../bundles/tools/tool-database-query/index.t
 import * as toolWebSearch from '../bundles/tools/tool-web-search/index.ts'
 import * as sessionRegistry from '../bundles/providers/session-registry/index.ts'
 import * as authUsers from '../bundles/providers/auth-users/index.ts'
+import * as memoryTencentdb from '../bundles/providers/memory-tencentdb/index.ts'
 import * as apiRest from '../bundles/adapters/api-rest/index.ts'
 import * as apiWs from '../bundles/adapters/api-ws/index.ts'
 import * as apiGrpc from '../bundles/adapters/api-grpc/index.ts'
@@ -100,6 +101,57 @@ function optionalJsonObject(name: string): Record<string, unknown> | undefined {
     process.exit(1)
   }
   return parsed as Record<string, unknown>
+}
+
+// Module memory (ctx.memory, TÙY CHỌN — xem
+// docs/agent-core-memory-integration-plan.md): MemoryCore đòi 1 lần
+// bootstrap admin user qua POST /v3/internal/meta/user/init-admin lúc
+// service KHỞI TẠO LẦN ĐẦU (idempotent — gọi lại sau vẫn 200/409, không
+// lỗi). docker-compose KHÔNG có primitive "chạy script sau khi container
+// khác healthy" thuần túy, nên bootstrap này chạy Ở ĐÂY (ngay trong boot
+// sequence của agent-core, TRƯỚC khi mount memory-tencentdb) — không phải
+// 1 job/script riêng.
+//
+// Retry-with-backoff giống hệt lý do auth-users cần retry cho Postgres:
+// memory-core KHÔNG nằm trong depends_on của agent-core (cả 2 container
+// start song song, xem docker-compose.yml) — memory-core có thể chưa kịp
+// healthy lúc agent-core chạy tới đây.
+//
+// QUAN TRỌNG: bootstrap thất bại sau hết số lần retry KHÔNG làm service
+// exit(1) — memory là enhancement, không nằm trên critical path (đúng
+// triết lý xuyên suốt: remember()/recall() best-effort, seam optional,
+// không có trong `inject` của agent-runner). Log cảnh báo rồi bỏ qua việc
+// mount memory-tencentdb, agent-core vẫn chạy đầy đủ các chức năng khác.
+async function tryBootstrapMemoryCoreAdmin(endpoint: string, apiKey: string, serviceId: string): Promise<boolean> {
+  const attempts = 5
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 5_000)
+    try {
+      // Gap thật phát hiện qua log Docker thật (không phải giả thuyết từ
+      // đọc source suông): thiếu header `x-tdai-service-id` → 400
+      // "missing_instance_id". Đọc thẳng memory-db/MemoryCore/src/metadata/
+      // router/instance.ts xác nhận route này resolve instance_id TỪ HEADER
+      // này (không phải field body `instance_id`) — cùng giá trị serviceId
+      // dùng làm header x-tdai-service-id ở mọi call khác qua SDK.
+      const res = await fetch(`${endpoint}/v3/internal/meta/user/init-admin`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-tdai-service-id': serviceId },
+        body: JSON.stringify({ username: 'agent-core', user_key: apiKey }),
+        signal: controller.signal,
+      })
+      if (res.ok || res.status === 409) return true
+      console.error(`memory-core init-admin trả về status ${res.status} (lần ${attempt + 1}/${attempts}), thử lại...`)
+    } catch (err) {
+      console.error(
+        `memory-core init-admin lần ${attempt + 1}/${attempts} lỗi: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    } finally {
+      clearTimeout(timeout)
+    }
+    if (attempt < attempts - 1) await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt))
+  }
+  return false
 }
 
 // Đăng ký TRƯỚC khi làm bất kỳ việc gì khác — 1 lỗi không lường trước ở bất
@@ -194,6 +246,34 @@ async function main() {
     sweepIntervalMs: optionalNumber('SESSION_SWEEP_INTERVAL_MS'),
   })
   root.plugin(authUsers, { connectionString: databaseUrl })
+
+  // Module memory (ctx.memory, TÙY CHỌN) — xem chú thích tại
+  // tryBootstrapMemoryCoreAdmin ở trên. Không set MEMORY_CORE_URL = bỏ qua
+  // hoàn toàn, ctx.memory không mount, hệ thống chạy y hệt trước đây.
+  const memoryCoreUrl = process.env.MEMORY_CORE_URL
+  const memoryCoreApiKey = process.env.MEMORY_CORE_API_KEY
+  if (memoryCoreUrl && !memoryCoreApiKey) {
+    console.error('FATAL: MEMORY_CORE_URL được set nhưng thiếu MEMORY_CORE_API_KEY — set cả 2 hoặc bỏ trống cả 2.')
+    process.exit(1)
+  }
+  if (memoryCoreUrl && memoryCoreApiKey) {
+    const memoryCoreServiceId = process.env.MEMORY_CORE_SERVICE_ID ?? 'default'
+    const bootstrapped = await tryBootstrapMemoryCoreAdmin(memoryCoreUrl, memoryCoreApiKey, memoryCoreServiceId)
+    if (bootstrapped) {
+      root.plugin(memoryTencentdb, {
+        endpoint: memoryCoreUrl,
+        apiKey: memoryCoreApiKey,
+        serviceId: memoryCoreServiceId,
+      })
+    } else {
+      console.error(
+        'CẢNH BÁO: không bootstrap được memory-core sau nhiều lần thử — ctx.memory KHÔNG mount, agent-core vẫn chạy bình thường (không có tính năng ghi nhớ).',
+      )
+    }
+  } else {
+    console.log('MEMORY_CORE_URL không được set — bỏ qua module memory (ctx.memory không mount, tuỳ chọn).')
+  }
+
   root.plugin(toolDatabaseQuery)
   root.plugin(toolWebSearch, {
     // Audit fix: trước đây không có timeout, fetch() có thể treo cả turn vô
