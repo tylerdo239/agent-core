@@ -16,6 +16,7 @@ import '../../../seams/storage.ts'
 import '../../../seams/tools.ts'
 import '../../../seams/loop.ts'
 import '../../../seams/skill.ts'
+import { MemoryEntry } from '../../../seams/memory.ts'
 import { assertNotCancelled, LoopTurnResult, Session, TurnInput } from '../../../seams/loop.ts'
 
 export const inject = ['loop']
@@ -28,7 +29,23 @@ export const apply = (ctx: Context) => {
       // không tự ráp prompt, chỉ đưa instructions đã match vào buildPrompt()
       // (coding rule B6, xem chú thích tại seams/loop.ts).
       const matchedSkills = runCtx.skills.match(userMessage)
-      let messages = session.buildPrompt(userMessage, matchedSkills.map((s) => s.instructions))
+      // Memory integration: `ctx.memory` KHÔNG nằm trong `inject` (seam optional
+      // -- chỉ mount khi MEMORY_CORE_URL được cấu hình, xem src/serve.ts).
+      // Dùng `ctx.get('memory')` (API chính thức Cordis, đọc service KHÔNG
+      // cần inject, trả `undefined` êm ái nếu chưa mount) thay vì đọc property
+      // `runCtx.memory` trực tiếp -- property access THROW ngay cả khi
+      // service ĐÃ mount ở nơi khác, vì Cordis gate theo inject của ĐÚNG
+      // fiber đang đọc, không theo "có tồn tại trong app hay không". Gap này
+      // xác nhận thật bằng verify Docker end-to-end (không phải giả thuyết):
+      // memory-tencentdb mount thành công nhưng recall() không bao giờ tới
+      // được provider khi còn dùng optional-chaining + try/catch quanh
+      // property access (xem chú thích đầy đủ hơn tại bundles/providers/
+      // agent-runner). `recall()` bản thân đã best-effort (log-and-swallow
+      // bên trong provider), nên không cần try/catch ở đây nữa.
+      const recalled: MemoryEntry[] =
+        (await runCtx.get('memory')?.recall(session.id, userMessage, 3, { userId: session.ownerId })) ?? []
+      const memoryNotes = recalled.map((m) => `Đã ghi nhớ trước đó: ${m.text}`)
+      let messages = session.buildPrompt(userMessage, [...matchedSkills.map((s) => s.instructions), ...memoryNotes])
       let steps = 0
 
       while (steps < session.maxSteps) {

@@ -7,18 +7,18 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: var(--alias-space-xs);
   border-radius: 18px;
   height: 36px;
-  padding: 0 16px;
-  font-size: 13px;
-  font-weight: 600;
+  padding: 0 var(--alias-space-lg);
+  font-size: var(--alias-font-size-body-sm);
+  font-weight: var(--alias-font-weight-emphasis);
   font-family: inherit;
   cursor: pointer;
   border: 1px solid var(--alias-border-default);
   background: var(--alias-bg-subtle);
   color: var(--alias-label-primary);
-  transition: border-color 0.15s, background-color 0.15s;
+  transition: border-color var(--alias-motion-base) var(--alias-motion-ease), background-color var(--alias-motion-base) var(--alias-motion-ease);
 }
 
 .button:hover:not(:disabled) {

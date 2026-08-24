@@ -18,17 +18,26 @@
 // accept-connection-rồi-đóng. `maxPayload` giới hạn kích thước 1 message,
 // tránh 1 client gửi frame khổng lồ ăn RAM.
 //
+// Module auth: verify() giờ BẤT ĐỒNG BỘ (Postgres) — thư viện `ws` cho phép
+// gọi `callback` của `verifyClient` bất đồng bộ (không bắt buộc đồng bộ,
+// verify thực nghiệm với version cài trong repo, không chỉ tin docs). Danh
+// tính đã verify được "gửi kèm" `info.req` để handler 'connection' đọc lại —
+// KHÔNG có chỗ nào khác trong contract của `ws` để truyền identity từ
+// verifyClient sang connection handler. Mọi session tạo mới gắn `ownerId`
+// từ identity đó; send_message/tạo session đều check thêm quyền sở hữu.
+//
 // Key lấy từ 2 nguồn (thử header trước, query string sau) — KHÔNG phải 1
 // trong 2 là đủ cho mọi client thật: `new WebSocket(url)` theo Web spec
 // KHÔNG có tham số set custom header (khác client Node package `ws` dùng
 // trong test, có hỗ trợ `{ headers }`). Browser thật (bundles/adapters/web-ui)
-// PHẢI dùng query string (`?key=...`); giữ header cho client Node hiện có.
+// PHẢI dùng query string (`?token=...`); giữ header cho client Node hiện có.
 import { WebSocketServer, type WebSocket } from 'ws'
 import { Context } from '@deepseek-ai/cordis'
 import '../../../seams/sessions.ts'
 import '../../../seams/agent.ts'
 import '../../../seams/auth.ts'
-import { LoopStep } from '../../../seams/loop.ts'
+import { AuthIdentity } from '../../../seams/auth.ts'
+import { LoopStep, Session } from '../../../seams/loop.ts'
 
 export namespace ApiWs {
   export interface Config {
@@ -56,11 +65,11 @@ function extractToken(req: import('node:http').IncomingMessage): string | undefi
   const header = req.headers.authorization
   if (header?.startsWith('Bearer ')) return header.slice('Bearer '.length)
   const url = new URL(req.url ?? '/', 'http://localhost')
-  return url.searchParams.get('key') ?? undefined
+  return url.searchParams.get('token') ?? undefined
 }
 
-function extractTicket(req: import('node:http').IncomingMessage) {
-  return new URL(req.url ?? '/', 'http://localhost').searchParams.get('ticket') ?? undefined
+function canAccessSession(identity: AuthIdentity, session: Session): boolean {
+  return identity.role === 'admin' || session.ownerId === identity.userId
 }
 
 export const apply = async (ctx: Context, config: ApiWs.Config = {}) => {
@@ -69,8 +78,14 @@ export const apply = async (ctx: Context, config: ApiWs.Config = {}) => {
     maxPayload: config.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES,
     verifyClient: (info, callback) => {
       const token = extractToken(info.req)
-      if (ctx.auth.verifyTicket?.(extractTicket(info.req)) || ctx.auth.verify(token)) return callback(true)
-      callback(false, 401, 'unauthorized')
+      ctx.auth.verify(token).then((identity) => {
+        if (!identity) return callback(false, 401, 'unauthorized')
+        // Không có chỗ chuẩn nào khác trong contract `ws` để mang identity
+        // từ đây sang handler 'connection' — gắn thẳng lên chính request
+        // instance (CÙNG object cả 2 phía đều thấy).
+        ;(info.req as any).authIdentity = identity
+        callback(true)
+      })
     },
   })
 
@@ -82,9 +97,10 @@ export const apply = async (ctx: Context, config: ApiWs.Config = {}) => {
   if (address && typeof address === 'object') config.port = address.port
   ctx.logger('api-ws').info('listening on :%d', config.port)
 
-  wss.on('connection', (socket) => {
+  wss.on('connection', (socket, request) => {
+    const identity = (request as any).authIdentity as AuthIdentity
     socket.on('message', (raw) => {
-      handleMessage(ctx, socket, raw.toString()).catch((err: any) => {
+      handleMessage(ctx, socket, raw.toString(), identity).catch((err: any) => {
         ctx.logger('api-ws').error(err)
         send(socket, { type: 'error', message: err?.message ?? 'internal error' })
       })
@@ -97,7 +113,7 @@ export const apply = async (ctx: Context, config: ApiWs.Config = {}) => {
     })
 }
 
-async function handleMessage(ctx: Context, socket: WebSocket, raw: string) {
+async function handleMessage(ctx: Context, socket: WebSocket, raw: string, identity: AuthIdentity) {
   let msg: ClientMessage
   try {
     msg = JSON.parse(raw)
@@ -110,6 +126,7 @@ async function handleMessage(ctx: Context, socket: WebSocket, raw: string) {
       driver: msg.driver,
       maxSteps: msg.maxSteps,
       systemPrompt: msg.systemPrompt,
+      ownerId: identity.userId,
     })
     return send(socket, { type: 'session_created', id: session.id, driver: session.driver })
   }
@@ -117,6 +134,7 @@ async function handleMessage(ctx: Context, socket: WebSocket, raw: string) {
   if (msg.type === 'send_message') {
     const session = ctx.sessions.get(msg.sessionId)
     if (!session) return send(socket, { type: 'error', message: `session "${msg.sessionId}" not found` })
+    if (!canAccessSession(identity, session)) return send(socket, { type: 'error', message: 'forbidden' })
 
     // Nghe live event CHỈ cho đúng sessionId này, gỡ ngay khi turn xong —
     // không leak listener qua các turn/socket khác.

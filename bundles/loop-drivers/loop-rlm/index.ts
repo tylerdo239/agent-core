@@ -5,6 +5,7 @@ import '../../../seams/storage.ts'
 import '../../../seams/skill.ts'
 import '../../../seams/prompt.ts'
 import '../../../seams/workspace.ts'
+import '../../../seams/turn-memory.ts'
 import { assertNotCancelled, LoopStep, LoopTurnResult, Session, TurnInput } from '../../../seams/loop.ts'
 import { SandboxEvent } from '../../../seams/sandbox.ts'
 import { prepareRlmTurn, RlmSessionState } from './protocol.ts'
@@ -157,10 +158,15 @@ export const apply = (ctx: Context) => {
       // plugin cần capability và fail rõ nếu composition thiếu provider.
       const sandbox = runCtx.get('sandbox')
       const workspace = runCtx.get('workspace')
-      const memoryService = runCtx.get('memory')
+      // Merge RLM harness (docs/agent-core-rlm-harness-merge-plan.md mục
+      // 4.1): capability rolling-summary theo session tách khỏi `ctx.memory`
+      // (remember/recall xuyên session/user qua TencentDB Agent Memory,
+      // Phase 25) sang seam riêng `ctx.turnMemory` — 2 khái niệm khác nhau,
+      // không ép chung 1 interface.
+      const memoryService = runCtx.get('turnMemory')
       const prompts = runCtx.get('prompts')
       if (!sandbox || !workspace || !memoryService || !prompts) {
-        throw new Error('loop-rlm requires sandbox, workspace, memory and prompt providers')
+        throw new Error('loop-rlm requires sandbox, workspace, turnMemory and prompt providers')
       }
       const selected = input.selectedSkill ? runCtx.skills.get(input.selectedSkill) : undefined
       if (input.selectedSkill) {

@@ -23,7 +23,7 @@ describe('session persistence', () => {
     temporary.push(directory)
     const database = path.join(directory, 'state.db')
     const first = await boot(database)
-    const session = first.sessions.create({ id: 'persistent', driver: 'default', systemPrompt: 'system rule' })
+    const session = first.sessions.create({ id: 'persistent', driver: 'default', systemPrompt: 'system rule', ownerId: 'user-123' })
     await first.storage.appendEvent(session.id, { type: 'user_message', content: 'hello' })
     await first.storage.appendEvent(session.id, { type: 'model_message', content: 'hi back' })
     await first.fiber.dispose()
@@ -32,6 +32,7 @@ describe('session persistence', () => {
     try {
       const restored = second.sessions.get('persistent')
       expect(restored?.driver).toBe('default')
+      expect(restored?.ownerId).toBe('user-123')
       expect(restored?.history).toEqual([
         { role: 'system', content: 'system rule' },
         { role: 'user', content: 'hello' },

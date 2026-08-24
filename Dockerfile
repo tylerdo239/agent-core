@@ -2,7 +2,7 @@
 # not depend on a prebuilt sibling data-agent image.
 FROM python:3.11-slim-bookworm AS rlm-python
 WORKDIR /runtime
-COPY python/requirements.txt ./requirements.txt
+COPY bundles/loop-drivers/loop-rlm/python/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -33,6 +33,13 @@ COPY package.json package-lock.json ./
 COPY packages/ui-slots/package.json ./packages/ui-slots/package.json
 COPY packages/ui-react/package.json ./packages/ui-react/package.json
 COPY packages/ui-tool-web-search/package.json ./packages/ui-tool-web-search/package.json
+COPY packages/ui-sidebar/package.json ./packages/ui-sidebar/package.json
+COPY packages/ui-layout/package.json ./packages/ui-layout/package.json
+COPY packages/ui-conversation/package.json ./packages/ui-conversation/package.json
+COPY packages/ui-settings-general/package.json ./packages/ui-settings-general/package.json
+COPY packages/ui-auth/package.json ./packages/ui-auth/package.json
+COPY packages/ui-rlm-workspace/package.json ./packages/ui-rlm-workspace/package.json
+COPY packages/ui-plugin-inventory/package.json ./packages/ui-plugin-inventory/package.json
 COPY apps/web/package.json ./apps/web/package.json
 RUN npm ci
 
@@ -57,13 +64,16 @@ COPY --from=rlm-python /usr/local /usr/local
 ARG AGENT_UID=1019
 ARG AGENT_GID=1020
 
-# OpenCode VS Code extension chỉ là client: khi activate, nó gọi executable
-# `opencode --port ...` bên trong container. Cài CLI vào image để extension
-# không phụ thuộc vào một lần cài thủ công (vốn sẽ mất khi recreate container).
-ARG OPENCODE_VERSION=1.18.20
+# Gap thật phát hiện qua chạy real turn qua loop-rlm trong Docker (không
+# phải giả thuyết): xoá NGUYÊN block apt-get này lúc bỏ sudo/OpenCode (mục
+# 3.4/4.4) làm worker Python crash "libsqlite3.so.0: cannot open shared
+# object file" — những lib này KHÔNG chỉ phục vụ OpenCode CLI, mà là
+# runtime dependency thật của chính interpreter Python 3.11 build sẵn
+# (sqlite3/readline/dbm/ssl/tcl-tk cho numpy/pandas/scipy/matplotlib/
+# ipykernel...). Giữ nguyên đủ bộ lib như `Dockerfile.dev` (đã chạy tốt) —
+# chỉ bỏ đúng `sudo` + lệnh cài OpenCode CLI, đúng phạm vi quyết định.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-    sudo \
     default-jre-headless \
     libgdbm6 \
     libgomp1 \
@@ -75,28 +85,35 @@ RUN apt-get update \
     libtcl8.6 \
     libtirpc3 \
     libtk8.6 \
-  && rm -rf /var/lib/apt/lists/* \
-  && npm install --global "opencode-ai@${OPENCODE_VERSION}" \
-  && opencode --version
+  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 COPY seams ./seams
 COPY bundles ./bundles
 COPY src ./src
-COPY python ./python
+# python/rlm_agent + vendor/rlm giờ nằm HẲN TRONG
+# bundles/loop-drivers/loop-rlm/python/ (Phase 30 — dời từ python/ ở root
+# vào đúng bundle sở hữu nó, xem docs/agent-core-cordis-build-plan.md) —
+# `COPY bundles ./bundles` ở trên đã mang theo, không cần dòng COPY riêng
+# nữa.
 # Chỉ copy dist đã build (Phase 9.6) — KHÔNG copy apps/web/src hay
 # packages/*/src vào runtime, server không cần source phía client, chỉ cần
 # đúng vị trí bundles/adapters/web-ui/index.ts tính DIST_DIR tới
 # (../../../apps/web/dist tính từ bundle đó).
 COPY --from=build-web /app/apps/web/dist ./apps/web/dist
 
-# Mặc định vẫn chạy bằng user thường. User có thể nâng quyền bằng `sudo` khi
-# chủ động cần thao tác quản trị trong development container.
+# Chạy bằng user không phải root — giảm bề mặt tấn công nếu container bị
+# chiếm quyền qua 1 lỗ hổng nào đó trong dependency. Merge RLM harness (xem
+# docs/agent-core-rlm-harness-merge-plan.md mục 3.4/4.4): bản gốc RLM thêm
+# `sudo NOPASSWD` cho user này (phục vụ OpenCode VS Code extension trong môi
+# trường DEV) — nhưng Dockerfile này build image PRODUCTION
+# (`docker-compose.yml`), sudo NOPASSWD ở đây gần như tương đương root, xoá
+# sạch lớp phòng thủ non-root cố tình build từ trước. Đã tách hẳn: sudo/
+# OpenCode CLI chỉ còn trong `Dockerfile.dev` (dev container riêng, không
+# dùng cho production).
 RUN groupadd --gid "${AGENT_GID}" agent \
-  && useradd --uid "${AGENT_UID}" --gid agent --create-home --shell /bin/bash agent \
-  && printf 'agent ALL=(ALL:ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/agent \
-  && chmod 0440 /etc/sudoers.d/agent \
+  && useradd --uid "${AGENT_UID}" --gid agent --create-home --shell /usr/sbin/nologin agent \
   && mkdir -p /app/data \
   && chown -R agent:agent /app
 USER agent

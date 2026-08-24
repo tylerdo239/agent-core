@@ -9,7 +9,7 @@ import {
   StorageService, type StoredEvent,
 } from '../../../seams/storage.ts'
 
-const SCHEMA_VERSION = 2
+const SCHEMA_VERSION = 3
 const DEFAULT_RETENTION_SWEEP_INTERVAL_MS = 60 * 60_000
 const MAX_PAGE_LIMIT = 1000
 
@@ -129,7 +129,7 @@ export class SqliteStorage extends StorageService {
         CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS sessions(
           id TEXT PRIMARY KEY,driver TEXT NOT NULL,max_steps INTEGER NOT NULL,system_prompt TEXT,
-          max_history_messages INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'active',
+          max_history_messages INTEGER NOT NULL,owner_id TEXT,status TEXT NOT NULL DEFAULT 'active',
           created_at TEXT NOT NULL,last_active_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS runs(
           id TEXT PRIMARY KEY,session_id TEXT NOT NULL,request_id TEXT,driver TEXT NOT NULL,
@@ -150,6 +150,8 @@ export class SqliteStorage extends StorageService {
         INSERT INTO meta(key,value) VALUES('schema_version','${SCHEMA_VERSION}')
           ON CONFLICT(key) DO UPDATE SET value=excluded.value;
       `)
+      const sessionColumns = new Set((this.db.prepare(`PRAGMA table_info(sessions)`).all() as { name: string }[]).map((column) => column.name))
+      if (!sessionColumns.has('owner_id')) this.db.exec(`ALTER TABLE sessions ADD COLUMN owner_id TEXT`)
       this.db.exec('COMMIT')
     } catch (error) {
       this.db.exec('ROLLBACK')
@@ -203,17 +205,17 @@ export class SqliteStorage extends StorageService {
   }
 
   async saveSession(record: SessionRecord) {
-    this.db.prepare(`INSERT INTO sessions(id,driver,max_steps,system_prompt,max_history_messages,status,created_at,last_active_at)
-      VALUES(@id,@driver,@maxSteps,@systemPrompt,@maxHistoryMessages,@status,@createdAt,@lastActiveAt)
+    this.db.prepare(`INSERT INTO sessions(id,driver,max_steps,system_prompt,max_history_messages,owner_id,status,created_at,last_active_at)
+      VALUES(@id,@driver,@maxSteps,@systemPrompt,@maxHistoryMessages,@ownerId,@status,@createdAt,@lastActiveAt)
       ON CONFLICT(id) DO UPDATE SET driver=excluded.driver,max_steps=excluded.max_steps,
       system_prompt=excluded.system_prompt,max_history_messages=excluded.max_history_messages,
-      status=excluded.status,last_active_at=excluded.last_active_at`)
-      .run({ ...record, systemPrompt: record.systemPrompt ?? null })
+      owner_id=excluded.owner_id,status=excluded.status,last_active_at=excluded.last_active_at`)
+      .run({ ...record, systemPrompt: record.systemPrompt ?? null, ownerId: record.ownerId ?? null })
   }
   private toSession(row: any): SessionRecord {
     return { id: row.id, driver: row.driver, maxSteps: row.max_steps,
       systemPrompt: row.system_prompt ?? undefined, maxHistoryMessages: row.max_history_messages,
-      status: row.status, createdAt: row.created_at, lastActiveAt: row.last_active_at }
+      ownerId: row.owner_id ?? undefined, status: row.status, createdAt: row.created_at, lastActiveAt: row.last_active_at }
   }
   async loadSession(id: string) { const row = this.db.prepare(`SELECT * FROM sessions WHERE id=? AND status='active'`).get(id); return row ? this.toSession(row) : undefined }
   async loadSessions() { return (this.db.prepare(`SELECT * FROM sessions WHERE status='active' ORDER BY last_active_at DESC`).all() as any[]).map((row) => this.toSession(row)) }

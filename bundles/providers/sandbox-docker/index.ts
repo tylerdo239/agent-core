@@ -21,6 +21,11 @@ export namespace SandboxDocker {
 }
 
 const DEFAULT_IMAGE = 'agent-core:latest'
+// Phase 30: python/rlm_agent + vendor/rlm dời vào đúng bundle sở hữu
+// (bundles/loop-drivers/loop-rlm/python/), không còn ở root /app/python —
+// image Docker (Dockerfile) copy nguyên `bundles/` nên path trong container
+// khớp đúng path trong repo.
+const RLM_PYTHON_ROOT = '/app/bundles/loop-drivers/loop-rlm/python'
 
 function safeName(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9_.-]/g, '-').replace(/^[.-]+|[.-]+$/g, '').slice(0, 40) || 'default'
@@ -67,8 +72,8 @@ export function buildDockerWorkerArgs(options: DockerWorkerArgs): string[] {
     '--volume', `${dockerVolume ?? path.resolve(options.workspaceRoot)}:${containerWorkspace}`,
     '--tmpfs', '/tmp:rw,nosuid,nodev,exec,size=2g',
     '--env', 'HOME=/tmp',
-    '--env', 'PYTHONPATH=/app/python/vendor/rlm:/app/python',
-    '--env', 'RLM_RUNTIME_ROOT=/app/python',
+    '--env', `PYTHONPATH=${RLM_PYTHON_ROOT}/vendor/rlm:${RLM_PYTHON_ROOT}`,
+    '--env', `RLM_RUNTIME_ROOT=${RLM_PYTHON_ROOT}`,
     '--env', `RLM_WORKSPACE_ROOT=${containerWorkspace}`,
     '--env', `RLM_AGENT_CONFIG_JSON=${JSON.stringify(options.agentConfig)}`,
   ]
@@ -85,7 +90,7 @@ export function buildDockerWorkerArgs(options: DockerWorkerArgs): string[] {
     const gid = typeof process.getgid === 'function' ? process.getgid() : undefined
     if (uid !== undefined && gid !== undefined) args.push('--user', `${uid}:${gid}`)
   }
-  args.push(options.image, 'python', '-u', '/app/bundles/loop-drivers/loop-rlm/python/worker.py')
+  args.push(options.image, 'python', '-u', `${RLM_PYTHON_ROOT}/worker.py`)
   return args
 }
 
@@ -169,8 +174,8 @@ export class SandboxDocker extends SandboxIpython {
       }
     }
     super(ctx, {
-      workerPath: '/app/bundles/loop-drivers/loop-rlm/python/worker.py',
-      runtimeRoot: '/app/python',
+      workerPath: `${RLM_PYTHON_ROOT}/worker.py`,
+      runtimeRoot: RLM_PYTHON_ROOT,
       agentConfig: config.agentConfig,
       launch,
       closeProcess,

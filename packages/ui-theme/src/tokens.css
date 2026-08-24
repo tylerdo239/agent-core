@@ -42,7 +42,51 @@
   --static-brand-700: #b44c10;
 
   --static-error-500: #e5484d;
+  --static-error-100: #fdecec;
   --static-success-500: #30a46c;
+
+  /* Thang spacing/radius/typography/shadow/motion — thêm sau audit UI-redesign
+     (2026-08): trước đây tokens.css CHỈ có màu, mọi px/radius/font-size trong
+     app là literal rải rác không theo hệ thống nào — nguyên nhân chính khiến
+     UI "không đồng nhất". 4 thang dưới đây bám đúng nhịp 8/16px đã NGẦM có sẵn
+     trong phần lớn literal cũ (8,10,12,14,16,20...), không phải áp đặt số mới. */
+  --static-space-1: 4px;
+  --static-space-2: 8px;
+  --static-space-3: 12px;
+  --static-space-4: 16px;
+  --static-space-5: 20px;
+  --static-space-6: 24px;
+  --static-space-7: 32px;
+  --static-space-8: 48px;
+
+  --static-radius-1: 4px;
+  --static-radius-2: 8px;
+  --static-radius-3: 12px;
+  --static-radius-4: 16px;
+  --static-radius-5: 22px;
+  --static-radius-6: 999px;
+
+  --static-font-size-1: 12px;
+  --static-font-size-2: 13px;
+  --static-font-size-3: 14px;
+  --static-font-size-4: 16px;
+  --static-font-size-5: 20px;
+  --static-font-size-6: 24px;
+  --static-font-weight-regular: 400;
+  --static-font-weight-medium: 500;
+  --static-font-weight-semibold: 600;
+  --static-line-height-1: 1.3;
+  --static-line-height-2: 1.5;
+  --static-line-height-3: 1.65;
+
+  --static-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06), 0 1px 1px rgba(0, 0, 0, 0.04);
+  --static-shadow-2: 0 4px 10px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.06);
+  --static-shadow-3: 0 12px 32px rgba(0, 0, 0, 0.14), 0 4px 12px rgba(0, 0, 0, 0.08);
+
+  --static-duration-1: 100ms;
+  --static-duration-2: 200ms;
+  --static-duration-3: 320ms;
+  --static-ease-1: cubic-bezier(0.4, 0, 0.2, 1);
 
   /* ============ TẦNG 2: alias — ngữ nghĩa, MỌI component chỉ dùng tầng này ============ */
   --alias-bg-base: var(--static-neutral-0);
@@ -57,7 +101,43 @@
   --alias-accent-active: var(--static-brand-700);
   --alias-accent-subtle-bg: var(--static-brand-100);
   --alias-state-error: var(--static-error-500);
+  --alias-state-error-subtle-bg: var(--static-error-100);
   --alias-state-success: var(--static-success-500);
+
+  --alias-space-xs: var(--static-space-1);
+  --alias-space-sm: var(--static-space-2);
+  --alias-space-md: var(--static-space-3);
+  --alias-space-lg: var(--static-space-4);
+  --alias-space-xl: var(--static-space-5);
+  --alias-space-2xl: var(--static-space-6);
+
+  /* control = button/input/tool-row header; panel = modal/tool-row body/card;
+     capsule = bề mặt "viên nhộng" (composer, bubble); pill = badge/nút tròn. */
+  --alias-radius-control: var(--static-radius-2);
+  --alias-radius-panel: var(--static-radius-3);
+  --alias-radius-capsule: var(--static-radius-5);
+  --alias-radius-pill: var(--static-radius-6);
+
+  --alias-font-size-caption: var(--static-font-size-1);
+  --alias-font-size-body-sm: var(--static-font-size-2);
+  --alias-font-size-body: var(--static-font-size-3);
+  --alias-font-size-heading-sm: var(--static-font-size-4);
+  --alias-font-size-heading-md: var(--static-font-size-5);
+  --alias-font-size-heading-lg: var(--static-font-size-6);
+  --alias-font-weight-body: var(--static-font-weight-regular);
+  --alias-font-weight-emphasis: var(--static-font-weight-semibold);
+  --alias-line-height-ui: var(--static-line-height-1);
+  --alias-line-height-body: var(--static-line-height-2);
+  --alias-line-height-prose: var(--static-line-height-3);
+
+  --alias-shadow-raised: var(--static-shadow-1);
+  --alias-shadow-floating: var(--static-shadow-2);
+  --alias-shadow-overlay: var(--static-shadow-3);
+
+  --alias-motion-fast: var(--static-duration-1);
+  --alias-motion-base: var(--static-duration-2);
+  --alias-motion-slow: var(--static-duration-3);
+  --alias-motion-ease: var(--static-ease-1);
 
   /* ============ TẦNG 3: specific — token riêng theo ĐÚNG 1 chỗ dùng thật ============ */
   /* Quyết định thiết kế (ghi rõ, không phải bikeshed im lặng): bubble user
@@ -66,4 +146,12 @@
      text thường. Cam đặc (--alias-accent) dành cho nút hành động chính. */
   --specific-bubble-user-bg: var(--alias-accent-subtle-bg);
   --specific-bubble-user-text: var(--alias-label-primary);
+  --specific-bubble-user-radius: var(--alias-radius-capsule);
+
+  /* Tooltip (2026-08, follow-up): trước đây dùng --alias-label-primary
+     (#222 gần đen) — user muốn nền XÁM thật, không phải đen. neutral-700
+     (#444) là mức "xám đậm" rõ ràng trong thang static, khác hẳn neutral-900
+     (đen, dùng cho text chính) — vẫn đủ contrast với chữ trắng (>10:1). */
+  --specific-tooltip-bg: var(--static-neutral-700);
+  --specific-tooltip-text: var(--static-neutral-0);
 }

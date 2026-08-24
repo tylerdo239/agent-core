@@ -1,0 +1,11 @@
+/* packages/ui-rlm-workspace/src/SkillComposerExtra.module.css — follow-up:
+   dropdown giờ dùng `Select` (packages/ui-primitives, themed, popup mở
+   'up') — style trigger/popup đã do chính Select đảm nhiệm, file này CHỈ
+   còn margin canh mép trái/phải khớp capsule của Composer
+   (packages/ui-conversation/src/Composer.module.css's .form dùng
+   `margin: 0 var(--alias-space-xl)`) — trước đây dropdown lệch mép so với
+   ô nhập ngay phía dưới nó (gap thị giác thật user báo lại), dùng ĐÚNG
+   token đó để luôn khớp, bất kể composer sau này đổi CSS. */
+.select {
+  margin: 0 var(--alias-space-xl) var(--alias-space-sm);
+}

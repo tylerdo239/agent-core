@@ -1,0 +1,39 @@
+.app {
+  height: 100vh;
+  display: flex;
+  flex-direction: row;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--alias-space-lg) var(--alias-space-xl);
+  border-bottom: 1px solid var(--alias-border-default);
+}
+
+.header h1 {
+  font-size: var(--alias-font-size-heading-sm);
+  font-weight: var(--alias-font-weight-emphasis);
+  margin: 0;
+  letter-spacing: 0.02em;
+}
+
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--alias-space-xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--alias-space-md);
+}

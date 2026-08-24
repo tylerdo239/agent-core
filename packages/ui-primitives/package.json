@@ -6,6 +6,7 @@
   "main": "src/index.ts",
   "dependencies": {
     "@agent-core/ui-theme": "*",
+    "lucide-react": "^1.33.0",
     "react": "^18.3.1"
   }
 }

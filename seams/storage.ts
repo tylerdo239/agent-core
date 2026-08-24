@@ -27,6 +27,7 @@ export interface SessionRecord {
   maxSteps: number
   systemPrompt?: string
   maxHistoryMessages: number
+  ownerId?: string
   status: 'active' | 'archived'
   createdAt: string
   lastActiveAt: string

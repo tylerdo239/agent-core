@@ -26,7 +26,7 @@ class FakeLlm extends LlmService {
     if (!hasToolResult) {
       return {
         content: 'Để trả lời, tôi cần tra dữ liệu đã lưu.',
-        toolCall: { name: 'query_database', args: { sessionId: 'store-A' } },
+        toolCall: { name: 'query_database', args: {} },
       }
     }
     return { content: 'Dựa trên dữ liệu đã tra, câu trả lời là: 42.' }
@@ -54,10 +54,11 @@ describe('Phase 4 — agent loop end-to-end', () => {
     root.plugin(agentRunner)
     await settle()
 
-    // 'store-A' là 1 "kho dữ liệu" độc lập với session hội thoại 'demo' —
-    // query_database có thể tra bất kỳ sessionId nào được truyền vào, không
-    // nhất thiết là session đang hội thoại.
-    await root.storage.appendEvent('store-A', { type: 'seed', value: 42 })
+    // Finding A1 (docs/agent-core-rate-limit-and-security-audit.md) fix:
+    // query_database KHÔNG còn nhận sessionId từ model — luôn đọc đúng
+    // session hiện tại của turn ('demo'), không phải bất kỳ sessionId nào
+    // model tự khai (trước đây đọc được transcript của session BẤT KỲ).
+    await root.storage.appendEvent('demo', { type: 'seed', value: 42 })
 
     const session = new Session('demo', 8, 'Bạn là trợ lý hữu ích.')
     const result = await root.agent.runTurn('default', session, 'Giá trị đã lưu là bao nhiêu?')
@@ -67,6 +68,7 @@ describe('Phase 4 — agent loop end-to-end', () => {
 
     const events = await root.storage.readEvents('demo')
     expect(events.map((e) => e.type)).toEqual([
+      'seed', // đã seed thẳng vào storage TRƯỚC turn, để verify query_database đọc đúng session hiện tại
       'user_message', // ghi TRƯỚC khi driver chạy, ở agent-runner (entrypoint ổn định chung mọi driver)
       'model_message', // lượt 1: model quyết định gọi tool
       'tool_audit', // execution pipeline ghi outcome/latency trước khi loop ghi kết quả
@@ -74,14 +76,17 @@ describe('Phase 4 — agent loop end-to-end', () => {
       'model_message', // lượt 2: model trả lời cuối cùng
     ])
 
-    expect((events[0] as any).content).toBe('Giá trị đã lưu là bao nhiêu?')
+    expect((events[1] as any).content).toBe('Giá trị đã lưu là bao nhiêu?')
 
-    const firstModelMsg = events[1] as any
-    expect(firstModelMsg.toolCall).toEqual({ name: 'query_database', args: { sessionId: 'store-A' } })
+    const firstModelMsg = events[2] as any
+    expect(firstModelMsg.toolCall).toEqual({ name: 'query_database', args: {} })
 
-    const toolResult = events[3] as any
+    const toolResult = events[4] as any
     expect(toolResult.name).toBe('query_database')
-    expect(toolResult.result).toEqual([{ type: 'seed', value: 42 }])
+    // query_database trả về TOÀN BỘ event log của session hiện tại (kể cả
+    // chính nó, event 'seed' đã ghi trước đó) — không còn nhận sessionId từ
+    // model (Finding A1 fix).
+    expect(toolResult.result).toEqual(events.slice(0, 3))
 
     // Session history phản ánh đúng toàn bộ lượt hội thoại.
     expect(session.history.map((m) => m.role)).toEqual([

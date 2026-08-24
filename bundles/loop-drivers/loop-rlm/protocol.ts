@@ -1,4 +1,4 @@
-import { MemoryService } from '../../../seams/memory.ts'
+import { TurnMemoryService } from '../../../seams/turn-memory.ts'
 import { Session, TurnInput } from '../../../seams/loop.ts'
 import { PromptRegistryService } from '../../../seams/prompt.ts'
 import { SkillDefinition } from '../../../seams/skill.ts'
@@ -61,7 +61,7 @@ function skillPayload(skill?: SkillDefinition) {
 export async function prepareRlmTurn(options: {
   session: Session
   input: TurnInput
-  memory: MemoryService
+  memory: TurnMemoryService
   workspace: WorkspaceSnapshot
   skill?: SkillDefinition
   tools: ToolDefinition[]

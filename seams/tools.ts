@@ -42,7 +42,7 @@ export interface ToolDefinition {
   description: string
   /** JSON Schema mô tả tham số — dùng để quảng bá cho model qua LlmToolSpec (xem seams/llm.ts). */
   parameters?: Record<string, unknown>
-  handler: (args: Record<string, unknown>, context?: ToolInvocationContext) => Promise<unknown>
+  handler: ToolHandler
   ui?: ToolUiHint
   permissionActor?: string
   permissionAction?: string
@@ -59,6 +59,8 @@ export interface ToolInvocationContext {
   deadline?: number
   signal?: AbortSignal
 }
+
+export type ToolHandler = (args: Record<string, unknown>, context: ToolInvocationContext) => Promise<unknown>
 
 export abstract class ToolRegistryService extends Service {
   constructor(ctx: Context) {

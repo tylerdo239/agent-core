@@ -1,29 +1,31 @@
 .wrapper {
-  position: relative;
   display: inline-flex;
 }
 
+/* position: fixed (không phải absolute) — bubble portal ra document.body,
+   toạ độ top/left tính bằng JS (getBoundingClientRect) truyền qua inline
+   style, không còn phụ thuộc vị trí .wrapper trong cây DOM. z-index cao để
+   nổi trên mọi surface thường (Modal/Toast) — xem Tooltip.tsx cho lý do
+   portal. */
 .bubble {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%) translateY(2px);
-  background: var(--alias-label-primary);
-  color: var(--alias-bg-base);
-  font-size: 12px;
-  padding: 4px 8px;
-  border-radius: 6px;
+  position: fixed;
+  top: 0;
+  left: 0;
+  transform: translateX(-50%);
+  background: var(--specific-tooltip-bg);
+  color: var(--specific-tooltip-text);
+  font-size: var(--alias-font-size-caption);
+  padding: var(--alias-space-xs) var(--alias-space-sm);
+  border-radius: var(--alias-radius-control);
   white-space: nowrap;
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transition: opacity 0.12s, transform 0.12s;
-  z-index: 20;
+  transition: opacity var(--alias-motion-fast) var(--alias-motion-ease);
+  z-index: 9999;
 }
 
-.wrapper:hover .bubble,
-.wrapper:focus-within .bubble {
+.bubbleOpen {
   opacity: 1;
   visibility: visible;
-  transform: translateX(-50%) translateY(0);
 }

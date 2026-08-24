@@ -210,7 +210,7 @@ gọi RLM trực tiếp và không tự quản lý memory.
 `loop-rlm/protocol.ts` đọc đúng một snapshot từ các seam:
 
 ```text
-ctx.memory.snapshot(sessionId)
+ctx.turnMemory.snapshot(sessionId)
 ctx.workspace.inspect(sessionId)
 ctx.skills.get(selectedSkill)
 ctx.tools.list()
@@ -300,7 +300,7 @@ tool là một action có handler thực thi.
 ```text
 worker trả outcome + trajectory + state
   → loop-rlm cập nhật context/history index
-  → ctx.memory.completeTurn(...)
+  → ctx.turnMemory.completeTurn(...)
   → memory-rolling dùng ctx.llm để tạo semantic summary
   → fallback deterministic nếu summarization lỗi
   → lưu memory JSON giới hạn theo session
@@ -366,10 +366,11 @@ Nếu cần biết “`ctx.X` được load ở đâu”, tìm `root.plugin(...)
 | File | Capability trên `ctx` |
 |---|---|
 | `agent.ts` | `ctx.agent`: entrypoint chạy một turn |
-| `auth.ts` | `ctx.auth`: xác thực token |
+| `auth.ts` | `ctx.auth`: tài khoản Postgres nhiều người dùng thật — signup/login/token/role, không chỉ xác thực token đơn thuần (xem `docs/agent-core-cordis-build-plan.md` Phase 24) |
 | `llm.ts` | `ctx.llm`: model completion |
 | `loop.ts` | `ctx.loop`, `Session`, `TurnInput`, `LoopStep`, `LoopTurnResult` |
-| `memory.ts` | `ctx.memory`: snapshot/update memory |
+| `memory.ts` | `ctx.memory`: remember/recall xuyên session/user qua TencentDB Agent Memory (Phase 25) — KHÁC `turn-memory.ts` |
+| `turn-memory.ts` | `ctx.turnMemory`: rolling summary theo TỪNG SESSION, dùng riêng cho loop-rlm (tách khỏi `ctx.memory` lúc merge — xem `docs/agent-core-rlm-harness-merge-plan.md` mục 4.1) |
 | `permission.ts` | `ctx.permission`: policy check |
 | `prompt.ts` | `ctx.prompts`: đăng ký section và render prompt |
 | `sandbox.ts` | `ctx.sandbox`: runtime persistent + event protocol |
@@ -381,7 +382,7 @@ Nếu cần biết “`ctx.X` được load ở đâu”, tìm `root.plugin(...)
 | `artifacts.ts` | `ctx.artifacts`: catalog output có producer/hash/path |
 | `pipeline.ts` | `ctx.pipelines`, `ctx.pipelineRuns`: stage registry + chạy pipeline |
 | `subagents.ts` | `ctx.subagents`: registry task delegation |
-| `tools.ts` | `ctx.tools`: catalog và execution gateway duy nhất |
+| `tools.ts` | `ctx.tools`: catalog và execution gateway duy nhất (`invoke()` truyền `ToolInvocationContext{sessionId,source}` xuống handler — xem `docs/agent-core-rate-limit-and-security-audit.md` Finding A1) |
 | `workspace.ts` | `ctx.workspace`: dataset/artifact/file operations |
 
 Quy tắc: seam không import provider và không chứa logic deployment.
@@ -526,10 +527,11 @@ Các test nên đọc đầu tiên:
 Runtime nằm ngay trong repo:
 
 ```text
-python/rlm_agent/harness_adapter.py
-python/rlm_agent/agent.py
-python/vendor/rlm/rlm/...
-python/requirements.txt
+bundles/loop-drivers/loop-rlm/python/rlm_agent/harness_adapter.py
+bundles/loop-drivers/loop-rlm/python/rlm_agent/agent.py
+bundles/loop-drivers/loop-rlm/python/vendor/rlm/rlm/...
+bundles/loop-drivers/loop-rlm/python/requirements.txt
+bundles/loop-drivers/loop-rlm/python/worker.py
 ```
 
 `HarnessRLM` là adapter mỏng tới core RLM. Nó nhận prepared context và các
@@ -673,7 +675,7 @@ team nên đọc toàn bộ flow 4 cùng các seam/provider liên quan trước 
 - Frontend không gửi system prompt mặc định.
 - Tool execution luôn qua `ctx.tools.invoke()` và permission phù hợp.
 - File của session luôn qua `ctx.workspace`, không tự ghép path rải rác.
-- Memory dài hạn thuộc `ctx.memory`; event audit thuộc `ctx.storage`.
+- Memory dài hạn xuyên session/user thuộc `ctx.memory`; rolling summary theo từng session (loop-rlm) thuộc `ctx.turnMemory`; event audit thuộc `ctx.storage` — 3 khái niệm khác nhau, không dùng lẫn.
 - Mỗi session chỉ có một turn in-flight.
 - Worker stdout chỉ chứa JSON-lines protocol; log đi stderr.
 - `PreparedRlmTurn` chỉ được dựng ở `loop-rlm/protocol.ts`.
@@ -690,11 +692,11 @@ So sánh commit khởi tạo `2bb50b2` với branch migration tại `30f4120`:
 | Contract TypeScript ↔ Python và worker JSON-lines persistent | `loop-rlm/protocol.ts`, `loop-rlm/python/worker.py` |
 | Memory multi-turn, workspace và sandbox có seam/provider riêng | `seams/{memory,workspace,sandbox}.ts`, `bundles/providers/{memory-rolling,workspace-local,workspace-docker,sandbox-ipython,sandbox-docker}/` |
 | System prompt được ghép từ các section plugin có thứ tự/version | `seams/prompt.ts`, `bundles/providers/prompt-registry/`, `bundles/prompts/prompt-rlm-data-agent/` |
-| Skill package và lazy resource bridge từ Python về TypeScript | `bundles/providers/{skill-registry,skill-filesystem}/`, `bundles/skills/`, `python/vendor/rlm/rlm/environments/ipython_repl.py` |
+| Skill package và lazy resource bridge từ Python về TypeScript | `bundles/providers/{skill-registry,skill-filesystem}/`, `bundles/skills/`, `bundles/loop-drivers/loop-rlm/python/vendor/rlm/rlm/environments/ipython_repl.py` |
 | Tool RLM gọi ngược về host, giữ permission/lifecycle ở TypeScript | `seams/tools.ts`, `bundles/providers/tool-registry/`, `bundles/tools/`, `sandbox-ipython/index.ts` |
 | REST/WS/gRPC nhận `selectedSkill`, metadata, stream event; REST quản lý file workspace | `bundles/adapters/api-{rest,ws,grpc}/` |
 | UI có upload progress, danh sách workspace và artifact đầu ra | `apps/web/src/App.tsx`, `apps/web/src/style.css` |
-| Runtime Python RLM và scientific stack nằm trọn trong repo | `python/rlm_agent/`, `python/vendor/rlm/`, `python/requirements.txt` |
+| Runtime Python RLM và scientific stack nằm trọn trong bundle sở hữu nó | `bundles/loop-drivers/loop-rlm/python/{rlm_agent/,vendor/rlm/,requirements.txt,worker.py}` |
 | Image/Compose độc lập, có cấu hình dev hot-reload và production | `Dockerfile`, `Dockerfile.dev`, `docker-compose*.yml` |
 | Benchmark core, skill, tool, memory, REPL, DABench và multi-turn | `benchmarks/rlm/` |
 | Test migration, worker protocol, REST và UI smoke | `tests/rlm-migration.test.ts`, `tests/rlm-worker-protocol.test.ts`, `tests/api-rest.test.ts`, `apps/web/tests/App.smoke.test.tsx` |

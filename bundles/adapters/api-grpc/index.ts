@@ -19,7 +19,8 @@ import { Context } from '@deepseek-ai/cordis'
 import '../../../seams/sessions.ts'
 import '../../../seams/agent.ts'
 import '../../../seams/auth.ts'
-import { LoopStep } from '../../../seams/loop.ts'
+import { AuthIdentity } from '../../../seams/auth.ts'
+import { LoopStep, Session } from '../../../seams/loop.ts'
 
 export namespace ApiGrpc {
   export interface Config {
@@ -77,6 +78,10 @@ function extractBearerToken(metadata: grpc.Metadata): string | undefined {
   return value.slice('Bearer '.length)
 }
 
+function canAccessSession(identity: AuthIdentity, session: Session): boolean {
+  return identity.role === 'admin' || session.ownerId === identity.userId
+}
+
 export const apply = async (ctx: Context, config: ApiGrpc.Config = {}) => {
   // keepCase: true — giữ nguyên snake_case như định nghĩa trong .proto, khớp
   // với field name dùng xuyên suốt file này (message.max_steps, không phải
@@ -95,8 +100,9 @@ export const apply = async (ctx: Context, config: ApiGrpc.Config = {}) => {
     'grpc.max_receive_message_length': config.maxReceiveMessageBytes ?? DEFAULT_MAX_RECEIVE_MESSAGE_BYTES,
   })
   server.addService(proto.agentcore.AgentService.service, {
-    createSession: (call: grpc.ServerUnaryCall<any, any>, callback: grpc.sendUnaryData<any>) => {
-      if (!ctx.auth.verify(extractBearerToken(call.metadata))) {
+    createSession: async (call: grpc.ServerUnaryCall<any, any>, callback: grpc.sendUnaryData<any>) => {
+      const identity = await ctx.auth.verify(extractBearerToken(call.metadata))
+      if (!identity) {
         return callback({ code: grpc.status.UNAUTHENTICATED, message: 'unauthorized' })
       }
       try {
@@ -106,6 +112,7 @@ export const apply = async (ctx: Context, config: ApiGrpc.Config = {}) => {
           driver: req.driver || undefined,
           maxSteps: req.max_steps || undefined,
           systemPrompt: req.system_prompt || undefined,
+          ownerId: identity.userId,
         })
         callback(null, { id: session.id, driver: session.driver, max_steps: session.maxSteps })
       } catch (err: any) {
@@ -114,13 +121,17 @@ export const apply = async (ctx: Context, config: ApiGrpc.Config = {}) => {
     },
 
     sendMessage: async (call: grpc.ServerUnaryCall<any, any>, callback: grpc.sendUnaryData<any>) => {
-      if (!ctx.auth.verify(extractBearerToken(call.metadata))) {
+      const identity = await ctx.auth.verify(extractBearerToken(call.metadata))
+      if (!identity) {
         return callback({ code: grpc.status.UNAUTHENTICATED, message: 'unauthorized' })
       }
       const req = call.request
       const session = ctx.sessions.get(req.session_id)
       if (!session) {
         return callback({ code: grpc.status.NOT_FOUND, message: `session "${req.session_id}" not found` })
+      }
+      if (!canAccessSession(identity, session)) {
+        return callback({ code: grpc.status.PERMISSION_DENIED, message: 'forbidden' })
       }
       try {
         const driver = req.driver || session.driver
@@ -142,7 +153,8 @@ export const apply = async (ctx: Context, config: ApiGrpc.Config = {}) => {
     },
 
     streamTurn: async (call: grpc.ServerWritableStream<any, any>) => {
-      if (!ctx.auth.verify(extractBearerToken(call.metadata))) {
+      const identity = await ctx.auth.verify(extractBearerToken(call.metadata))
+      if (!identity) {
         call.destroy(Object.assign(new Error('unauthorized'), { code: grpc.status.UNAUTHENTICATED }))
         return
       }
@@ -150,6 +162,10 @@ export const apply = async (ctx: Context, config: ApiGrpc.Config = {}) => {
       const session = ctx.sessions.get(req.session_id)
       if (!session) {
         call.destroy(Object.assign(new Error(`session "${req.session_id}" not found`), { code: grpc.status.NOT_FOUND }))
+        return
+      }
+      if (!canAccessSession(identity, session)) {
+        call.destroy(Object.assign(new Error('forbidden'), { code: grpc.status.PERMISSION_DENIED }))
         return
       }
 

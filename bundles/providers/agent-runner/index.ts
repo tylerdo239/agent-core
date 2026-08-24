@@ -5,6 +5,7 @@ import '../../../seams/storage.ts'
 import '../../../seams/tools.ts'
 import '../../../seams/loop.ts'
 import '../../../seams/skill.ts'
+import '../../../seams/memory.ts'
 import { AgentRunnerService } from '../../../seams/agent.ts'
 import {
   isCancellation, type LoopDriver, type LoopTurnResult,
@@ -126,7 +127,7 @@ export class AgentRunner extends AgentRunnerService {
         type: 'user_message', content: entry.input.message,
         selectedSkill: entry.input.selectedSkill, ...correlated,
       })
-
+      this.ctx.get('memory')?.remember(session.id, entry.input.message, { userId: session.ownerId }).catch(() => {})
       const result = await driver.runTurn(this.ctx, session, {
         ...entry.input, runId, signal: controller.signal,
       })

@@ -1,0 +1,48 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: var(--alias-font-size-caption);
+  color: var(--alias-label-secondary);
+}
+
+.label {
+  font-weight: var(--alias-font-weight-emphasis);
+}
+
+.input {
+  background: var(--alias-bg-subtle);
+  border: 1px solid var(--alias-border-default);
+  color: var(--alias-label-primary);
+  border-radius: var(--alias-radius-control);
+  padding: var(--alias-space-sm) var(--alias-space-md);
+  font-size: var(--alias-font-size-body-sm);
+  font-family: inherit;
+}
+
+/* Cùng pattern 2-rule an toàn đã dùng ở SettingsForm/Composer — :focus chỉ
+   đổi màu viền (mouse click), :focus-visible mới thêm ring rõ (bàn phím). */
+.input:focus {
+  outline: none;
+  border-color: var(--alias-accent);
+}
+
+.input:focus-visible {
+  outline: 2px solid var(--alias-accent);
+  outline-offset: 2px;
+}
+
+.inputError {
+  border-color: var(--alias-state-error);
+}
+
+.error {
+  color: var(--alias-state-error);
+  font-size: var(--alias-font-size-caption);
+}

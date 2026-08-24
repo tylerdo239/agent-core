@@ -121,7 +121,7 @@ export const apply = (ctx: Context, config: ToolWebSearch.Config = {}) => {
     // Phase 8.5: tool tự khai cách hiển thị — web-ui đọc field này thay vì
     // hardcode theo tên "web_search".
     ui: { icon: '🔍', label: 'Tìm kiếm web', render: 'citations' },
-    async handler(args) {
+    async handler(args, _context) {
       const allowed = await ctx.permission.check('web-search', 'search')
       if (!allowed) throw new Error('permission denied')
 

@@ -1,3 +1,14 @@
+// bundles/providers/memory-rolling — provider cho seam ctx.turnMemory.
+//
+// Nguồn gốc: nhánh feat/rlm-harness-migration, nguyên bản implement thẳng
+// `MemoryService` (ctx.memory). Đã tách sang seam riêng `ctx.turnMemory`
+// lúc merge (xem docs/agent-core-rlm-harness-merge-plan.md mục 4.1) — capability
+// ở đây (nén Session.history thành 1 summary semantic theo TỪNG SESSION,
+// dùng riêng cho loop-rlm) khác hẳn `ctx.memory` (remember/recall xuyên
+// session/user qua TencentDB Agent Memory, Phase 25). Cùng lý do, đã bỏ
+// `remember()`/`recall()` (bản gốc RLM có, nhưng chỉ là fallback nội bộ
+// không liên quan gì tới capability rolling-summary chính — không còn nằm
+// trong `TurnMemoryService`).
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -5,11 +16,10 @@ import { Context } from '@deepseek-ai/cordis'
 import {
   CompleteTurnInput,
   CompleteTurnResult,
-  MemoryEntry,
-  MemoryService,
   RollingMemorySnapshot,
   RollingTurnInput,
-} from '../../../seams/memory.ts'
+  TurnMemoryService,
+} from '../../../seams/turn-memory.ts'
 
 const MEMORY_SYSTEM_PROMPT = `You maintain the semantic memory of an ongoing agent session.
 The memory replaces prior raw conversation and tool history on the next turn. Preserve durable,
@@ -31,38 +41,22 @@ interface State {
   turns: Array<Record<string, unknown>>
   lastContext?: string
   pending?: { task: string; contexts: string[]; state: string }
-  notes: MemoryEntry[]
 }
 
-const empty = (): State => ({ version: 1, revision: 0, summary: '', turns: [], notes: [] })
+const empty = (): State => ({ version: 1, revision: 0, summary: '', turns: [] })
 const clip = (value: unknown, limit: number) => String(value ?? '').trim().slice(0, limit)
 
 function safeId(value: string) {
   return value.replace(/[^a-zA-Z0-9._-]/g, '').replace(/^[.-]+|[.-]+$/g, '') || 'default'
 }
 
-export class MemoryRolling extends MemoryService {
+export class MemoryRolling extends TurnMemoryService {
   private basePath: string
 
   constructor(ctx: Context, public config: MemoryRolling.Config = {}) {
     super(ctx)
     this.basePath = path.resolve(config.basePath ?? 'data/memory')
     mkdirSync(this.basePath, { recursive: true })
-  }
-
-  async remember(sessionId: string, text: string) {
-    const state = this.load(sessionId)
-    state.notes.push({ id: randomUUID(), text })
-    state.notes = state.notes.slice(-100)
-    this.save(sessionId, state)
-  }
-
-  async recall(sessionId: string, query: string, limit = 5) {
-    const words = query.toLowerCase().split(/\s+/).filter(Boolean)
-    return this.load(sessionId).notes
-      .map((entry) => ({ ...entry, score: words.filter((word) => entry.text.toLowerCase().includes(word)).length }))
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-      .slice(0, limit)
   }
 
   async snapshot(
@@ -156,7 +150,6 @@ export class MemoryRolling extends MemoryService {
         ...value,
         summary: clip(value.summary, 8_000),
         turns: Array.isArray(value.turns) ? value.turns.slice(-20) : [],
-        notes: Array.isArray(value.notes) ? value.notes.slice(-100) : [],
       }
     } catch {
       return empty()

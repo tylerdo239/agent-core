@@ -104,7 +104,10 @@ class FakeRlmSandbox extends SandboxService {
     expect(payload.prompt).not.toContain('Do not provide a final answer before this inspection')
     expect(payload.prompt).not.toContain('<session_memory>')
     expect(payload.prompt).not.toContain('<host_tools>')
-    expect(payload.prompt).toContain('`query_database(sessionId=...)`')
+    // Finding A1 (docs/agent-core-rate-limit-and-security-audit.md) fix:
+    // query_database không còn nhận sessionId từ model — cập nhật cùng
+    // guidance text đã sửa ở tool-database-query/index.ts.
+    expect(payload.prompt).toContain('`query_database()`')
     expect(payload.context).toMatchObject({
       session_memory: expect.any(Object),
       available_tools: expect.any(Array),
@@ -179,21 +182,21 @@ describe('RLM backend migration', () => {
     root.plugin(memoryRolling, { basePath: temp() })
     await settle()
 
-    await root.memory.recordContext('s1', 0)
-    const turn = await root.memory.recordTurn('s1', {
+    await root.turnMemory.recordContext('s1', 0)
+    const turn = await root.turnMemory.recordTurn('s1', {
       update: { summary: 'User cần cohort analysis', turnSummary: 'Đã nạp orders.csv' },
       state: 'waiting_user',
       request: 'phân tích cohort',
       contexts: ['context_0'],
       historyIndex: 0,
     })
-    const snapshot = await root.memory.snapshot('s1', { artifacts: ['generated/chart.png'] })
+    const snapshot = await root.turnMemory.snapshot('s1', { artifacts: ['generated/chart.png'] })
 
     expect(turn.history).toBe('history_0')
     expect(snapshot.summary).toBe('User cần cohort analysis')
     expect(snapshot.currentContext).toBe('context_0')
     expect(snapshot.resources.artifacts).toEqual(['generated/chart.png'])
-    expect(await root.memory.sourceContexts('s1', 1)).toEqual(['context_0', 'context_1'])
+    expect(await root.turnMemory.sourceContexts('s1', 1)).toEqual(['context_0', 'context_1'])
     await root.fiber.dispose()
   })
 
@@ -293,7 +296,7 @@ describe('RLM backend migration', () => {
 
     expect(args.slice(0, 2)).toEqual(['run', '--rm'])
     expect(args).toContain('/repo/workspaces/s1:/workspaces/s1')
-    expect(args).toContain('RLM_RUNTIME_ROOT=/app/python')
+    expect(args).toContain('RLM_RUNTIME_ROOT=/app/bundles/loop-drivers/loop-rlm/python')
     expect(args.at(-1)).toBe('/app/bundles/loop-drivers/loop-rlm/python/worker.py')
     expect(args).toContain('--network')
     expect(args.at(-4)).toBe('agent-core:latest')

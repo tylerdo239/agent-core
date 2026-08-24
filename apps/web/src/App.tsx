@@ -6,18 +6,42 @@
 // turn có tool call — GenericToolCard (Phase 9.4) là fallback bắt buộc khi
 // tool không có UI-plugin riêng (Phase 9.5 chưa mount cái nào, nên mọi tool
 // call hiện tại đều rơi vào đường fallback này — đúng như thiết kế).
+//
+// Restructure UI mirror dsh (2026-08): Sidebar/SearchModal/sessionHistory/
+// sidebarState -> packages/ui-sidebar; MessageBubble/Composer/ToolRow/
+// GenericToolCard/EmptyState/AssistantMarkdown/StreamingRow ->
+// packages/ui-conversation; SettingsForm/settings.ts ->
+// packages/ui-settings-general; AppFrame (shell #app/#main/header/#messages,
+// MỚI trích ra) -> packages/ui-layout. App.tsx giờ CHỈ còn WS/session state
+// + compose các package trên qua <AppFrame> — KHÔNG đổi hành vi, thuần
+// relocation (xem docs/agent-core-ui-architecture.md cho lý do/ranh giới
+// đầy đủ). WS/session state (connect/applyStep/reconstructItems/
+// handleSubmit) CHỦ ĐÍCH ở lại đây, không tách thành "controller" riêng như
+// dsh — 1 consumer duy nhất, tách thêm không có lợi ích thật.
+//
+// Module auth (nhiều người dùng thật, 2026-08): API key dùng chung đã bị
+// THAY THẾ hoàn toàn bằng tài khoản thật (packages/ui-auth) — `auth` state
+// mới (token + user) là ĐIỀU KIỆN render toàn bộ khung chat. React rules of
+// hooks: MỌI hook vẫn gọi KHÔNG ĐIỀU KIỆN mỗi render — chỉ THÂN effect gate
+// theo `auth`, nhánh "chưa đăng nhập -> return LoginForm/SignupForm" nằm
+// SAU toàn bộ hook, ngay trước JSX chính (đúng pattern "loading gate", không
+// vi phạm rules of hooks). `sessions` giờ tải qua GET /sessions thật (server
+// tự lọc đúng session CỦA CHÍNH caller nhờ ownerId) thay vì localStorage —
+// xem packages/ui-sidebar/src/sessionHistory.ts cho lý do đầy đủ.
 import { useEffect, useRef, useState } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import { RenderSlot } from '@agent-core/ui-react'
 import type { ToolViewOwnerProps } from '@agent-core/ui-slots'
-import { Button, Modal, Pill, StateDot, ToastContainer, useToasts } from '@agent-core/ui-primitives'
-import { AssistantMarkdown } from './AssistantMarkdown.tsx'
+import { Modal, Pill, StateDot, ToastContainer, useToasts } from '@agent-core/ui-primitives'
+import { AppFrame } from '@agent-core/ui-layout'
+import { AdminUsersPanel, clearAuthState, loadAuthState, LoginForm, saveAuthState, SignupForm, type AuthState } from '@agent-core/ui-auth'
+import { PluginInventoryPanel } from '@agent-core/ui-plugin-inventory'
+import { cacheSessionTitle, fetchSessionHistory, Sidebar, type SessionSummary } from '@agent-core/ui-sidebar'
+import { Composer, EmptyState, GenericToolCard, MessageBubble, StreamingRow, ToolRow } from '@agent-core/ui-conversation'
+import { defaultSettings, loadSettings, saveSettings, SettingsForm, type Settings } from '@agent-core/ui-settings-general'
+import type { WorkspaceHeaderPanelProps, SkillComposerExtraProps } from '@agent-core/ui-rlm-workspace'
+import styles from './App.module.css'
 import { createClientContext } from './client-context.ts'
-import { GenericToolCard } from './GenericToolCard.tsx'
-import { Sidebar } from './Sidebar.tsx'
-import { ToolRow } from './ToolRow.tsx'
-import { defaultSettings, loadSettings, saveSettings, type Settings } from './settings.ts'
-import { addSessionToHistory, loadSessionHistory, updateSessionTitle, type SessionSummary } from './sessionHistory.ts'
 
 type ToolUiHint = ToolViewOwnerProps['toolUi']
 
@@ -66,17 +90,19 @@ interface LoopStep {
   encoding?: string
 }
 
-export const UI_AGENT_DRIVER = 'rlm'
-
-export function createSessionCommand() {
+// docs/agent-core-rlm-web-ui-plugin-plan.md mục 3: mặc định quay về
+// 'default' (chat thường) — RLM không còn là driver CỐ ĐỊNH cho MỌI
+// session nữa, chỉ tạo khi user chủ động bấm "Phân tích dữ liệu"
+// (Sidebar.onNewDataSession).
+export function createSessionCommand(driver: 'default' | 'rlm' = 'default') {
   return {
     type: 'create_session',
-    driver: UI_AGENT_DRIVER,
+    driver,
   }
 }
 
 type ChatItem =
-  | { kind: 'user' | 'assistant' | 'system' | 'error' | 'critic'; id: string; text: string }
+  | { kind: 'user' | 'assistant' | 'system' | 'error' | 'critic'; id: string; text: string; ts?: number }
   | {
       kind: 'tool'
       id: string
@@ -116,14 +142,27 @@ function toolRowSummary(item: Extract<ChatItem, { kind: 'tool' }>): string {
 export function App() {
   const [clientCtx, setClientCtx] = useState<Context | null>(null)
   const [settings, setSettings] = useState<Settings>(() => loadSettings())
+  const [auth, setAuth] = useState<AuthState | null>(() => loadAuthState())
+  const [authView, setAuthView] = useState<'login' | 'signup'>('login')
   const [status, setStatus] = useState<ConnStatus>('connecting')
   const [sessionId, setSessionId] = useState<string | null>(null)
+  // docs/agent-core-rlm-web-ui-plugin-plan.md mục 1/3: key để dispatch
+  // 'session.chrome.header'/'session.chrome.composer' (ctx.slots, kind
+  // 'keyed') — workspace bar/skill-select CHỈ hiện khi driver phiên hiện
+  // tại có registrant khớp ('rlm'); 'default'/'planner-critic' rơi về
+  // fallback null, không hiện gì.
+  const [sessionDriver, setSessionDriver] = useState<string>('default')
   const [items, setItems] = useState<ChatItem[]>([])
   const [turnInFlight, setTurnInFlight] = useState(false)
   const [composerText, setComposerText] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsDraft, setSettingsDraft] = useState<Settings>(settings)
-  const [sessions, setSessions] = useState<SessionSummary[]>(() => loadSessionHistory())
+  const [adminPanelOpen, setAdminPanelOpen] = useState(false)
+  const [pluginInventoryOpen, setPluginInventoryOpen] = useState(false)
+  // Module auth (Phase 24): server GET /sessions là nguồn sự thật, KHÔNG
+  // phải localStorage nữa (loadSessionHistory() cũ) — xem
+  // packages/ui-sidebar/src/sessionHistory.ts.
+  const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [skills, setSkills] = useState<SkillOption[]>([])
   const [selectedSkill, setSelectedSkill] = useState('')
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([])
@@ -132,14 +171,19 @@ export function App() {
   const [workspaceLoading, setWorkspaceLoading] = useState(false)
   const [workspaceError, setWorkspaceError] = useState('')
   const [uploadState, setUploadState] = useState<UploadState | null>(null)
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const { toasts, push: pushToast } = useToasts()
 
   async function refreshWorkspaceFiles(sid: string) {
+    // Module auth: `Settings` không còn `apiKey` (Phase 24) — danh tính là
+    // `auth.token`. Hàm này chỉ thực sự được gọi từ chỗ đã qua gate `!auth`
+    // (WS handler trong connect()/resumeSession, hoặc nút bấm trong JSX sau
+    // gate) nhưng là function declaration riêng, TS không tự narrow qua
+    // ranh giới hàm — guard tường minh.
+    if (!auth) return
     setWorkspaceLoading(true)
     try {
-      const res = await fetch(`${settings.restUrl}/sessions/${sid}/files`, { headers: { authorization: `Bearer ${settings.apiKey}` } })
+      const res = await fetch(`${settings.restUrl}/sessions/${sid}/files`, { headers: { authorization: `Bearer ${auth.token}` } })
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`)
       const data = (await res.json()) as { files: WorkspaceFile[]; datasets: WorkspaceDataset[]; artifacts: string[] }
       setWorkspaceFiles(data.files ?? [])
@@ -153,17 +197,22 @@ export function App() {
     }
   }
 
-  async function handleFileUpload(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
-    if (!file) return
+  // docs/agent-core-rlm-web-ui-plugin-plan.md mục 2: nhận thẳng 1 File —
+  // <input type="file"> giờ nằm TRONG WorkspaceHeaderPanel (ui-rlm-workspace),
+  // App.tsx không còn sở hữu DOM input đó nữa, chỉ còn phần gọi API thật.
+  async function handleFileUpload(file: File) {
+    if (!auth) return
     let sid = sessionId
     if (!sid) {
-      // Tự tạo session nếu chưa có (user chưa chat gì đã muốn upload)
+      // Tự tạo session nếu chưa có (nhánh phòng thủ hiếm gặp — workspace bar
+      // chỉ hiện cho session driver 'rlm' đã tồn tại, xem mục 3; vẫn giữ vì
+      // race window hẹp giữa lúc bấm "Phân tích dữ liệu" và session_created
+      // WS trả về).
       try {
         const res = await fetch(`${settings.restUrl}/sessions`, {
           method: 'POST',
-          headers: { authorization: `Bearer ${settings.apiKey}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ driver: UI_AGENT_DRIVER }),
+          headers: { authorization: `Bearer ${auth.token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ driver: 'rlm' }),
         })
         if (!res.ok) throw new Error(await res.text())
         const data = (await res.json()) as { id: string }
@@ -182,7 +231,7 @@ export function App() {
       await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest()
         xhr.open('POST', `${settings.restUrl}/sessions/${sid}/files`)
-        xhr.setRequestHeader('authorization', `Bearer ${settings.apiKey}`)
+        xhr.setRequestHeader('authorization', `Bearer ${auth.token}`)
         xhr.setRequestHeader('content-type', 'application/octet-stream')
         xhr.setRequestHeader('x-file-name', encodeURIComponent(file.name))
         xhr.upload.onprogress = (e) => {
@@ -201,16 +250,14 @@ export function App() {
       const message = e instanceof Error ? e.message : String(e)
       setUploadState({ phase: 'error', filename: file.name, progress: 0, message })
       pushToast(`Upload thất bại: ${message}`, 'error')
-    } finally {
-      if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }
 
   async function downloadWorkspaceFile(filePath: string) {
-    if (!sessionId) return
+    if (!sessionId || !auth) return
     try {
       const response = await fetch(`${settings.restUrl}/sessions/${sessionId}/files/${encodeURIComponent(filePath)}`, {
-        headers: { authorization: `Bearer ${settings.apiKey}` },
+        headers: { authorization: `Bearer ${auth.token}` },
       })
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`)
       const url = URL.createObjectURL(await response.blob())
@@ -259,14 +306,13 @@ export function App() {
   // Phase 8.1). WS protocol không có message riêng "resume" — `send_message`
   // chấp nhận BẤT KỲ sessionId hợp lệ nào, không quan tâm nó được tạo qua
   // kết nối WS nào, nên chỉ cần bỏ qua bước create_session là đủ.
-  function connect(current: Settings, resumeSessionId?: string) {
-    if (!current.apiKey) {
-      setSettingsOpen(true)
-      return
-    }
+  // `newSessionDriver` (docs/agent-core-rlm-web-ui-plugin-plan.md mục 3):
+  // CHỈ dùng lúc tạo session MỚI (bỏ qua khi resume — driver của session cũ
+  // do server quyết định từ lúc tạo, không đổi được).
+  function connect(current: Settings, token: string, resumeSessionId?: string, newSessionDriver: 'default' | 'rlm' = 'default') {
     setStatus('connecting')
     void fetch(`${current.restUrl}/skills`, {
-      headers: { authorization: `Bearer ${current.apiKey}` },
+      headers: { authorization: `Bearer ${token}` },
     })
       .then(async (res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -277,7 +323,7 @@ export function App() {
     setSessionId(resumeSessionId ?? null)
     activeToolItemIdRef.current = null
 
-    const url = `${current.wsUrl}/?key=${encodeURIComponent(current.apiKey)}`
+    const url = `${current.wsUrl}/?token=${encodeURIComponent(token)}`
     const ws = new WebSocket(url)
     wsRef.current = ws
 
@@ -286,7 +332,7 @@ export function App() {
         setStatus('connected')
         return
       }
-      ws.send(JSON.stringify(createSessionCommand()))
+      ws.send(JSON.stringify(createSessionCommand(newSessionDriver)))
     })
 
     ws.addEventListener('message', (event) => {
@@ -294,10 +340,15 @@ export function App() {
 
       if (msg.type === 'session_created') {
         setSessionId(msg.id)
+        setSessionDriver(msg.driver)
         setStatus('connected')
-        setItems((prev) => [...prev, { kind: 'system', id: genId(), text: `Session mới: ${msg.id} (driver: ${msg.driver})` }])
-        setSessions(addSessionToHistory(msg.id))
-        refreshWorkspaceFiles(msg.id)
+        setItems((prev) => [...prev, { kind: 'system', id: genId(), text: `Session mới: ${msg.id} (driver: ${msg.driver})`, ts: Date.now() }])
+        // Thêm optimistic lên ĐẦU list — server đã gắn ownerId thật lúc tạo
+        // (create_session qua WS truyền identity đã verify), lần fetch
+        // GET /sessions tiếp theo sẽ thấy đúng session này; thêm ngay ở đây
+        // để UI phản hồi tức thời, không đợi round-trip fetch lại.
+        setSessions((prev) => [{ id: msg.id, createdAt: Date.now(), title: 'Cuộc trò chuyện mới', driver: msg.driver }, ...prev])
+        if (msg.driver === 'rlm') refreshWorkspaceFiles(msg.id)
         return
       }
 
@@ -326,18 +377,22 @@ export function App() {
             prev.map((it) => (it.kind === 'tool' && it.id === activeId ? { ...it, state: 'error', errorText: msg.message } : it)),
           )
         }
-        setItems((prev) => [...prev, { kind: 'error', id: genId(), text: `Lỗi: ${msg.message}` }])
+        setItems((prev) => [...prev, { kind: 'error', id: genId(), text: `Lỗi: ${msg.message}`, ts: Date.now() }])
         return
       }
     })
 
     ws.addEventListener('close', (event) => {
       setStatus('disconnected')
-      // Lỗi kết nối/hệ thống -> toast thoáng qua, KHÔNG phải bubble chat vĩnh
-      // viễn (khác lỗi tool throw giữa turn, vẫn giữ trong chat vì đó là nội
-      // dung hội thoại thật, không phải thông báo hệ thống).
+      // Module auth: 401 giờ nghĩa là TOKEN hết hạn/bị thu hồi (không còn
+      // "sai API key" — token đã được xác thực lúc mở kết nối, hết hạn/bị
+      // logout ở tab khác giữa chừng là kịch bản khác) — đăng xuất NGAY,
+      // không để user tưởng vẫn còn phiên hợp lệ trong khi mọi request tiếp
+      // theo đều sẽ 401.
       if (event.code === 401) {
-        pushToast('API key không hợp lệ — mở ⚙ để sửa lại.', 'error')
+        clearAuthState()
+        setAuth(null)
+        pushToast('Phiên đăng nhập đã hết hạn — vui lòng đăng nhập lại.', 'error')
       }
     })
 
@@ -381,11 +436,11 @@ export function App() {
       return
     }
     if (step.type === 'critic_message') {
-      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `🔍 đang rà soát: ${step.content}` }])
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `🔍 đang rà soát: ${step.content}`, ts: Date.now() }])
       return
     }
     if (step.type === 'final') {
-      setItems((prev) => [...prev, { kind: 'assistant', id: genId(), text: step.content ?? '' }])
+      setItems((prev) => [...prev, { kind: 'assistant', id: genId(), text: step.content ?? '', ts: Date.now() }])
       return
     }
     if (step.type === 'analysis' && step.content) {
@@ -418,12 +473,12 @@ export function App() {
     }
   }
 
-  function startNewChat(current: Settings) {
+  function startNewChat(current: Settings, token: string, driver: 'default' | 'rlm' = 'default') {
     wsRef.current?.close()
     wsRef.current = null
     activeToolItemIdRef.current = null
     setItems([])
-    connect(current)
+    connect(current, token, undefined, driver)
   }
 
   // Dựng lại ChatItem[] từ event log THẬT (GET /sessions/:id/events) — khác
@@ -517,11 +572,16 @@ export function App() {
   // qua REST (KHÔNG phải WS, vốn không có message "resume"), rồi mở kết nối
   // WS mới bỏ qua create_session (session đã tồn tại server-side).
   async function resumeSession(id: string) {
-    if (id === sessionId) return
-    refreshWorkspaceFiles(id)
+    if (id === sessionId || !auth) return
+    // docs/agent-core-rlm-web-ui-plugin-plan.md mục 1: driver của session cũ
+    // đã có sẵn trong `sessions` (GET /sessions trả đúng field này) — không
+    // cần gọi thêm API riêng chỉ để biết driver.
+    const driver = sessions.find((s) => s.id === id)?.driver ?? 'default'
+    setSessionDriver(driver)
+    if (driver === 'rlm') refreshWorkspaceFiles(id)
     try {
       const res = await fetch(`${settings.restUrl}/sessions/${id}/events`, {
-        headers: { authorization: `Bearer ${settings.apiKey}` },
+        headers: { authorization: `Bearer ${auth.token}` },
       })
       if (!res.ok) {
         pushToast(
@@ -536,23 +596,36 @@ export function App() {
       activeToolItemIdRef.current = null
       setItems(reconstructItems(events))
       titledSessionIdsRef.current.add(id) // đã có lịch sử thật -> không ghi đè title bằng tin nhắn tiếp theo
-      connect(settings, id)
+      connect(settings, auth.token, id)
     } catch {
       pushToast('Không thể tải lại cuộc trò chuyện này — kiểm tra kết nối.', 'error')
     }
   }
 
-  // Kết nối lần đầu khi mount — có key sẵn (đã lưu lần trước) thì tự kết nối,
-  // chưa có thì mở settings luôn (không để user nhìn màn hình trống không
-  // biết làm gì) — đúng hành vi app.js cũ.
+  // Module auth: kết nối + tải lịch sử CHỈ khi đã đăng nhập — mọi hook vẫn
+  // gọi KHÔNG ĐIỀU KIỆN mỗi render (React rules of hooks), chỉ THÂN effect
+  // này gate theo `auth`. Đăng xuất (auth chuyển null) PHẢI dọn sạch state
+  // NGAY trong nhánh else — không để 1 người đăng nhập sau, trên CÙNG
+  // trình duyệt, thấy sót state của người đăng nhập trước đó.
   useEffect(() => {
-    if (settings.apiKey) connect(settings)
-    else setSettingsOpen(true)
+    if (!auth) {
+      wsRef.current?.close()
+      wsRef.current = null
+      setSessions([])
+      setItems([])
+      setSessionId(null)
+      setStatus('connecting')
+      return
+    }
+    fetchSessionHistory(settings.restUrl, auth.token)
+      .then(setSessions)
+      .catch(() => pushToast('Không tải được danh sách cuộc trò chuyện.', 'error'))
+    connect(settings, auth.token)
     return () => {
       wsRef.current?.close()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [auth])
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -560,14 +633,15 @@ export function App() {
     const ws = wsRef.current
     if (!text || !sessionId || turnInFlight || !ws || ws.readyState !== WebSocket.OPEN) return
 
-    setItems((prev) => [...prev, { kind: 'user', id: genId(), text }])
+    setItems((prev) => [...prev, { kind: 'user', id: genId(), text, ts: Date.now() }])
     setComposerText('')
     setTurnInFlight(true)
     // Chỉ đặt title 1 LẦN cho câu hỏi ĐẦU TIÊN của session (Set tránh ghi đè
     // bằng câu hỏi sau, và tránh ghi đè session đã resume có title thật).
     if (!titledSessionIdsRef.current.has(sessionId)) {
       titledSessionIdsRef.current.add(sessionId)
-      setSessions(updateSessionTitle(sessionId, text))
+      const title = cacheSessionTitle(sessionId, text)
+      setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, title } : s)))
     }
     ws.send(JSON.stringify({
       type: 'send_message',
@@ -582,13 +656,27 @@ export function App() {
     const next: Settings = {
       restUrl: settingsDraft.restUrl.trim() || defaultSettings().restUrl,
       wsUrl: settingsDraft.wsUrl.trim() || defaultSettings().wsUrl,
-      apiKey: settingsDraft.apiKey.trim(),
     }
     saveSettings(next)
     setSettings(next)
     setSettingsOpen(false)
-    startNewChat(next)
+    if (auth) startNewChat(next, auth.token)
   }
+
+  function handleLogout() {
+    wsRef.current?.close()
+    wsRef.current = null
+    clearAuthState()
+    setAuth(null)
+    setAuthView('login')
+  }
+
+  // Chỉ báo Ở CẤP LƯỢT (không phải gõ từng ký tự — WS không có protocol
+  // token-delta, xem seams/loop.ts). Không hiện nếu item cuối ĐANG LÀ 1 tool
+  // đang chạy — tool đó đã có shimmer riêng của chính nó (ToolRow), tránh 2
+  // shimmer chồng nhau cho cùng 1 lượt.
+  const lastItem = items[items.length - 1]
+  const showStreamingRow = turnInFlight && !(lastItem?.kind === 'tool' && lastItem.state === 'running')
 
   const composerEnabled = status === 'connected' && !!sessionId && !turnInFlight
   const statusLabel =
@@ -606,76 +694,112 @@ export function App() {
     kind: artifactPaths.has(file.path) ? 'output' as const : datasetPaths.has(file.path) || datasetPaths.has(file.path.split('/').pop() ?? '') ? 'dataset' as const : 'file' as const,
   }))
 
-  return (
-    <div id="app">
-      <ToastContainer toasts={toasts} />
-      {/* Layout 2 cột (sidebar + khung chat chính) — xem Sidebar.tsx cho lý
-          do đơn giản hoá so với AppFrame 3 cột thật của dsh. */}
-      <Sidebar
-        sessions={sessions}
-        activeSessionId={sessionId}
-        onNewChat={() => startNewChat(settings)}
-        onSelectSession={resumeSession}
-        onOpenSettings={() => setSettingsOpen(true)}
+  // Module auth: chưa đăng nhập -> thay TOÀN BỘ khung chat bằng màn hình
+  // đăng nhập/đăng ký — đặt SAU mọi hook (đúng rules of hooks), TRƯỚC JSX
+  // chính.
+  if (!auth) {
+    return authView === 'login' ? (
+      <LoginForm
+        restUrl={settings.restUrl}
+        onSuccess={(result) => {
+          saveAuthState(result)
+          setAuth(result)
+        }}
+        onSwitchToSignup={() => setAuthView('signup')}
       />
+    ) : (
+      <SignupForm
+        restUrl={settings.restUrl}
+        onSuccess={(result) => {
+          saveAuthState(result)
+          setAuth(result)
+        }}
+        onSwitchToLogin={() => setAuthView('login')}
+      />
+    )
+  }
 
-      <div id="main">
-        <header>
-          <h1>agent-core</h1>
-          <div className="header-actions">
-            <Pill tone={statusTone}>
-              <StateDot variant={status} />
-              {statusLabel}
-            </Pill>
-          </div>
-        </header>
-
-        <div id="workspace-bar">
-          <div className="workspace-bar-left">
-            <span className="workspace-bar-title">Workspace</span>
-            {workspaceDatasets.length > 0 && <span className="workspace-bar-count">{workspaceDatasets.length} dataset(s)</span>}
-            {workspaceArtifacts.length > 0 && <span className="workspace-bar-count">{workspaceArtifacts.length} output(s)</span>}
-            {workspaceEntries.length === 0 && <span className="workspace-bar-count" style={{ opacity: 0.6 }}>chưa có file</span>}
-            {workspaceLoading && <span className="workspace-bar-count">đang cập nhật…</span>}
-          </div>
-          <div className="workspace-bar-actions">
-            <input ref={fileInputRef} type="file" accept=".csv,.tsv,.xlsx,.xls,.parquet,.json,.txt" style={{ display: 'none' }} onChange={handleFileUpload} />
-            <Button variant="default" disabled={status !== 'connected' && !sessionId} onClick={() => fileInputRef.current?.click()}>📎 Upload file</Button>
-            <Button variant="default" disabled={!sessionId} onClick={() => sessionId && refreshWorkspaceFiles(sessionId)}>↻ Refresh</Button>
-          </div>
-        </div>
-        {uploadState && (
-          <div id="upload-status" className={`upload-${uploadState.phase}`} role="status" aria-live="polite">
-            <div className="upload-status-label">
-              <span>{uploadState.phase === 'uploading' ? `Đang upload ${uploadState.filename}` : uploadState.phase === 'success' ? `✓ ${uploadState.filename}` : `✕ ${uploadState.filename}`}</span>
-              <span>{uploadState.phase === 'uploading' ? `${uploadState.progress}%` : uploadState.message}</span>
+  return (
+    <>
+      <ToastContainer toasts={toasts} />
+      <AppFrame
+        sidebar={
+          <Sidebar
+            sessions={sessions}
+            activeSessionId={sessionId}
+            onNewChat={() => startNewChat(settings, auth.token)}
+            onNewDataSession={() => startNewChat(settings, auth.token, 'rlm')}
+            onSelectSession={resumeSession}
+            onOpenSettings={() => setSettingsOpen(true)}
+            isAdmin={auth.user.role === 'admin'}
+            onOpenAdminPanel={() => setAdminPanelOpen(true)}
+            onOpenPluginInventory={() => setPluginInventoryOpen(true)}
+            currentUsername={auth.user.username}
+            onLogout={handleLogout}
+          />
+        }
+        header={
+          <>
+            <h1>agent-core</h1>
+            <div className={styles.headerActions}>
+              <Pill tone={statusTone}>
+                <StateDot variant={status} />
+                {statusLabel}
+              </Pill>
             </div>
-            <div className="upload-progress-track">
-              <div className="upload-progress-bar" style={{ width: `${uploadState.progress}%` }} />
-            </div>
-          </div>
-        )}
-        {workspaceError && <div id="workspace-error" role="alert">Không đọc được workspace: {workspaceError}</div>}
-        <div id="workspace-files">
-          {workspaceEntries.length === 0 && uploadState?.phase !== 'uploading' && (
-            <span className="workspace-empty">Chưa có file — bấm 📎 Upload để thêm CSV/Excel</span>
-          )}
-          {workspaceEntries.map((file) => (
-            <button
-              key={file.path}
-              type="button"
-              className={`workspace-file workspace-file-${file.kind}`}
-              onClick={() => downloadWorkspaceFile(file.path)}
-              title={`Tải ${file.path}${file.size ? ` · ${(file.size / 1024).toFixed(1)} KB` : ''}`}
-            >
-              <span>{file.kind === 'output' ? '📦 Output' : file.kind === 'dataset' ? '▦ Dataset' : '📄 File'}</span>
-              <strong>{file.path}</strong>
-              {file.size > 0 && <span className="workspace-file-size">{(file.size / 1024).toFixed(1)} KB</span>}
-            </button>
-          ))}
-        </div>
-
-        <main id="messages" aria-live="polite">
+          </>
+        }
+        // UI redesign (follow-up): workspace bar từng nhét CHUNG vào `header`
+        // ở trên — nhưng `.header` (AppFrame.module.css) là flex row
+        // `justify-content: space-between` DÀNH ĐÚNG cho 2 phần tử (tiêu đề +
+        // trạng thái); thêm phần tử thứ 3 vào đó ép mọi thứ nằm chung 1 hàng
+        // ngang với tiêu đề thay vì xuống hàng riêng — gap thị giác thật user
+        // báo lại. Dùng `subHeader` (mới thêm vào AppFrame cho đúng việc
+        // này) thay vì `header` — xuống hàng riêng, tách bạch khỏi tiêu đề.
+        subHeader={
+          clientCtx && (
+            <RenderSlot<WorkspaceHeaderPanelProps>
+              ctx={clientCtx}
+              name="session.chrome.header"
+              entryKey={sessionDriver}
+              owner={{
+                uploadDisabled: status !== 'connected' && !sessionId,
+                refreshDisabled: !sessionId,
+                onUpload: handleFileUpload,
+                onRefresh: () => sessionId && refreshWorkspaceFiles(sessionId),
+                onDownload: downloadWorkspaceFile,
+                datasetsCount: workspaceDatasets.length,
+                artifactsCount: workspaceArtifacts.length,
+                loading: workspaceLoading,
+                error: workspaceError,
+                uploadState,
+                entries: workspaceEntries,
+              }}
+              fallback={() => null}
+            />
+          )
+        }
+        footer={
+          <>
+            {clientCtx && (
+              <RenderSlot<SkillComposerExtraProps>
+                ctx={clientCtx}
+                name="session.chrome.composer"
+                entryKey={sessionDriver}
+                owner={{
+                  skills,
+                  selectedSkill,
+                  disabled: !composerEnabled,
+                  onSelectSkill: setSelectedSkill,
+                }}
+                fallback={() => null}
+              />
+            )}
+            <Composer value={composerText} onChange={setComposerText} onSubmit={handleSubmit} disabled={!composerEnabled} />
+          </>
+        }
+      >
+        {items.length === 0 && <EmptyState />}
         {items.map((item) => {
           if (item.kind === 'tool') {
             const owner: ToolViewOwnerProps = { toolCall: item.toolCall, result: item.result, state: item.state, toolUi: item.toolUi }
@@ -699,99 +823,38 @@ export function App() {
               </ToolRow>
             )
           }
-          // Phase 10.4: assistant KHÔNG còn là bubble — chảy full-width,
-          // render markdown thật (đúng pattern AssistantMarkdown thật của
-          // dsh), khác hẳn user/step/error/system vẫn là bubble/dòng ngắn.
-          if (item.kind === 'assistant') {
-            return (
-              <div key={item.id} className="msg msg-assistant">
-                <AssistantMarkdown content={item.text} />
-              </div>
-            )
-          }
-          const cssKind = item.kind === 'critic' ? 'step' : item.kind
           return (
-            <div key={item.id} className={`msg msg-${cssKind}`}>
-              {item.text}
-            </div>
+            <MessageBubble
+              key={item.id}
+              kind={item.kind}
+              text={item.text}
+              ts={item.ts}
+              onCopied={() => pushToast('Đã sao chép')}
+            />
           )
         })}
+        {showStreamingRow && <StreamingRow />}
         <div ref={messagesEndRef} />
-      </main>
-
-      <form
-        id="compose-form"
-        onSubmit={handleSubmit}
-      >
-        <select
-          id="skill-select"
-          aria-label="Chọn skill"
-          title={selectedSkill ? skills.find((skill) => skill.name === selectedSkill)?.description : 'Để agent tự chọn workflow'}
-          disabled={!composerEnabled}
-          value={selectedSkill}
-          onChange={(event) => setSelectedSkill(event.target.value)}
-        >
-          <option value="">Tự động</option>
-          {skills.map((skill) => (
-            <option key={skill.name} value={skill.name}>{skill.name}</option>
-          ))}
-        </select>
-        <input
-          id="compose-input"
-          type="text"
-          placeholder="Nhắn gì đó cho agent..."
-          autoComplete="off"
-          disabled={!composerEnabled}
-          value={composerText}
-          onChange={(e) => setComposerText(e.target.value)}
-        />
-        <Button type="submit" variant="primary" disabled={!composerEnabled}>
-          Gửi
-        </Button>
-      </form>
-      </div>
+      </AppFrame>
 
       <Modal open={settingsOpen} onClose={() => setSettingsOpen(false)}>
-        <form id="settings-form" onSubmit={handleSettingsSubmit}>
-          <h2>Cấu hình kết nối</h2>
-          <label>
-            REST URL
-            <input
-              type="text"
-              placeholder="http://localhost:8787"
-              value={settingsDraft.restUrl}
-              onChange={(e) => setSettingsDraft((s) => ({ ...s, restUrl: e.target.value }))}
-            />
-          </label>
-          <label>
-            WebSocket URL
-            <input
-              type="text"
-              placeholder="ws://localhost:8788"
-              value={settingsDraft.wsUrl}
-              onChange={(e) => setSettingsDraft((s) => ({ ...s, wsUrl: e.target.value }))}
-            />
-          </label>
-          <label>
-            API Key
-            <input
-              type="password"
-              placeholder="Bearer token"
-              value={settingsDraft.apiKey}
-              onChange={(e) => setSettingsDraft((s) => ({ ...s, apiKey: e.target.value }))}
-            />
-          </label>
-          <p className="hint">Lưu trong localStorage của trình duyệt này — không gửi đi đâu khác ngoài 2 URL ở trên.</p>
-          <div className="dialog-actions">
-            <Button type="button" onClick={() => setSettingsOpen(false)}>
-              Huỷ
-            </Button>
-            <Button type="submit" variant="primary">
-              Lưu &amp; kết nối
-            </Button>
-          </div>
-        </form>
+        <SettingsForm draft={settingsDraft} onChange={setSettingsDraft} onSubmit={handleSettingsSubmit} onCancel={() => setSettingsOpen(false)} />
       </Modal>
-    </div>
+
+      <AdminUsersPanel
+        open={adminPanelOpen}
+        onClose={() => setAdminPanelOpen(false)}
+        restUrl={settings.restUrl}
+        token={auth.token}
+        currentUserId={auth.user.id}
+      />
+
+      <PluginInventoryPanel
+        open={pluginInventoryOpen}
+        onClose={() => setPluginInventoryOpen(false)}
+        restUrl={settings.restUrl}
+        token={auth.token}
+      />
+    </>
   )
 }

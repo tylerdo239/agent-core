@@ -1,0 +1,9 @@
+/* packages/ui-tool-web-search/src/WebSearchCard.module.css — UI redesign
+   (2026-08): rename từ .css global sang CSS Modules, danh sách nguồn giờ
+   dùng SourceList dùng chung (packages/ui-primitives) thay vì tự viết -
+   không còn cần .tool-sources/.tool-source* riêng ở đây nữa. */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--alias-space-md);
+}

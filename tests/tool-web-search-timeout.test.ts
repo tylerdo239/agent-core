@@ -49,7 +49,7 @@ describe('Phase 11 (audit fix) — tool-web-search timeout', () => {
 
     const root = await bootApp(20)
     const tool = root.tools.get('web_search')!
-    await expect(tool.handler({ query: 'test' })).rejects.toThrow(/timeout sau 20ms/)
+    await expect(tool.handler({ query: 'test' }, { sessionId: 'test-session', source: 'default-loop' })).rejects.toThrow(/timeout sau 20ms/)
   })
 
   it('response về TRƯỚC timeout -> hoạt động bình thường, không bị abort oan', async () => {
@@ -57,7 +57,7 @@ describe('Phase 11 (audit fix) — tool-web-search timeout', () => {
 
     const root = await bootApp(5000)
     const tool = root.tools.get('web_search')!
-    const result = (await tool.handler({ query: 'giá vàng' })) as { query: string; results: unknown[] }
+    const result = (await tool.handler({ query: 'giá vàng' }, { sessionId: 'test-session', source: 'default-loop' })) as { query: string; results: unknown[] }
     expect(result.query).toBe('giá vàng')
     expect(result.results).toEqual([])
   })
@@ -73,7 +73,7 @@ describe('Phase 11 (audit fix) — tool-web-search timeout', () => {
     await settle()
 
     const tool = root.tools.get('web_search')!
-    const result = (await tool.handler({ query: 'x' })) as { query: string }
+    const result = (await tool.handler({ query: 'x' }, { sessionId: 'test-session', source: 'default-loop' })) as { query: string }
     expect(result.query).toBe('x')
   })
 })

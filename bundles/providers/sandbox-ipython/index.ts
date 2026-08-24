@@ -69,6 +69,14 @@ class EventQueue implements AsyncIterable<SandboxEvent> {
 }
 
 interface WorkerState {
+  // Merge RLM harness (docs/agent-core-rlm-harness-merge-plan.md mục 7.3.2):
+  // sessionId THẬT của TS (key trong `this.workers`, set lúc openSession() —
+  // adapter đã verify quyền sở hữu trước khi gọi tới đây). completeToolCall()
+  // PHẢI dùng field này, không dùng `event.sessionId` (worker Python tự báo
+  // cáo lại qua JSON) — worker không đáng tin để tự khai định danh session
+  // dùng cho authz (ToolInvocationContext.sessionId đi thẳng vào
+  // ctx.tools.invoke(), ảnh hưởng ownership check của tool).
+  sessionId: string
   process: ChildProcessWithoutNullStreams
   cwd: string
   requests: Map<string, EventQueue>
@@ -141,7 +149,7 @@ export class SandboxIpython extends SandboxService {
     // A rejected startup must not become an unhandled rejection before
     // openSession reaches its await below.
     void ready.catch(() => undefined)
-    const state: WorkerState = { process: child, cwd, requests, signals: new Map(), ready }
+    const state: WorkerState = { sessionId, process: child, cwd, requests, signals: new Map(), ready }
     this.workers.set(sessionId, state)
 
     const lines = createInterface({ input: child.stdout })
@@ -314,7 +322,7 @@ export class SandboxIpython extends SandboxService {
     queue?.push({ type: 'tool_call', name, args, toolUi: tool?.ui })
     try {
       const result = await this.ctx.tools.invoke(name, args, {
-        sessionId: String(event.sessionId ?? ''),
+        sessionId: state.sessionId,
         source: 'rlm',
         signal: state.signals.get(requestId),
       })

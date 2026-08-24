@@ -109,3 +109,41 @@ describe('Phase 8.2 — Session.history sliding window', () => {
     expect(session.history[2].content).toContain('t3')
   })
 })
+
+describe('Phase 25 — buildPrompt() gộp mọi extraSystemNotes thành ĐÚNG 1 message system', () => {
+  // Gap thật phát hiện qua verify Docker end-to-end với memory-tencentdb
+  // (không phải giả thuyết): >=2 message role 'system' riêng biệt trong 1
+  // request khiến proxy Qwen (vLLM/litellm) trả 400 thật "System message
+  // must be at the beginning." -- xác nhận bằng curl trực tiếp vào proxy.
+  // Bug có trước memory (Phase 15, skill), chỉ chưa lộ ra vì chưa từng có
+  // >=2 note cùng lúc trước đây.
+  it('system prompt gốc + nhiều note -> chỉ 1 message role system, đứng đầu, gộp đủ nội dung', () => {
+    const session = new Session('s', 8, 'Bạn là trợ lý hữu ích.')
+    const prompt = session.buildPrompt('câu hỏi', ['skill note A', 'memory note B'])
+
+    const systemMessages = prompt.filter((m) => m.role === 'system')
+    expect(systemMessages.length).toBe(1)
+    expect(prompt[0].role).toBe('system')
+    expect(prompt[0].content).toContain('Bạn là trợ lý hữu ích.')
+    expect(prompt[0].content).toContain('skill note A')
+    expect(prompt[0].content).toContain('memory note B')
+    expect(prompt.at(-1)).toEqual({ role: 'user', content: 'câu hỏi' })
+  })
+
+  it('không có system prompt gốc -- vẫn chỉ 1 message system (từ các note), không lẫn message system rời', () => {
+    const session = new Session('s', 8, undefined)
+    const prompt = session.buildPrompt('câu hỏi', ['note A', 'note B', 'note C'])
+
+    const systemMessages = prompt.filter((m) => m.role === 'system')
+    expect(systemMessages.length).toBe(1)
+    expect(prompt[0].content).toBe('note A\n\nnote B\n\nnote C')
+  })
+
+  it('không có note nào -- không tự thêm message system thừa, giữ nguyên history', () => {
+    const session = new Session('s', 8, 'sys')
+    const prompt = session.buildPrompt('câu hỏi', [])
+
+    expect(prompt.filter((m) => m.role === 'system').length).toBe(1)
+    expect(prompt[0]).toEqual({ role: 'system', content: 'sys' })
+  })
+})

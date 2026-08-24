@@ -1,5 +1,14 @@
 // seams/memory.ts — Service Definition. KHÔNG chứa implementation.
-// Chưa có provider trong Phase 0-3 (memory-vector nằm ngoài scope hiện tại).
+// Provider thật (TencentDB Agent Memory MemoryCore): bundles/providers/memory-tencentdb.
+//
+// LƯU Ý (merge RLM harness, xem docs/agent-core-rlm-harness-merge-plan.md
+// mục 4.1): nhánh RLM mở rộng CÙNG TÊN seam `ctx.memory` cho 1 capability
+// khác hẳn — rolling summary nén theo TỪNG SESSION để nạp vào loop-rlm mỗi
+// lượt (snapshot/completeTurn/...), không phải recall xuyên session/user
+// qua service ngoài như ở đây. 2 khái niệm khác nhau thật, không ép chung 1
+// interface — phần rolling-memory tách sang seam riêng `ctx.turnMemory`
+// (seams/turn-memory.ts, provider memory-rolling). Seam này giữ NGUYÊN,
+// không đổi gì so với Phase 25.
 import { Context, Service } from '@deepseek-ai/cordis'
 
 declare module '@deepseek-ai/cordis' {
@@ -14,44 +23,12 @@ export interface MemoryEntry {
   score?: number
 }
 
-export interface RollingMemoryUpdate {
-  summary: string
-  turnSummary: string
-  quality?: string
-  error?: string
-}
-
-export interface RollingTurnInput {
-  update: RollingMemoryUpdate
-  state: string
-  request: string
-  contexts: string[]
-  historyIndex?: number
-}
-
-/** Raw result của loop; provider memory tự quyết định cách tóm tắt/persist. */
-export interface CompleteTurnInput {
-  state: string
-  request: string
-  outcome: unknown
-  trajectory?: Record<string, unknown>
-  contexts: string[]
-  historyIndex?: number
-}
-
-export interface CompleteTurnResult {
-  update: RollingMemoryUpdate
-  turn: Record<string, unknown>
-}
-
-export interface RollingMemorySnapshot {
-  summary: string
-  turns: Array<Record<string, unknown>>
-  currentContext?: string
-  resources: {
-    datasets: Array<Record<string, unknown>>
-    artifacts: string[]
-  }
+// userId map tới Session.ownerId (auth module) -- cho phép provider scope bộ
+// nhớ theo TỪNG NGƯỜI DÙNG thật thay vì theo session, dù 1 instance provider
+// dùng chung cho nhiều user. Optional vì call site có thể chưa có identity
+// (session ẩn danh) -- provider tự quyết định fallback (vd. 'anonymous').
+export interface MemoryContext {
+  userId?: string
 }
 
 export abstract class MemoryService extends Service {
@@ -59,20 +36,6 @@ export abstract class MemoryService extends Service {
     super(ctx, 'memory')
   }
 
-  abstract remember(sessionId: string, text: string): Promise<void>
-  abstract recall(sessionId: string, query: string, limit?: number): Promise<MemoryEntry[]>
-  abstract snapshot(
-    sessionId: string,
-    options?: {
-      activeDatasets?: Array<Record<string, unknown>>
-      artifacts?: string[]
-      currentContextIndex?: number
-    },
-  ): Promise<RollingMemorySnapshot>
-  abstract summary(sessionId: string): Promise<string>
-  abstract sourceContexts(sessionId: string, currentContextIndex?: number): Promise<string[]>
-  abstract recordContext(sessionId: string, contextIndex: number): Promise<void>
-  abstract recordTurn(sessionId: string, input: RollingTurnInput): Promise<Record<string, unknown>>
-  abstract completeTurn(sessionId: string, input: CompleteTurnInput): Promise<CompleteTurnResult>
-  abstract clear(sessionId: string): Promise<void>
+  abstract remember(sessionId: string, text: string, context?: MemoryContext): Promise<void>
+  abstract recall(sessionId: string, query: string, limit?: number, context?: MemoryContext): Promise<MemoryEntry[]>
 }
