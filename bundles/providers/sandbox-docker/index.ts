@@ -92,7 +92,7 @@ export function buildDockerWorkerArgs(options: DockerWorkerArgs): string[] {
 function execDocker(
   dockerBin: string,
   args: string[],
-  options: { timeout?: number; maxBuffer?: number } = {},
+  options: { timeout?: number; maxBuffer?: number; signal?: AbortSignal } = {},
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     execFile(dockerBin, args, options, (error, stdout, stderr) => {
@@ -181,7 +181,7 @@ export class SandboxDocker extends SandboxIpython {
     this.dockerConfig = config
   }
 
-  async run(code: string, language: string): Promise<SandboxRunResult> {
+  async run(code: string, language: string, options: { signal?: AbortSignal } = {}): Promise<SandboxRunResult> {
     if (language !== 'python' && language !== 'python3') {
       throw new Error(`sandbox-docker only supports python, received "${language}"`)
     }
@@ -190,7 +190,7 @@ export class SandboxDocker extends SandboxIpython {
     if (this.dockerConfig.cpus !== undefined) args.push('--cpus', String(this.dockerConfig.cpus))
     args.push(this.dockerConfig.image ?? DEFAULT_IMAGE, 'python', '-c', code)
     try {
-      const result = await execDocker(this.dockerBin, args, { timeout: 300_000, maxBuffer: 10 * 1024 * 1024 })
+      const result = await execDocker(this.dockerBin, args, { timeout: 300_000, maxBuffer: 10 * 1024 * 1024, signal: options.signal })
       return { ...result, exitCode: 0 }
     } catch (error) {
       const value = error as { stdout?: string; stderr?: string; code?: number }

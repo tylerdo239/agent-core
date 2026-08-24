@@ -14,6 +14,8 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
+export interface AuthTicket { ticket: string; expiresAtMs: number }
+
 export abstract class AuthService extends Service {
   constructor(ctx: Context) {
     super(ctx, 'auth')
@@ -21,4 +23,6 @@ export abstract class AuthService extends Service {
 
   /** `token` là giá trị đã tách khỏi tiền tố "Bearer " (hoặc tương đương) — verify() không tự parse header. */
   abstract verify(token: string | undefined): boolean
+  issueTicket?(ttlMs?: number): AuthTicket
+  verifyTicket?(ticket: string | undefined): boolean
 }

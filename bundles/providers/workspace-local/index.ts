@@ -1,5 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { readFile, writeFile } from 'node:fs/promises'
+import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import { readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { WorkspaceDataset, WorkspaceService, WorkspaceSnapshot } from '../../../seams/workspace.ts'
@@ -7,6 +10,7 @@ import { WorkspaceDataset, WorkspaceService, WorkspaceSnapshot } from '../../../
 export namespace WorkspaceLocal {
   export interface Config {
     basePath?: string
+    maxFileBytes?: number
   }
 }
 
@@ -19,10 +23,12 @@ function safeSessionId(value: string): string {
 
 export class WorkspaceLocal extends WorkspaceService {
   private basePath: string
+  private maxFileBytes: number
 
   constructor(ctx: Context, public config: WorkspaceLocal.Config = {}) {
     super(ctx)
     this.basePath = path.resolve(config.basePath ?? 'data/workspaces')
+    this.maxFileBytes = config.maxFileBytes ?? 70 * 1024 * 1024
     mkdirSync(this.basePath, { recursive: true })
   }
 
@@ -77,13 +83,36 @@ export class WorkspaceLocal extends WorkspaceService {
     return files.sort()
   }
 
-  async writeFile(sessionId: string, filename: string, content: Buffer): Promise<{ path: string; size: number }> {
+  async writeFile(sessionId: string, filename: string, content: Buffer): Promise<{ path: string; size: number; sha256: string }> {
+    if (content.byteLength > this.maxFileBytes) throw new Error(`file exceeds ${this.maxFileBytes} bytes`)
     const root = this.root(sessionId)
-    const safe = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_') || 'upload'
+    const safe = this.safeRelativePath(filename)
     const target = path.join(root, safe)
     if (target !== root && !target.startsWith(root + path.sep)) throw new Error('filename escapes workspace')
-    await writeFile(target, content)
-    // Đăng ký tabular files vào index.json để list_datasets()/load_dataset() thấy
+    mkdirSync(path.dirname(target), { recursive: true })
+    const temporary = path.join(path.dirname(target), `.${path.basename(target)}.${randomUUID()}.tmp`)
+    try {
+      await writeFile(temporary, content)
+      await rename(temporary, target)
+    } catch (error) {
+      await unlink(temporary).catch(() => undefined)
+      throw error
+    }
+    this.registerDataset(root, safe)
+    return { path: safe, size: content.byteLength, sha256: createHash('sha256').update(content).digest('hex') }
+  }
+
+  private safeRelativePath(filename: string) {
+    const parts = String(filename).split('/').filter((part) => part && part !== '.')
+    if (!parts.length || parts.some((part) => part === '..' || part.includes('\0'))) throw new Error('filename escapes workspace')
+    const safe = parts.map((part) => part.replace(/[^a-zA-Z0-9._-]/g, '_')).join('/')
+    if (!safe) throw new Error('filename escapes workspace')
+    return safe
+  }
+
+  private registerDataset(root: string, safe: string) {
+    // Generated CSV reports are artifacts, not new input datasets.
+    if (safe.includes('/')) return
     const ext = path.extname(safe).toLowerCase()
     if (TABULAR.has(ext)) {
       const indexPath = path.join(root, 'index.json')
@@ -97,7 +126,42 @@ export class WorkspaceLocal extends WorkspaceService {
       index[id] = { filename: safe, path: safe, created_at: new Date().toISOString() }
       writeFileSync(indexPath, JSON.stringify(index, null, 2))
     }
-    return { path: safe, size: content.byteLength }
+  }
+
+  async writeFileFromStream(
+    sessionId: string,
+    filename: string,
+    stream: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array | Buffer>,
+    options: { maxBytes?: number } = {},
+  ) {
+    const root = this.root(sessionId)
+    const safe = this.safeRelativePath(filename)
+    const target = path.join(root, safe)
+    const temporary = path.join(path.dirname(target), `.${path.basename(target)}.${randomUUID()}.tmp`)
+    const maximum = options.maxBytes ?? this.maxFileBytes
+    const hash = createHash('sha256')
+    let size = 0
+    const counter = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        size += chunk.byteLength
+        if (size > maximum) return callback(new Error(`file exceeds ${maximum} bytes`))
+        hash.update(chunk)
+        callback(null, chunk)
+      },
+    })
+    const source = Symbol.asyncIterator in (stream as object)
+      ? Readable.from(stream as AsyncIterable<Uint8Array | Buffer>)
+      : Readable.fromWeb(stream as Parameters<typeof Readable.fromWeb>[0])
+    mkdirSync(path.dirname(target), { recursive: true })
+    try {
+      await pipeline(source, counter, createWriteStream(temporary, { flags: 'wx' }))
+      await rename(temporary, target)
+    } catch (error) {
+      await unlink(temporary).catch(() => undefined)
+      throw error
+    }
+    this.registerDataset(root, safe)
+    return { path: safe, size, sha256: hash.digest('hex') }
   }
 
   async readFile(sessionId: string, filePath: string): Promise<Buffer> {

@@ -101,6 +101,61 @@ def load_dataset(file_id=None):
     print(f"Loaded {{_path.name}}: {{len(_frame)}} rows x {{len(_frame.columns)}} columns")
     return _frame
 
+def profile_dataset(file_id=None, sample_rows=5, max_columns=50):
+    """One-call dataset understanding primitive (<Understand>).
+
+    Returns a compact, bounded summary so the model does not need separate
+    df.shape / df.dtypes / df.isna / df.head calls. Mirrors DeepAnalyze's
+    Understand action: inspect before computing.
+    """
+    import pandas as pd  # noqa: F401 - ensure pandas is imported for type sniffing
+    _max_cols = int(max_columns) if max_columns else 50
+    _sample = max(1, min(int(sample_rows), 10))
+    _df = load_dataset(file_id)
+    _shape = _df.shape
+    _cols = list(_df.columns)
+    _truncated = len(_cols) > _max_cols
+    _shown_cols = _cols[:_max_cols] if _truncated else _cols
+    _dtypes = {{str(col): str(_df[col].dtype) for col in _shown_cols}}
+    _missing = {{str(col): int(_df[col].isna().sum()) for col in _shown_cols}}
+    _dup = int(_df.duplicated().sum())
+    # Numeric summary for shown columns only, bounded
+    _numeric_cols = [c for c in _shown_cols if str(_df[c].dtype).startswith(("int", "float", "number"))]
+    _summary_lines = [
+        f"profile_dataset: shape={{_shape}} cols={{len(_cols)}}{{' (truncated to '+str(_max_cols)+')' if _truncated else ''}}",
+        f"columns[{{len(_shown_cols)}}]: {{', '.join(str(c) for c in _shown_cols)}}",
+        f"dtypes: {{_dtypes}}",
+        f"missing: {{_missing}}",
+        f"duplicated_rows: {{_dup}}",
+    ]
+    if _numeric_cols:
+        try:
+            _desc = _df[_numeric_cols[: min(8, len(_numeric_cols))]].describe().round(3).to_string()
+            _summary_lines.append(f"numeric_describe (first {{min(8, len(_numeric_cols))}} numeric cols):\\n{{_desc}}")
+        except Exception as _exc:
+            _summary_lines.append(f"numeric_describe: <failed: {{_exc}}>")
+    try:
+        _head = _df.head(_sample).to_string(index=False, max_cols=_max_cols)
+        # Hard cap on printed chars to keep observation bounded (~6k)
+        if len(_head) > 4000:
+            _head = _head[:4000] + "\\n...[head truncated]..."
+        _summary_lines.append(f"head({{_sample}}):\\n{{_head}}")
+    except Exception as _exc:
+        _summary_lines.append(f"head: <failed: {{_exc}}>")
+    _out = "\\n".join(_summary_lines)
+    print(_out)
+    return {{
+        "shape": _shape,
+        "columns": _cols,
+        "shown_columns": _shown_cols,
+        "truncated": _truncated,
+        "dtypes": _dtypes,
+        "missing": _missing,
+        "duplicated_rows": _dup,
+        "sample_rows": _sample,
+    }}
+
+
 def list_workspace_files():
     """Return paths and sizes for files under the active workspace."""
     _root = _workspace_path()
@@ -124,6 +179,11 @@ def read_workspace_file(relative_path, start=0, length=None, encoding="utf-8"):
 def save_artifact(relative_path, content):
     """Save text/bytes below generated/ and return its workspace-relative path."""
     _relative = _RLMPath(str(relative_path))
+    # The public contract says this helper writes *below* generated/. Models
+    # nevertheless often pass the visible workspace path (generated/report).
+    # Treat both spellings identically instead of creating generated/generated.
+    if _relative.parts and _relative.parts[0] == "generated":
+        _relative = _RLMPath(*_relative.parts[1:])
     _target = _workspace_path(_RLMPath("generated") / _relative)
     _target.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(content, bytes):
@@ -131,6 +191,63 @@ def save_artifact(relative_path, content):
     else:
         _target.write_text(str(content), encoding="utf-8")
     return _target.relative_to(_workspace_path()).as_posix()
+
+import threading as _job_threading
+import time as _job_time
+import uuid as _job_uuid
+_JOBS = {{}}
+_JOBS_LOCK = _job_threading.Lock()
+
+def run_job(code, job_id=None):
+    """Run code in background thread, log to generated/jobs/<id>.log (DSH jobs pattern)."""
+    _id = str(job_id or _job_uuid.uuid4().hex[:12])
+    _log_rel = _RLMPath("generated") / _RLMPath("jobs") / (_id + ".log")
+    _log_path = _workspace_path(_log_rel)
+    _log_path.parent.mkdir(parents=True, exist_ok=True)
+    def _target():
+        try:
+            with _log_path.open("a", encoding="utf-8") as _lf:
+                _lf.write(f"\\n--- job {{_id}} started at {{_job_time.time()}} ---\\n")
+            exec(code, globals())
+            with _log_path.open("a", encoding="utf-8") as _lf:
+                _lf.write(f"\\n--- job {{_id}} done at {{_job_time.time()}} ---\\n")
+        except Exception as _e:
+            with _log_path.open("a", encoding="utf-8") as _lf:
+                _lf.write(f"\\n--- job {{_id}} error: {{_e}} ---\\n")
+                import traceback as _tb
+                _tb.print_exc(file=_lf)
+        finally:
+            with _JOBS_LOCK:
+                if _id in _JOBS:
+                    _JOBS[_id]["status"] = "done"
+    with _JOBS_LOCK:
+        _JOBS[_id] = {{"status": "running", "log": _log_path.relative_to(_workspace_path()).as_posix(), "started": _job_time.time()}}
+    _t = _job_threading.Thread(target=_target, daemon=True)
+    _t.start()
+    print(f"job {{_id}} started, log: {{_JOBS[_id]['log']}}")
+    return _id
+
+def job_output(job_id, offset=0, length=4000):
+    """Read background job log slice."""
+    _id = str(job_id)
+    with _JOBS_LOCK:
+        _info = _JOBS.get(_id)
+    if _info is None:
+        # try direct file
+        _p = _workspace_path(_RLMPath("generated") / _RLMPath("jobs") / (_id + ".log"))
+        if not _p.exists():
+            return f"job {{_id}} not found"
+        _info = {{"log": _p.relative_to(_workspace_path()).as_posix()}}
+    _p = _workspace_path(_info["log"])
+    if not _p.exists():
+        return ""
+    _text = _p.read_text(encoding="utf-8", errors="replace")
+    return _text[int(offset): int(offset)+int(length)] if length else _text[int(offset):]
+
+def job_list():
+    """List background jobs."""
+    with _JOBS_LOCK:
+        return [{{"id": k, **v}} for k, v in _JOBS.items()]
 
 os.chdir(_workspace_path())
 

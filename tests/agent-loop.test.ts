@@ -69,6 +69,7 @@ describe('Phase 4 — agent loop end-to-end', () => {
     expect(events.map((e) => e.type)).toEqual([
       'user_message', // ghi TRƯỚC khi driver chạy, ở agent-runner (entrypoint ổn định chung mọi driver)
       'model_message', // lượt 1: model quyết định gọi tool
+      'tool_audit', // execution pipeline ghi outcome/latency trước khi loop ghi kết quả
       'tool_result', // kết quả tool được ghi TRƯỚC khi qua bước kế tiếp (rule B3)
       'model_message', // lượt 2: model trả lời cuối cùng
     ])
@@ -78,7 +79,7 @@ describe('Phase 4 — agent loop end-to-end', () => {
     const firstModelMsg = events[1] as any
     expect(firstModelMsg.toolCall).toEqual({ name: 'query_database', args: { sessionId: 'store-A' } })
 
-    const toolResult = events[2] as any
+    const toolResult = events[3] as any
     expect(toolResult.name).toBe('query_database')
     expect(toolResult.result).toEqual([{ type: 'seed', value: 42 }])
 

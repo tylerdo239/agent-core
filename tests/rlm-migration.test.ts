@@ -162,6 +162,7 @@ describe('RLM backend migration', () => {
     expect(live).toEqual(['turn_started', 'iteration_completed', 'analysis', 'final', 'memory_updated'])
     expect((await root.storage.readEvents(session.id)).map((event) => event.type)).toEqual([
       'user_message',
+      'prompt_assembled',
       'turn_started',
       'iteration_completed',
       'analysis',

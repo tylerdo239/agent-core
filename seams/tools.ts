@@ -11,7 +11,17 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-export type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>
+export class ToolExecutionError extends Error {
+  constructor(
+    public readonly code: 'TOOL_NOT_FOUND' | 'TOOL_ARGS_INVALID' | 'TOOL_PERMISSION_DENIED' | 'TOOL_TIMEOUT' | 'TOOL_CANCELLED' | 'TOOL_HANDLER_ERROR',
+    message: string,
+    public readonly tool?: string,
+    public readonly details?: unknown,
+  ) {
+    super(message)
+    this.name = 'ToolExecutionError'
+  }
+}
 
 /**
  * Phase 8.5 — metadata hiển thị THUẦN (không phải logic nghiệp vụ), để
@@ -32,13 +42,22 @@ export interface ToolDefinition {
   description: string
   /** JSON Schema mô tả tham số — dùng để quảng bá cho model qua LlmToolSpec (xem seams/llm.ts). */
   parameters?: Record<string, unknown>
-  handler: ToolHandler
+  handler: (args: Record<string, unknown>, context?: ToolInvocationContext) => Promise<unknown>
   ui?: ToolUiHint
+  permissionActor?: string
+  permissionAction?: string
+  timeoutMs?: number
+  version?: string
 }
 
 export interface ToolInvocationContext {
   sessionId: string
-  source: 'default-loop' | 'planner-critic' | 'rlm' | 'subagent'
+  source: 'default-loop' | 'planner-critic' | 'rlm' | 'subagent' | 'pipeline' | 'api'
+  principal?: string
+  runId?: string
+  jobId?: string
+  deadline?: number
+  signal?: AbortSignal
 }
 
 export abstract class ToolRegistryService extends Service {

@@ -13,7 +13,7 @@ import '../../../seams/storage.ts'
 import '../../../seams/tools.ts'
 import '../../../seams/loop.ts'
 import '../../../seams/skill.ts'
-import { LoopTurnResult, Session, TurnInput } from '../../../seams/loop.ts'
+import { assertNotCancelled, LoopTurnResult, Session, TurnInput } from '../../../seams/loop.ts'
 
 export const inject = ['loop']
 
@@ -29,13 +29,15 @@ export const apply = (ctx: Context) => {
       let steps = 0
 
       while (steps < session.maxSteps) {
+        assertNotCancelled(input)
         const toolSpecs = runCtx.tools.list().map((t) => ({
           name: t.name,
           description: t.description,
           parameters: t.parameters,
         }))
 
-        const response = await runCtx.llm.complete(messages, { tools: toolSpecs })
+        const response = await runCtx.llm.complete(messages, { tools: toolSpecs, signal: input.signal })
+        assertNotCancelled(input)
         // Phase 8.5: xem ghi chú tương ứng trong loop-default.
         const tool = response.toolCall ? runCtx.tools.get(response.toolCall.name) : undefined
         await runCtx.storage.appendEvent(session.id, {
@@ -53,8 +55,9 @@ export const apply = (ctx: Context) => {
         if (!response.toolCall) {
           const critique = await runCtx.llm.complete(
             [...session.history, { role: 'user', content: CRITIQUE_PROMPT }],
-            { tools: [] },
+            { tools: [], signal: input.signal },
           )
+          assertNotCancelled(input)
           await runCtx.storage.appendEvent(session.id, {
             type: 'critic_message',
             content: critique.content,
@@ -74,8 +77,11 @@ export const apply = (ctx: Context) => {
           ? await runCtx.tools.invoke(response.toolCall.name, response.toolCall.args, {
               sessionId: session.id,
               source: 'planner-critic',
+              runId: input.runId,
+              signal: input.signal,
             })
           : { error: `tool "${response.toolCall.name}" not found` }
+        assertNotCancelled(input)
 
         await runCtx.storage.appendEvent(session.id, {
           type: 'tool_result',

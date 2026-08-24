@@ -46,9 +46,14 @@ import * as skillRegistry from '../bundles/providers/skill-registry/index.ts'
 import * as skillFilesystem from '../bundles/providers/skill-filesystem/index.ts'
 import * as promptRegistry from '../bundles/providers/prompt-registry/index.ts'
 import * as promptRlmDataAgent from '../bundles/prompts/prompt-rlm-data-agent/index.ts'
+import * as promptDeepanalyzePhases from '../bundles/prompts/prompt-deepanalyze-phases/index.ts'
 import * as memoryRolling from '../bundles/providers/memory-rolling/index.ts'
 import * as workspaceLocal from '../bundles/providers/workspace-local/index.ts'
 import * as workspaceDocker from '../bundles/providers/workspace-docker/index.ts'
+import * as artifactService from '../bundles/providers/artifact-service/index.ts'
+import * as jobRunner from '../bundles/providers/job-runner/index.ts'
+import * as pipelineRegistry from '../bundles/providers/pipeline-registry/index.ts'
+import * as pipelineRunner from '../bundles/providers/pipeline-runner/index.ts'
 import * as sandboxIpython from '../bundles/providers/sandbox-ipython/index.ts'
 import * as sandboxDocker from '../bundles/providers/sandbox-docker/index.ts'
 // skill-support-tone: ví dụ #1 cho ctx.skills — chèn hướng dẫn giọng văn hỗ
@@ -70,6 +75,13 @@ import * as apiRest from '../bundles/adapters/api-rest/index.ts'
 import * as apiWs from '../bundles/adapters/api-ws/index.ts'
 import * as apiGrpc from '../bundles/adapters/api-grpc/index.ts'
 import * as webUi from '../bundles/adapters/web-ui/index.ts'
+import * as stageDataLoad from '../bundles/pipelines/stages/data-load/index.ts'
+import * as stageFeatureBasic from '../bundles/pipelines/stages/feature-basic/index.ts'
+import * as stageTrainMajority from '../bundles/pipelines/stages/train-majority/index.ts'
+import * as stageTrainFlaml from '../bundles/pipelines/stages/train-flaml/index.ts'
+import * as stageValidateHoldout from '../bundles/pipelines/stages/validate-split/index.ts'
+import * as stageReportMarkdown from '../bundles/pipelines/stages/report-markdown/index.ts'
+import * as pipelineTabularClassification from '../bundles/pipelines/pipeline-tabular-classification/index.ts'
 
 const agentCoreRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const localEnvPath = path.join(agentCoreRoot, '.env')
@@ -217,6 +229,10 @@ async function main() {
   })
   root.plugin(promptRegistry)
   root.plugin(promptRlmDataAgent)
+  // Fixed wording still degraded DS (3 FAIL in ds suite, timeout). Keep disabled;
+  // the phase discipline is already covered by G1's evidence-policy <Understand>
+  // line + repl-protocol 1-sentence plan. Enable via skill when needed.
+  // root.plugin(promptDeepanalyzePhases)
   root.plugin(memoryRolling, {
     basePath: process.env.RLM_MEMORY_PATH ?? path.join(agentCoreRoot, 'data', 'rlm-memory'),
   })
@@ -227,6 +243,9 @@ async function main() {
       volumePrefix: process.env.RLM_DOCKER_VOLUME_PREFIX ?? 'agent-core-rlm-workspace',
     })
   }
+  root.plugin(artifactService)
+  root.plugin(jobRunner, { maxConcurrent: optionalNumber('JOB_MAX_CONCURRENT') })
+  root.plugin(pipelineRegistry)
   root.plugin(loopRegistry)
   root.plugin(loopDefault)
   root.plugin(loopRlm)
@@ -282,6 +301,14 @@ async function main() {
       extraBody: openaiExtraBody ? JSON.stringify(openaiExtraBody) : undefined,
     })
   }
+  root.plugin(stageDataLoad)
+  root.plugin(stageFeatureBasic)
+  root.plugin(stageTrainMajority)
+  root.plugin(stageTrainFlaml)
+  root.plugin(stageValidateHoldout)
+  root.plugin(stageReportMarkdown)
+  root.plugin(pipelineTabularClassification)
+  root.plugin(pipelineRunner)
   root.plugin(authApiKey, { keys: apiKeys })
   root.plugin(toolDatabaseQuery)
   root.plugin(toolWebSearch, {
@@ -307,6 +334,7 @@ async function main() {
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, async () => {
       console.log(`\n${signal} — shutting down...`)
+      await root.agent.drain(optionalNumber('SHUTDOWN_DRAIN_MS') ?? 10_000)
       await root.fiber.dispose()
       process.exit(0)
     })

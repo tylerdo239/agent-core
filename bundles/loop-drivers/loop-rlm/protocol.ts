@@ -4,6 +4,7 @@ import { PromptRegistryService } from '../../../seams/prompt.ts'
 import { SkillDefinition } from '../../../seams/skill.ts'
 import { WorkspaceSnapshot } from '../../../seams/workspace.ts'
 import { ToolDefinition } from '../../../seams/tools.ts'
+import { createContractValidator } from '../../../src/contracts.ts'
 
 export interface RlmSessionState {
   contextIndex: number
@@ -14,6 +15,8 @@ export interface RlmSessionState {
 export interface PreparedRlmTurn {
   contractVersion: 2
   sessionId: string
+  runId?: string
+  requestId?: string
   request: string
   contextIndex: number
   historyIndex: number
@@ -29,6 +32,20 @@ export interface PreparedRlmTurn {
   context: Record<string, unknown>
   metadata?: Record<string, unknown>
 }
+
+const validatePreparedTurn = createContractValidator<PreparedRlmTurn>('rlm/v2', {
+  type: 'object',
+  required: ['contractVersion', 'sessionId', 'request', 'contextIndex', 'historyIndex', 'availableTools', 'prompt', 'promptVersion', 'context'],
+  properties: {
+    contractVersion: { const: 2 }, sessionId: { type: 'string', minLength: 1 },
+    runId: { type: 'string', minLength: 1 }, requestId: { type: 'string', minLength: 1 },
+    request: { type: 'string' }, contextIndex: { type: 'integer', minimum: 0 },
+    historyIndex: { type: 'integer', minimum: 0 }, availableTools: { type: 'array' },
+    prompt: { type: 'string', minLength: 1 }, promptVersion: { type: 'string', minLength: 1 },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+})
 
 function skillPayload(skill?: SkillDefinition) {
   if (!skill) return undefined
@@ -96,9 +113,11 @@ export async function prepareRlmTurn(options: {
     driver: 'rlm',
     sessionId: session.id,
   })
-  return {
+  return validatePreparedTurn({
     contractVersion: 2,
     sessionId: session.id,
+    ...(input.runId ? { runId: input.runId } : {}),
+    ...(input.requestId ? { requestId: input.requestId } : {}),
     request: input.message,
     contextIndex: state.contextIndex,
     historyIndex: state.historyIndex,
@@ -108,5 +127,5 @@ export async function prepareRlmTurn(options: {
     promptVersion: prompt.version,
     context,
     metadata: input.metadata,
-  }
+  })
 }

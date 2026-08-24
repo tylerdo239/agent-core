@@ -4,9 +4,9 @@
 // string thường (`===`) rò rỉ thời gian theo độ dài phần khớp, đủ để dò key
 // qua timing attack trên 1 service nội bộ lặp lại nhiều lần. Chi phí thêm
 // gần như 0, không lý do gì để không làm đúng.
-import { timingSafeEqual } from 'node:crypto'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
-import { AuthService } from '../../../seams/auth.ts'
+import { type AuthTicket, AuthService } from '../../../seams/auth.ts'
 
 export namespace AuthApiKey {
   export interface Config {
@@ -28,6 +28,7 @@ function safeEqual(a: string, b: string) {
 }
 
 export class AuthApiKey extends AuthService {
+  private tickets = new Map<string, number>()
   constructor(ctx: Context, public config: AuthApiKey.Config) {
     super(ctx)
     if (!config.keys?.length) {
@@ -38,6 +39,22 @@ export class AuthApiKey extends AuthService {
   verify(token: string | undefined) {
     if (!token) return false
     return this.config.keys.some((key) => safeEqual(token, key))
+  }
+
+  issueTicket(ttlMs = 60_000): AuthTicket {
+    const ticket = randomBytes(32).toString('hex')
+    const expiresAtMs = Date.now() + Math.min(Math.max(ttlMs, 1_000), 300_000)
+    this.tickets.set(ticket, expiresAtMs)
+    const now = Date.now()
+    for (const [value, expiry] of this.tickets) if (expiry < now) this.tickets.delete(value)
+    return { ticket, expiresAtMs }
+  }
+
+  verifyTicket(ticket: string | undefined) {
+    if (!ticket) return false
+    const expiresAt = this.tickets.get(ticket)
+    this.tickets.delete(ticket)
+    return expiresAt !== undefined && Date.now() <= expiresAt
   }
 }
 

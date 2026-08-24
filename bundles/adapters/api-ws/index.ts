@@ -45,7 +45,8 @@ const DEFAULT_MAX_PAYLOAD_BYTES = 1024 * 1024 // 1 MiB
 
 type ClientMessage =
   | { type: 'create_session'; driver?: string; maxSteps?: number; systemPrompt?: string }
-  | { type: 'send_message'; sessionId: string; message: string; driver?: string; selectedSkill?: string; metadata?: Record<string, unknown> }
+  | { type: 'send_message'; sessionId: string; message: string; driver?: string; selectedSkill?: string; metadata?: Record<string, unknown>; requestId?: string }
+  | { type: 'cancel_run'; runId: string }
 
 function send(socket: WebSocket, payload: unknown) {
   socket.send(JSON.stringify(payload))
@@ -58,13 +59,17 @@ function extractToken(req: import('node:http').IncomingMessage): string | undefi
   return url.searchParams.get('key') ?? undefined
 }
 
+function extractTicket(req: import('node:http').IncomingMessage) {
+  return new URL(req.url ?? '/', 'http://localhost').searchParams.get('ticket') ?? undefined
+}
+
 export const apply = async (ctx: Context, config: ApiWs.Config = {}) => {
   const wss = new WebSocketServer({
     port: config.port ?? 8788,
     maxPayload: config.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES,
     verifyClient: (info, callback) => {
       const token = extractToken(info.req)
-      if (ctx.auth.verify(token)) return callback(true)
+      if (ctx.auth.verifyTicket?.(extractTicket(info.req)) || ctx.auth.verify(token)) return callback(true)
       callback(false, 401, 'unauthorized')
     },
   })
@@ -126,12 +131,18 @@ async function handleMessage(ctx: Context, socket: WebSocket, raw: string) {
         message: msg.message,
         selectedSkill: msg.selectedSkill,
         metadata: msg.metadata,
+        requestId: msg.requestId,
       })
       send(socket, { type: 'done', sessionId: session.id, result })
     } finally {
       unsub()
     }
     return
+  }
+
+  if (msg.type === 'cancel_run') {
+    const cancelled = await ctx.agent.cancelRun(msg.runId)
+    return send(socket, { type: 'run_cancelled', runId: msg.runId, cancelled })
   }
 
   send(socket, { type: 'error', message: `unknown message type` })

@@ -35,6 +35,7 @@ interface LoopStep {
     | 'final'
     | 'final_answer'
     | 'analysis'
+    | 'tool_call'
     | 'code'
     | 'observation'
     | 'human_decision'
@@ -45,15 +46,24 @@ interface LoopStep {
     | 'subcall_result'
     | 'context_usage'
     | 'memory_updated'
+    | 'skill_loaded'
+    | 'skill_resource'
+    | 'workspace_read'
+    | 'workspace_write'
   content?: string
   toolCall?: { name: string; args: Record<string, unknown> }
   toolUi?: ToolUiHint
   name?: string
+  args?: Record<string, unknown>
   result?: unknown
   message?: string
   control?: { question?: string; reason?: string; action?: string }
   question?: string
   reason?: string
+  action?: string
+  path?: string
+  skill?: string
+  encoding?: string
 }
 
 export const UI_AGENT_DRIVER = 'rlm'
@@ -362,6 +372,14 @@ export function App() {
       )
       return
     }
+    if (step.type === 'tool_call') {
+      const id = genId()
+      activeToolItemIdRef.current = id
+      setItems((prev) => [...prev, {
+        kind: 'tool', id, toolCall: { name: step.name ?? 'unknown', args: step.args ?? step.toolCall?.args ?? {} }, toolUi: step.toolUi, state: 'running',
+      }])
+      return
+    }
     if (step.type === 'critic_message') {
       setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `🔍 đang rà soát: ${step.content}` }])
       return
@@ -371,7 +389,23 @@ export function App() {
       return
     }
     if (step.type === 'analysis' && step.content) {
-      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `🔍 ${step.content}` }])
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `🧠 think: ${step.content}` }])
+      return
+    }
+    if (step.type === 'skill_loaded') {
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `📚 đọc skill: ${step.skill ?? 'unknown'}` }])
+      return
+    }
+    if (step.type === 'skill_resource') {
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `📚 đọc skill resource: ${step.skill ?? 'unknown'}${step.path ? `/${step.path}` : ''}` }])
+      return
+    }
+    if (step.type === 'workspace_read') {
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `📄 ${step.action ?? 'đọc'}${step.path ? `: ${step.path}` : ''}` }])
+      return
+    }
+    if (step.type === 'workspace_write') {
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `💾 ghi output: ${step.path ?? ''}` }])
       return
     }
     if (step.type === 'human_decision') {
@@ -430,8 +464,34 @@ export function App() {
         }
         continue
       }
+      if (step.type === 'tool_call') {
+        const id = genId()
+        pendingToolId = id
+        result.push({ kind: 'tool', id, toolCall: { name: step.name ?? 'unknown', args: step.args ?? step.toolCall?.args ?? {} }, toolUi: step.toolUi, state: 'running' })
+        continue
+      }
       if (step.type === 'critic_message') {
         result.push({ kind: 'critic', id: genId(), text: `🔍 đang rà soát: ${step.content}` })
+        continue
+      }
+      if (step.type === 'analysis' && step.content) {
+        result.push({ kind: 'critic', id: genId(), text: `🧠 think: ${step.content}` })
+        continue
+      }
+      if (step.type === 'skill_loaded') {
+        result.push({ kind: 'critic', id: genId(), text: `📚 đọc skill: ${step.skill ?? 'unknown'}` })
+        continue
+      }
+      if (step.type === 'skill_resource') {
+        result.push({ kind: 'critic', id: genId(), text: `📚 đọc skill resource: ${step.skill ?? 'unknown'}${step.path ? `/${step.path}` : ''}` })
+        continue
+      }
+      if (step.type === 'workspace_read') {
+        result.push({ kind: 'critic', id: genId(), text: `📄 ${step.action ?? 'đọc'}${step.path ? `: ${step.path}` : ''}` })
+        continue
+      }
+      if (step.type === 'workspace_write') {
+        result.push({ kind: 'critic', id: genId(), text: `💾 ghi output: ${step.path ?? ''}` })
         continue
       }
       if (step.type === 'final_answer') {
