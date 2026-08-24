@@ -215,3 +215,4 @@ Lịch sử build chi tiết (thiết kế, đánh đổi, bug thật phát hi�
 - [`docs/system-architecture.md`](docs/system-architecture.md) — kiến trúc RLM harness (loop-rlm/sandbox/workspace/prompt), request flow, ownership và tác dụng từng folder/file quan trọng (viết trước merge, đã vá vài chỗ lỗi thời)
 - [`docs/frontend-backend-handoff.md`](docs/frontend-backend-handoff.md) — contract REST/WebSocket/workspace và checklist bàn giao cho đội frontend
 - [`docs/agent-core-adding-plugins.md`](docs/agent-core-adding-plugins.md) — thêm 1 plugin: sửa source (`bundles/`) hay bên ngoài không cần sửa source (`EXTRA_PLUGINS`) — hướng dẫn + ví dụ đầy đủ
+- [`docs/agent-core-plugin-template.md`](docs/agent-core-plugin-template.md) — code mẫu copy-paste (tool/skill/provider), đã verify typecheck thật đối chiếu type thật của repo

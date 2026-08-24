@@ -9,6 +9,8 @@ Có 2 cách, tuỳ bạn có đang sửa trực tiếp source agent-core hay kh�
 
 Cả 2 cách dùng **chung 1 contract plugin** — không có API riêng nào phải học thêm cho cách "bên ngoài".
 
+Cần code mẫu copy-paste ngay (tool/skill/provider, đã verify typecheck thật) → xem [`docs/agent-core-plugin-template.md`](agent-core-plugin-template.md).
+
 ## 1. Contract plugin (chung cho cả 2 cách)
 
 Mọi plugin — nội bộ hay bên ngoài — là 1 module export đúng hình dạng Cordis chấp nhận:
