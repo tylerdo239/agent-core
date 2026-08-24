@@ -54,7 +54,7 @@ export namespace ApiRest {
   }
 }
 
-export const inject = ['sessions', 'agent', 'storage', 'auth', 'permission', 'skills', 'workspace']
+export const inject = ['sessions', 'agent', 'storage', 'auth', 'permission', 'skills', 'workspace', 'pluginInventory']
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024 // 1 MiB
 const FILE_MAX_BODY_BYTES = 70 * 1024 * 1024 // 70 MiB for uploads
@@ -217,6 +217,14 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse, m
     await ctx.auth.deleteUser(userMatch[1])
     res.writeHead(204)
     return res.end()
+  }
+
+  // docs: seams/plugin-inventory.ts — snapshot Fiber sống, admin-only cùng
+  // action riêng 'admin:plugins:view' (KHÔNG tái dùng 'admin:users:manage' —
+  // 2 khả năng khác nhau, tách rule để sau này có thể cấp lẻ từng cái).
+  if (req.method === 'GET' && pathname === '/plugins') {
+    if (!(await ctx.permission.check(identity!.role, 'admin:plugins:view'))) return sendJson(res, 403, { error: 'forbidden' })
+    return sendJson(res, 200, { plugins: ctx.pluginInventory.list() })
   }
 
   if (req.method === 'GET' && pathname === '/skills') {

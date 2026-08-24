@@ -2357,6 +2357,239 @@ Security fix xác nhận sống: user B gọi `GET /sessions/<id của A>/files`
 
 ---
 
+## Phase 28 — Tách UI workspace RLM thành UI-plugin thật, driver mặc định về `default` — ĐÃ IMPLEMENT, ĐÃ VERIFY
+
+User: sau khi thấy UI workspace RLM (merge Phase 27) luôn hiện cho MỌI
+session bất kể driver — hỏi đã làm theo UI-plugin (`ctx.slots`) chưa,
+muốn tách ra để UI mặc định không có flow này, tham khảo dsh/Claude cho
+hướng giải quyết → chọn hướng RLM là lựa chọn CHỦ ĐỘNG (giống panel
+Artifacts/Code-Interpreter của Claude.ai — chỉ tồn tại cho hội thoại thật
+sự dùng nó) → yêu cầu lên plan trước → duyệt implement. Chi tiết đầy đủ
+(bảng đối chiếu code cũ, thiết kế 2 slot mới, kết quả verify) ở
+[`docs/agent-core-rlm-web-ui-plugin-plan.md`](agent-core-rlm-web-ui-plugin-plan.md)
+— không lặp lại ở đây.
+
+Xác nhận thật (đọc code, không suy đoán): workspace bar/skill-select của
+RLM **chưa từng đi qua** cơ chế UI-plugin có sẵn (`ctx.slots`,
+`'tool.call.toolview'` là slot DUY NHẤT tồn tại trước phase này) — là JSX
+cứng trong `App.tsx`, luôn render bất kể `session.driver`. Thêm 2 slot mới
+(`'session.chrome.header'`/`'session.chrome.composer'`, kind `'keyed'`,
+key = tên driver), package mới `packages/ui-rlm-workspace/` đăng ký dưới
+key `'rlm'` — session `default`/`planner-critic` không có registrant khớp
+nên tự rơi về fallback `null`, không cần if/else cứng trong `App.tsx`.
+`UI_AGENT_DRIVER` (hằng số ép mọi session mới thành `'rlm'`) bị xoá hẳn;
+entry point mới "+ Phân tích dữ liệu" trong Sidebar tạo 1 session RLM MỚI
+(không đổi driver session đang chạy — Python REPL persistent gắn 1-1 với
+sessionId).
+
+Gap thật phát hiện lúc lên plan: `GET /sessions` đã trả `driver` từ lâu
+nhưng `fetchSessionHistory()` (`packages/ui-sidebar`) âm thầm bỏ field đó
+lúc map response — Sidebar không thể hiện badge phân biệt session RLM
+trong lịch sử nếu không sửa cùng lúc.
+
+**Deliverable Phase 28: ĐÃ VERIFY THẬT** — `npm run typecheck` sạch,
+`npm test` 200/200 pass (37 file, từ 193). `docker compose up --build`
+container healthy; xác nhận trực tiếp trong bundle JS đã build (`docker
+exec` đọc file thật) có đủ chuỗi UI mới. **WS thật qua package `ws`** (không
+giả lập): `create_session` không kèm driver → server trả đúng `"default"`;
+kèm `driver:"rlm"` → server trả đúng `"rlm"`; `GET /sessions` sau đó liệt
+kê đúng field `driver` cho cả 2 — xác nhận toàn chuỗi dữ liệu Sidebar sẽ
+đọc là thật. Chưa làm (đúng phạm vi, không phải bỏ sót): nội dung hiện ra
+TRONG LÚC RLM chạy (14 loại `LoopStep` vs 4 loại UI hiện, xem
+`docs/agent-core-rlm-web-ui-flow.md`) — việc riêng, độc lập với phase này.
+
+---
+
+## Phase 29 — Plugin inventory (tham khảo dsh) — ĐÃ IMPLEMENT, ĐÃ VERIFY
+
+User: hỏi đã có UI + logic hiện danh sách plugin đang chạy như dsh chưa,
+yêu cầu lên plan rồi implement luôn.
+
+Đọc source thật của dsh (`deepseek-harness/packages/host/plugin-inventory`
++ `packages/client/ui-settings-plugin-inventory`) trước khi thiết kế:
+`PluginInventoryGateway` đọc trực tiếp `ctx.loader.entries()` (từ
+`@deepseek-ai/cordis-plugin-loader`, dsh dùng hệ Loader/profile YAML điều
+khiển plugin động), trả `{entryId, moduleName, enabled, fiberPhase}` qua
+Remote (`typert`); UI là 1 tab Settings có ô tìm kiếm + card mở rộng xem
+chi tiết.
+
+**Khác biệt cố ý với dsh** (không copy máy móc): agent-core KHÔNG dùng
+`cordis-plugin-loader` — toàn bộ ~25 bundle mount tường minh qua
+`root.plugin(...)` trong `src/serve.ts` (coding rule A16), không có
+`ctx.loader`. Duyệt thẳng `ctx.registry` nội bộ của Cordis core cũng không
+đủ tin cậy: object-plugin (`{apply}`) không có `.name`, và bundle nào
+không tự tạo `class` lồng bên trong (vd. `tool-database-query`, chỉ gọi
+thẳng `ctx.tools.add(...)`) sẽ không hiện tên hữu ích hoặc không hiện gì.
+Giải pháp: `mount(name, category, plugin, config)` — hàm bọc mỗi lệnh
+`root.plugin(...)` trong `serve.ts`, ghi lại đúng tên bundle (khớp tên thư
+mục) + category (`provider|tool|skill|loop-driver|prompt|adapter`, khớp
+cấu trúc `bundles/`) + chính `Fiber` trả về (đọc `.state` SỐNG, không
+snapshot) vào 1 mảng `mounted`. Seam mới `seams/plugin-inventory.ts` +
+provider `bundles/providers/plugin-inventory` nhận THẲNG tham chiếu mảng
+đó (không copy) — bundle nào mount SAU plugin-inventory (kể cả 4 adapter
+cuối file) vẫn hiện đúng, không cần thứ tự mount đặc biệt.
+
+Gap thật phát hiện lúc test: `FiberState` là `declare const enum` khai bên
+trong 1 file `.d.ts` của `@deepseek-ai/cordis` — KHÔNG có runtime value nào
+compile ra, import làm value vỡ ngay lúc chạy qua tsx/esbuild (dsh tự bản
+thân cũng né đúng vấn đề này, tự khai lại `FIBER_STATE` làm object thay vì
+import enum) — copy cứng bảng số 0-5 theo tài liệu hoá tại `fiber.d.ts`
+thay vì import. Gap thứ 2: `GET /plugins` lúc đầu trả 500
+`"cannot get property \"pluginInventory\" without inject"` — `api-rest`
+khai `export const inject = [...]` tường minh danh sách service nó dùng
+(khác cách các fiber khác truy cập tự do), thiếu `'pluginInventory'` trong
+mảng đó là nguyên nhân — thêm vào là xong, không phải bug ở seam/provider.
+
+REST: `GET /plugins`, admin-only qua action RBAC riêng
+`'admin:plugins:view'` (KHÔNG tái dùng `'admin:users:manage'` — 2 khả năng
+khác nhau, tách rule để cấp lẻ được sau này). UI: package mới
+`packages/ui-plugin-inventory` (`PluginInventoryPanel` — Modal + ô tìm
+kiếm + bảng tên/nhóm/Pill trạng thái), đúng pattern
+`packages/ui-auth/AdminUsersPanel.tsx` đã có (KHÔNG dựng tab Settings mới —
+agent-core chưa có Settings dạng tab). Trigger admin-only "Plugin đang
+chạy" (icon `Puzzle`) trong `Sidebar`, cạnh "Quản lý người dùng".
+
+**Deliverable Phase 29: ĐÃ VERIFY THẬT** — `npm run typecheck` sạch,
+`npm test` 216/216 pass (39 file, từ 207). `docker compose up --build`
+container healthy; verify **thật qua curl + Postgres thật** (không mock):
+signup 2 tài khoản, promote 1 tài khoản thành admin qua SQL trực tiếp
+(môi trường dev, không phải thao tác trên dữ liệu người dùng thật),
+`GET /plugins` với token user thường → 403; với token admin → 200, trả
+đúng 27 bundle đang chạy thật của server production trong container (kể cả
+chính `plugin-inventory` tự liệt kê nó — hệ quả tự nhiên của `mount()`
+dùng chung cho mọi lệnh mount, không phải cố tình loại trừ chính nó như dự
+tính ban đầu). Xác nhận trực tiếp trong bundle JS đã build (`docker exec`
+đọc file thật) có đủ chuỗi UI mới ("Plugin đang chạy", "Tìm plugin",
+`/plugins`).
+
+---
+
+## Phase 30 — Dời `python/` (root) vào đúng `bundles/loop-drivers/loop-rlm/python/` — ĐÃ IMPLEMENT, ĐÃ VERIFY
+
+User: đọc giải thích cấu trúc `python/` (agent-core-rlm-harness-components.md),
+nhận ra `python/rlm_agent`/`python/vendor/rlm` nằm ở **root repo** trong khi
+`worker.py` — file duy nhất import 2 thứ đó — lại nằm trong
+`bundles/loop-drivers/loop-rlm/python/` → hỏi đúng: nếu thuộc plugin RLM thì
+phải nằm chuẩn cấu trúc plugin (bọc trong bundle), không tách rời ra ngoài
+→ yêu cầu dời + update plan docs.
+
+Xác nhận thật trước khi dời (không suy đoán): grep toàn repo, `rlm_agent`/
+`vendor/rlm` chỉ có ĐÚNG 1 nơi import — `worker.py` bên trong `loop-rlm` —
+không có bundle nào khác dùng chung, nên dời an toàn, không phá spatial
+composability của bundle khác. Đối chiếu
+[`docs/plugin-standard-structure.md`](plugin-standard-structure.md) (chuẩn
+cấu trúc 1 plugin Cordis logic Python, tham khảo `omdsh-dev/plugin-template`)
+xác nhận đúng: `python/` phải là con trực tiếp của thư mục bundle, ngang
+hàng `src/`/`index.ts` sở hữu nó — layout cũ (`python/` ở root, `worker.py`
+ở trong bundle) là kết quả sót lại từ lúc merge nhánh RLM (Phase 27, code
+Python port nguyên từ repo `data-agent` sibling, landed thẳng root, chưa
+từng "dọn nhà" đúng chỗ).
+
+**Việc đã làm** (`git mv`, giữ lịch sử):
+```
+python/requirements.txt  -> bundles/loop-drivers/loop-rlm/python/requirements.txt
+python/rlm_agent/        -> bundles/loop-drivers/loop-rlm/python/rlm_agent/
+python/vendor/           -> bundles/loop-drivers/loop-rlm/python/vendor/
+```
+`worker.py` vốn đã đúng chỗ, không đổi. Toàn bộ nơi trỏ tới path cũ được
+sửa theo, không sót: `Dockerfile`/`Dockerfile.dev` (2 stage build Python,
+`COPY bundles ./bundles` ở stage runtime đã tự mang theo `python/` mới —
+xoá hẳn dòng `COPY python ./python` riêng), `docker-compose.yml`
+(`RLM_RUNTIME_ROOT`), `docker-compose.dev.yml` (xoá bind-mount `./python`
+riêng — `./bundles` đã bao trọn), `src/serve.ts` (default
+`RLM_RUNTIME_ROOT`/`rlmWorkerPath`, gộp về 1 hằng số
+`rlmBundlePythonRoot` để không lệch 2 nơi), `bundles/providers/
+sandbox-docker/index.ts` (3 chỗ hardcode `/app/python` — gộp về hằng số
+module-level `RLM_PYTHON_ROOT`), `tests/rlm-migration.test.ts` (assertion
+`RLM_RUNTIME_ROOT`), và tài liệu sống (không sửa
+`agent-core-rlm-harness-merge-plan.md` — đó là bản ghi lịch sử phase cũ, giữ
+nguyên như lúc đó là đúng, đổi mới đi vào phase mới đúng convention đã có):
+`README.md`, `docs/agent-core-rlm-harness-components.md`,
+`docs/system-architecture.md`, `docs/frontend-backend-handoff.md`,
+`benchmarks/rlm/README.md`, `benchmarks/rlm/MEMORY.md`.
+
+**Deliverable Phase 30: ĐÃ VERIFY THẬT** — `npm run typecheck` sạch,
+`npm test` 216/216 pass (39 file, không đổi số lượng — thuần dời path).
+`docker compose up --build` container healthy; `docker exec` xác nhận
+`/app/python` (đường cũ) không còn tồn tại, `/app/bundles/loop-drivers/
+loop-rlm/python/{worker.py,rlm_agent/,vendor/,requirements.txt}` đủ; chạy
+đúng import chain `worker.py` thật sự thực thi (`sys.path` + `import
+rlm_agent.agent` + `from rlm_agent.harness_adapter import HarnessRLM`)
+thành công. Quan trọng nhất — **1 turn RLM thật xuyên suốt** qua service
+đang chạy (không chỉ kiểm tra import): `POST /sessions {driver:"rlm"}` →
+`POST /sessions/:id/messages {"message":"Chạy print(2+2)..."}` → HTTP 200,
+`status:"completed"`, Python worker spawn thật, chạy REPL thật, gọi LLM
+thật qua `hosted_vllm/Qwen/Qwen3.5-35B-A3B-FP8`, trả lời đúng "4". Log
+container sau turn đó sạch, không ENOENT/traceback nào liên quan path mới.
+
+---
+
+## Phase 31 — `EXTRA_PLUGINS`: bên thứ ba thêm plugin không cần sửa source — ĐÃ IMPLEMENT, ĐÃ VERIFY
+
+User: sau Phase 29 (plugin inventory), hỏi tiếp — bên thứ ba dùng agent-core
+muốn thêm 1 plugin thì phải code trên source, hay có chuẩn kiểu dsh (mount
+qua config, không sửa host source)? → yêu cầu lên plan hướng "nhẹ" (không
+copy nguyên bộ Loader/profile/patch YAML của dsh) + kèm hướng dẫn add →
+duyệt implement.
+
+Xác nhận thật trước khi thiết kế: `src/serve.ts` không có bất kỳ cơ chế
+động nào (`grep` không ra `import(`/`readdir`/`cordis.yml`) — toàn bộ mount
+tường minh, hardcode. So với dsh (đọc source thật
+`deepseek-harness/packages/*` ở Phase trước): mỗi plugin dsh là 1 npm
+package tự khai `package.json` → `dsh.bundle.patch` trỏ `cordis.patch.yml`;
+host không hardcode danh sách — đọc 1 **profile** liệt kê tên package
+(`dsh.profile.bundles: [...]`), `cordis-plugin-loader` tự resolve + mount.
+Đưa nguyên cơ chế đó vào agent-core là quá tay so với nhu cầu thật (1
+service production, không phải hệ sinh thái nhiều plugin cộng đồng/nhiều
+profile) — chọn hướng nhẹ hơn nhưng giải quyết đúng vấn đề gốc.
+
+**Thiết kế**: 2 biến môi trường mới, đọc trong `src/serve.ts`:
+```
+EXTRA_PLUGINS="name:specifier,name:specifier,..."
+EXTRA_PLUGIN_CONFIG__<name>='{"...":"..."}'   # tuỳ chọn
+```
+`specifier` bắt đầu `.`/`/` → resolve tương đối `agentCoreRoot` (plugin
+local chưa publish); ngược lại → bare npm package specifier, Node tự
+resolve qua `node_modules`. Không set `EXTRA_PLUGIN_CONFIG__<name>` →
+plugin nhận `config = undefined`, tự đọc `process.env` bên trong — đúng
+cách nhiều bundle nội bộ vẫn làm (vd. `llm-qwen`). Logic thuần (parse/
+validate, throw Error) tách vào `src/extra-plugins.ts` (test được độc
+lập, không phải boot cả server) — `src/serve.ts` chỉ bọc FATAL +
+`process.exit(1)` ở call site, cùng triết lý `requireEnv`/
+`optionalJsonObject`. Mount qua ĐÚNG `mount()` đã có từ Phase 29 → tự
+động hiện trong `ctx.pluginInventory`/`GET /plugins`/panel "Plugin đang
+chạy" dưới category mới `'external'` (thêm vào union ở
+`seams/plugin-inventory.ts`), không cần code riêng cho phần hiển thị.
+
+**Contract plugin bên ngoài — không có API riêng, y hệt mọi bundle nội
+bộ**: `export const apply = async (ctx, config) => {...}` (+ `inject` tuỳ
+chọn). Doc mới
+[`docs/agent-core-adding-plugins.md`](agent-core-adding-plugins.md) —
+2 cách thêm plugin (sửa source vs `EXTRA_PLUGINS`), ví dụ tối thiểu đầy
+đủ, cách xác minh, giới hạn (không hot-reload, full-trust cùng process,
+cố tình không phải Loader/profile YAML của dsh).
+
+**Deliverable Phase 31: ĐÃ VERIFY THẬT** — `npm run typecheck` sạch,
+`npm test` 229/229 pass (40 file, từ 216 — 13 test mới ở
+`tests/extra-plugins.test.ts`, gồm 1 test tích hợp thật: dynamic
+`import()` + `root.plugin()` 1 fixture plugin thật qua Cordis thật, gọi
+tool nó đăng ký, không mock). `docker compose up --build` container
+healthy. **E2E thật xuyên suốt trong container đang chạy** (không chỉ unit
+test): viết 1 plugin thật vào `/app/data/extra-plugin-demo/index.ts`
+(volume ghi được), set `EXTRA_PLUGINS`/`EXTRA_PLUGIN_CONFIG__demo` qua
+`.env`, rebuild + restart — log boot in đúng `[extra-plugin] mounted
+"demo" từ "file:///app/data/extra-plugin-demo/index.ts"`, `GET /plugins`
+trả đúng `{name:"demo", category:"external", state:"active"}` (28 plugin,
+từ 27), rồi 1 turn chat thật yêu cầu model gọi tool đó — model gọi đúng,
+trả về đúng `config.greeting` ("xin chao") đã truyền qua
+`EXTRA_PLUGIN_CONFIG__demo` — xác nhận toàn chuỗi (parse env → dynamic
+import → mount → tool registration → LLM tool-call → response) hoạt động
+thật trong production, không phải giả thuyết. Dọn sạch sau verify: xoá
+file demo, revert `.env` về nguyên trạng, restart lại — xác nhận về đúng
+27 plugin baseline, container healthy.
+
+---
+
 ## Timeline đề xuất (tham khảo, điều chỉnh theo tốc độ thật của bạn)
 
 | Phase | Nội dung                                                                 | Ưu tiên                                   |
@@ -2389,6 +2622,7 @@ Security fix xác nhận sống: user B gọi `GET /sessions/<id của A>/files`
 | 25    | Tích hợp `ctx.memory` với TencentDB Agent Memory (MemoryCore) — ĐÃ BUILD | User: tập trung phần tích hợp với memory như đã plan |
 | 26    | Security audit thật (authn/authz) + plan rate-limiting — ĐÃ AUDIT | User: lên plan rate limit + kiểm tra security authn/authz các plugin |
 | 27    | Merge `feat/rlm-harness-migration` (data-agent RLM đa lượt, Python) vào `dev` — ĐÃ MERGE | User: lên plan kết hợp nhánh RLM, sau đó sửa + merge thật |
+| 28    | Tách UI workspace RLM thành UI-plugin thật, driver mặc định về `default` — ĐÃ IMPLEMENT | User: UI RLM không nên là mặc định, tham khảo dsh/Claude, lên plan rồi implement |
 
 ## Rủi ro cần theo dõi trong quá trình build
 

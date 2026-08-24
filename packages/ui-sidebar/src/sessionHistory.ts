@@ -12,6 +12,11 @@ export interface SessionSummary {
   id: string
   createdAt: number
   title: string
+  /** docs/agent-core-rlm-web-ui-plugin-plan.md mục 4 — GET /sessions đã trả
+   * field này từ lâu (bundles/adapters/api-rest/index.ts), nhưng bị bỏ qua
+   * lúc map response ở đây (gap thật, không phải cố ý) — Sidebar cần biết
+   * driver của TỪNG session cũ để hiện đúng badge. */
+  driver: string
 }
 
 const TITLE_CACHE_KEY = 'agent-core-ui-session-titles'
@@ -63,12 +68,13 @@ export function clearCachedTitle(id: string): void {
 export async function fetchSessionHistory(restUrl: string, token: string): Promise<SessionSummary[]> {
   const res = await fetch(`${restUrl}/sessions`, { headers: { authorization: `Bearer ${token}` } })
   if (!res.ok) throw new Error(`không tải được danh sách cuộc trò chuyện (lỗi ${res.status})`)
-  const { sessions } = (await res.json()) as { sessions: { id: string; createdAt: number }[] }
+  const { sessions } = (await res.json()) as { sessions: { id: string; createdAt: number; driver: string }[] }
   const titles = loadTitleCache()
   return sessions
     .map((s) => ({
       id: s.id,
       createdAt: s.createdAt,
+      driver: s.driver,
       title: titles[s.id] ?? `Cuộc trò chuyện lúc ${new Date(s.createdAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`,
     }))
     .sort((a, b) => b.createdAt - a.createdAt)

@@ -58,7 +58,7 @@ repository; do not install Python or patch the container manually. See
 The REST server renders the RLM system prompt from markdown sections in
 `agent-core/bundles/prompts/prompt-rlm-data-agent/sections/*.md` (identity,
 repl-protocol, turn-policy, evidence-policy, human-control, completion).
-`python/rlm_agent/prompt.py` is only a compatibility prompt used during core
+`bundles/loop-drivers/loop-rlm/python/rlm_agent/prompt.py` is only a compatibility prompt used during core
 construction; the prepared harness turn replaces it before model execution.
 
 Two hard-won constraints when editing those sections:

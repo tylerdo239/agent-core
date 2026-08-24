@@ -12,7 +12,7 @@ function at(daysAgo: number, hour = 10): number {
 }
 
 function session(id: string, createdAt: number): SessionSummary {
-  return { id, createdAt, title: `session ${id}` }
+  return { id, createdAt, title: `session ${id}`, driver: 'default' }
 }
 
 describe('groupSessionsByDate', () => {

@@ -25,6 +25,8 @@
 //   prune — KHÔNG set STORAGE_RETENTION_DAYS = không prune gì).
 // Audit fix (đối chiếu docs/agent-core-master-summary.md): WEB_SEARCH_TIMEOUT_MS
 //   (tool-web-search fetch() timeout — mặc định 10s, trước đây không có gì).
+// EXTRA_PLUGINS, EXTRA_PLUGIN_CONFIG__<name> (tuỳ chọn — bên thứ ba thêm
+//   plugin KHÔNG cần sửa file này, xem docs/agent-core-adding-plugins.md).
 //
 // Provider llm mặc định là `llm-qwen` (bundles/providers/llm-qwen) — wrap
 // proxy OpenAI-compatible của model Qwen3.5 dùng trong production ở repo
@@ -38,6 +40,8 @@ import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { Context, Logger } from '@deepseek-ai/cordis'
 import { parseJsonObjectEnv } from './env.ts'
+import { extraPluginConfig, isPluginModule, parseExtraPlugins } from './extra-plugins.ts'
+import * as pluginInventory from '../bundles/providers/plugin-inventory/index.ts'
 import * as toolRegistry from '../bundles/providers/tool-registry/index.ts'
 import * as stateSqlite from '../bundles/providers/state-sqlite/index.ts'
 import * as permissionRbac from '../bundles/providers/permission-rbac/index.ts'
@@ -216,9 +220,16 @@ async function main() {
   const openaiExtraBody = optionalJsonObject('OPENAI_EXTRA_BODY')
 
   const root = new Context()
-  const rlmRuntimeRoot = path.resolve(process.env.RLM_RUNTIME_ROOT ?? path.join(agentCoreRoot, 'python'))
+  // Phase 30: python/rlm_agent + vendor/rlm dời từ python/ ở root repo vào
+  // đúng bundle sở hữu nó (bundles/loop-drivers/loop-rlm/python/) — chuẩn
+  // cấu trúc plugin (docs/plugin-standard-structure.md: logic Python của 1
+  // plugin nằm NGAY TRONG thư mục bundle đó, không tách rời ra ngoài).
+  // worker.py vốn đã ở đúng chỗ này từ trước; giờ rlmWorkerPath/rlmRuntimeRoot
+  // trỏ CHUNG 1 thư mục.
+  const rlmBundlePythonRoot = path.join(agentCoreRoot, 'bundles', 'loop-drivers', 'loop-rlm', 'python')
+  const rlmRuntimeRoot = path.resolve(process.env.RLM_RUNTIME_ROOT ?? rlmBundlePythonRoot)
   const workspaceBase = path.resolve(process.env.RLM_WORKSPACE_BASE ?? path.join(agentCoreRoot, 'data', 'rlm-workspaces'))
-  const rlmWorkerPath = path.join(agentCoreRoot, 'bundles', 'loop-drivers', 'loop-rlm', 'python', 'worker.py')
+  const rlmWorkerPath = path.join(rlmBundlePythonRoot, 'worker.py')
   const rlmSandboxProvider = process.env.RLM_SANDBOX_PROVIDER ?? 'local'
 
   const exporter = {
@@ -231,8 +242,31 @@ async function main() {
   }
   root.logger.exporter(exporter)
 
-  root.plugin(toolRegistry)
-  root.plugin(stateSqlite, {
+  // ctx.pluginInventory (docs: xem seams/plugin-inventory.ts) — ghi lại
+  // tên/category/fiber của MỌI bundle mount qua `mount(...)` bên dưới thay
+  // vì `root.plugin(...)` trực tiếp, để có 1 danh sách CHÍNH XÁC những gì
+  // thật sự chạy (không đoán qua tên class/hàm nội bộ). `mounted` truyền
+  // THẲNG (không copy) vào provider plugin-inventory ngay dưới đây — các
+  // lệnh `mount(...)` GỌI SAU đó (kể cả 4 adapter cuối file) vẫn được ghi
+  // nhận đúng vì list() luôn đọc lại đúng mảng gốc này lúc có request, mount
+  // plugin-inventory không cần đứng cuối cùng.
+  type PluginCategory = 'provider' | 'tool' | 'skill' | 'loop-driver' | 'prompt' | 'adapter' | 'external'
+  interface MountRecord {
+    readonly name: string
+    readonly category: PluginCategory
+    readonly fiber: { readonly state: number }
+  }
+  const mounted: MountRecord[] = []
+  function mount(name: string, category: PluginCategory, plugin: Parameters<Context['plugin']>[0], config?: unknown) {
+    const fiber = root.plugin(plugin, config as never)
+    mounted.push({ name, category, fiber })
+    return fiber
+  }
+
+  mount('plugin-inventory', 'provider', pluginInventory, mounted)
+
+  mount('tool-registry', 'provider', toolRegistry)
+  mount('state-sqlite', 'provider', stateSqlite, {
     path: process.env.STORAGE_PATH ?? 'data/sessions.db',
     // Phase 8.4: KHÔNG set STORAGE_RETENTION_DAYS = không prune gì (mặc
     // định, backward compatible) — xem bundles/providers/state-sqlite.
@@ -244,9 +278,12 @@ async function main() {
   // trong tương lai phải tự thêm rule riêng, không "mở hết" cho tiện.
   // "admin" (role, không phải actor tool) -> action 'admin:users:manage':
   // gate cho GET/PATCH/DELETE /users trong api-rest — tái dùng nguyên seam
-  // RBAC đã có, không cần seam mới cho việc phân quyền admin.
-  root.plugin(permissionRbac, { rules: { 'web-search': ['search'], admin: ['admin:users:manage'] } })
-  root.plugin(llmQwen, {
+  // RBAC đã có, không cần seam mới cho việc phân quyền admin. Cùng role
+  // 'admin' -> thêm 'admin:plugins:view' cho GET /plugins (ctx.pluginInventory).
+  mount('permission-rbac', 'provider', permissionRbac, {
+    rules: { 'web-search': ['search'], admin: ['admin:users:manage', 'admin:plugins:view'] },
+  })
+  mount('llm-qwen', 'provider', llmQwen, {
     apiKey: openaiApiKey,
     baseUrl: openaiBaseUrl,
     model: openaiModelId,
@@ -265,38 +302,38 @@ async function main() {
     maxRetries: optionalNumber('OPENAI_MAX_RETRIES'),
     retryBaseDelayMs: optionalNumber('OPENAI_RETRY_BASE_DELAY_MS'),
   })
-  root.plugin(subagentManager)
-  root.plugin(skillRegistry)
-  root.plugin(skillSupportTone)
-  root.plugin(skillFilesystem, {
+  mount('subagent-manager', 'provider', subagentManager)
+  mount('skill-registry', 'provider', skillRegistry)
+  mount('skill-support-tone', 'skill', skillSupportTone)
+  mount('skill-filesystem', 'provider', skillFilesystem, {
     root: process.env.RLM_SKILLS_ROOT ?? path.join(agentCoreRoot, 'bundles', 'skills'),
   })
-  root.plugin(promptRegistry)
-  root.plugin(promptRlmDataAgent)
-  root.plugin(memoryRolling, {
+  mount('prompt-registry', 'provider', promptRegistry)
+  mount('prompt-rlm-data-agent', 'prompt', promptRlmDataAgent)
+  mount('memory-rolling', 'provider', memoryRolling, {
     basePath: process.env.RLM_MEMORY_PATH ?? path.join(agentCoreRoot, 'data', 'rlm-memory'),
   })
   if (rlmSandboxProvider === 'local') {
-    root.plugin(workspaceLocal, { basePath: workspaceBase })
+    mount('workspace-local', 'provider', workspaceLocal, { basePath: workspaceBase })
   } else {
-    root.plugin(workspaceDocker, {
+    mount('workspace-docker', 'provider', workspaceDocker, {
       volumePrefix: process.env.RLM_DOCKER_VOLUME_PREFIX ?? 'agent-core-rlm-workspace',
     })
   }
-  root.plugin(loopRegistry)
-  root.plugin(loopDefault)
-  root.plugin(loopRlm)
+  mount('loop-registry', 'provider', loopRegistry)
+  mount('loop-default', 'loop-driver', loopDefault)
+  mount('loop-rlm', 'loop-driver', loopRlm)
   // Muốn hot-swap sang loop-planner-critic khi đang chạy: KHÔNG mount cả 2
   // cùng lúc (cùng đăng ký tên 'default', mount lần 2 sẽ throw "already
   // registered") — dispose fiber loop-default trước, đúng pattern
   // tests/chaos-hot-swap.test.ts.
-  root.plugin(agentRunner)
-  root.plugin(sessionRegistry, {
+  mount('agent-runner', 'provider', agentRunner)
+  mount('session-registry', 'provider', sessionRegistry, {
     // Phase 8.1: TTL trượt theo hoạt động — xem bundles/providers/session-registry.
     ttlMs: optionalNumber('SESSION_TTL_MS'),
     sweepIntervalMs: optionalNumber('SESSION_SWEEP_INTERVAL_MS'),
   })
-  root.plugin(authUsers, { connectionString: databaseUrl })
+  mount('auth-users', 'provider', authUsers, { connectionString: databaseUrl })
 
   // Module memory (ctx.memory, TÙY CHỌN) — xem chú thích tại
   // tryBootstrapMemoryCoreAdmin ở trên. Không set MEMORY_CORE_URL = bỏ qua
@@ -311,7 +348,7 @@ async function main() {
     const memoryCoreServiceId = process.env.MEMORY_CORE_SERVICE_ID ?? 'default'
     const bootstrapped = await tryBootstrapMemoryCoreAdmin(memoryCoreUrl, memoryCoreApiKey, memoryCoreServiceId)
     if (bootstrapped) {
-      root.plugin(memoryTencentdb, {
+      mount('memory-tencentdb', 'provider', memoryTencentdb, {
         endpoint: memoryCoreUrl,
         apiKey: memoryCoreApiKey,
         serviceId: memoryCoreServiceId,
@@ -351,14 +388,14 @@ async function main() {
     },
   }
   if (rlmSandboxProvider === 'local') {
-    root.plugin(sandboxIpython, {
+    mount('sandbox-ipython', 'provider', sandboxIpython, {
       pythonBin: process.env.RLM_PYTHON_BIN,
       workerPath: rlmWorkerPath,
       runtimeRoot: rlmRuntimeRoot,
       agentConfig: rlmAgentConfig,
     })
   } else {
-    root.plugin(sandboxDocker, {
+    mount('sandbox-docker', 'provider', sandboxDocker, {
       dockerBin: process.env.RLM_DOCKER_BIN,
       image: process.env.RLM_DOCKER_IMAGE ?? 'agent-core:latest',
       agentConfig: rlmAgentConfig,
@@ -370,21 +407,51 @@ async function main() {
       extraBody: openaiExtraBody ? JSON.stringify(openaiExtraBody) : undefined,
     })
   }
-  root.plugin(toolDatabaseQuery)
-  root.plugin(toolWebSearch, {
+  mount('tool-database-query', 'tool', toolDatabaseQuery)
+  mount('tool-web-search', 'tool', toolWebSearch, {
     // Audit fix: trước đây không có timeout, fetch() có thể treo cả turn vô
     // thời hạn nếu DuckDuckGo không phản hồi — xem bundles/tools/tool-web-search.
     timeoutMs: optionalNumber('WEB_SEARCH_TIMEOUT_MS'),
   })
 
+  // EXTRA_PLUGINS (docs/agent-core-adding-plugins.md) — plugin bên thứ ba,
+  // KHÔNG cần sửa file này. Nạp SAU mọi seam nội bộ (author có thể `inject`
+  // bất kỳ seam nào ở trên, dù thứ tự mount thực ra không bắt buộc — Cordis
+  // tự chờ dependency qua `inject`). Fail loudly (đúng triết lý requireEnv)
+  // nếu format sai, JSON config sai, hoặc module không export đúng contract
+  // plugin — không âm thầm bỏ qua 1 plugin lẽ ra phải chạy.
+  let extraPluginEntries: ReturnType<typeof parseExtraPlugins>
+  try {
+    extraPluginEntries = parseExtraPlugins(process.env.EXTRA_PLUGINS, agentCoreRoot)
+  } catch (err: any) {
+    console.error(`FATAL: ${err.message}`)
+    process.exit(1)
+  }
+  for (const { name, specifier } of extraPluginEntries) {
+    let config: unknown
+    try {
+      config = extraPluginConfig(process.env[`EXTRA_PLUGIN_CONFIG__${name}`])
+    } catch (err: any) {
+      console.error(`FATAL: env var EXTRA_PLUGIN_CONFIG__${name} phải là JSON hợp lệ — lỗi parse: ${err.message}`)
+      process.exit(1)
+    }
+    const mod: unknown = await import(specifier)
+    if (!isPluginModule(mod)) {
+      console.error(`FATAL: EXTRA_PLUGINS "${name}" (${specifier}) không export "apply" hoặc default hợp lệ.`)
+      process.exit(1)
+    }
+    mount(name, 'external', mod as Parameters<Context['plugin']>[0], config)
+    console.log(`[extra-plugin] mounted "${name}" từ "${specifier}"`)
+  }
+
   const restConfig = { port: Number(process.env.PORT_REST ?? 8787) }
   const wsConfig = { port: Number(process.env.PORT_WS ?? 8788) }
   const grpcConfig = { port: Number(process.env.PORT_GRPC ?? 50051) }
   const webUiConfig = { port: Number(process.env.PORT_WEB_UI ?? 8790) }
-  await root.plugin(apiRest, restConfig)
-  await root.plugin(apiWs, wsConfig)
-  await root.plugin(apiGrpc, grpcConfig)
-  await root.plugin(webUi, webUiConfig)
+  await mount('api-rest', 'adapter', apiRest, restConfig)
+  await mount('api-ws', 'adapter', apiWs, wsConfig)
+  await mount('api-grpc', 'adapter', apiGrpc, grpcConfig)
+  await mount('web-ui', 'adapter', webUi, webUiConfig)
 
   console.log(`\nWeb UI  http://localhost:${webUiConfig.port}  (đăng nhập/đăng ký ngay lần mở đầu tiên)`)
   console.log(`REST    http://localhost:${restConfig.port}  (Authorization: Bearer <token> từ POST /auth/login hoặc /auth/signup, trừ /health /ready /auth/signup /auth/login)`)

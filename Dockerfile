@@ -2,7 +2,7 @@
 # not depend on a prebuilt sibling data-agent image.
 FROM python:3.11-slim-bookworm AS rlm-python
 WORKDIR /runtime
-COPY python/requirements.txt ./requirements.txt
+COPY bundles/loop-drivers/loop-rlm/python/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -38,6 +38,8 @@ COPY packages/ui-layout/package.json ./packages/ui-layout/package.json
 COPY packages/ui-conversation/package.json ./packages/ui-conversation/package.json
 COPY packages/ui-settings-general/package.json ./packages/ui-settings-general/package.json
 COPY packages/ui-auth/package.json ./packages/ui-auth/package.json
+COPY packages/ui-rlm-workspace/package.json ./packages/ui-rlm-workspace/package.json
+COPY packages/ui-plugin-inventory/package.json ./packages/ui-plugin-inventory/package.json
 COPY apps/web/package.json ./apps/web/package.json
 RUN npm ci
 
@@ -90,7 +92,11 @@ COPY package.json ./
 COPY seams ./seams
 COPY bundles ./bundles
 COPY src ./src
-COPY python ./python
+# python/rlm_agent + vendor/rlm giờ nằm HẲN TRONG
+# bundles/loop-drivers/loop-rlm/python/ (Phase 30 — dời từ python/ ở root
+# vào đúng bundle sở hữu nó, xem docs/agent-core-cordis-build-plan.md) —
+# `COPY bundles ./bundles` ở trên đã mang theo, không cần dòng COPY riêng
+# nữa.
 # Chỉ copy dist đã build (Phase 9.6) — KHÔNG copy apps/web/src hay
 # packages/*/src vào runtime, server không cần source phía client, chỉ cần
 # đúng vị trí bundles/adapters/web-ui/index.ts tính DIST_DIR tới

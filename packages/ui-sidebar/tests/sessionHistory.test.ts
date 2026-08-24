@@ -23,7 +23,7 @@ describe('sessionHistory', () => {
     )
 
     const list = await fetchSessionHistory('http://localhost:8787', 'tok')
-    expect(list).toEqual([{ id: 's1', createdAt: 1000, title: 'giá vàng SJC hôm nay bao nhiêu' }])
+    expect(list).toEqual([{ id: 's1', createdAt: 1000, driver: 'default', title: 'giá vàng SJC hôm nay bao nhiêu' }])
   })
 
   it('session chưa có title cache -> fallback theo giờ tạo, không phải chuỗi rỗng', async () => {

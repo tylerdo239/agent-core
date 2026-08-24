@@ -16,16 +16,30 @@ import styles from './AppFrame.module.css'
 export interface AppFrameProps {
   sidebar: ReactNode
   header: ReactNode
+  /**
+   * Hàng phụ tuỳ chọn NGAY DƯỚI `header`, trên `children` — vùng chrome cố
+   * định riêng (không cuộn theo message), TÁCH KHỎI `header` có chủ đích:
+   * `.header` (AppFrame.module.css) là `display:flex; justify-content:
+   * space-between` cho ĐÚNG 2 phần tử (tiêu đề + trạng thái) trên 1 hàng —
+   * nhét thêm nội dung khác (vd. workspace bar của RLM) làm phần tử thứ 3
+   * vào CÙNG hàng flex đó khiến mọi thứ bị ép chung 1 dòng ngang với tiêu
+   * đề thay vì xuống hàng riêng (gap thật phát hiện sau khi dùng `header`
+   * cho việc này — xem docs/agent-core-rlm-web-ui-plugin-plan.md). `null`/
+   * `undefined` = không hiện gì, không tốn khoảng trống (không phải div
+   * rỗng còn border/padding).
+   */
+  subHeader?: ReactNode
   footer: ReactNode
   children: ReactNode
 }
 
-export function AppFrame({ sidebar, header, footer, children }: AppFrameProps) {
+export function AppFrame({ sidebar, header, subHeader, footer, children }: AppFrameProps) {
   return (
     <div className={styles.app}>
       {sidebar}
       <div className={styles.main}>
         <header className={styles.header}>{header}</header>
+        {subHeader}
         <main className={styles.messages} aria-live="polite">
           {children}
         </main>

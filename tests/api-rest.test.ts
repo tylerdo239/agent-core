@@ -19,6 +19,7 @@ import * as loopDefault from '../bundles/loop-drivers/loop-default/index.ts'
 import * as agentRunner from '../bundles/providers/agent-runner/index.ts'
 import * as sessionRegistry from '../bundles/providers/session-registry/index.ts'
 import * as authUsers from '../bundles/providers/auth-users/index.ts'
+import * as pluginInventory from '../bundles/providers/plugin-inventory/index.ts'
 import * as apiRest from '../bundles/adapters/api-rest/index.ts'
 import { LlmCompleteOptions, LlmCompletion, LlmMessage, LlmService } from '../seams/llm.ts'
 import { WorkspaceService, type WorkspaceSnapshot } from '../seams/workspace.ts'
@@ -148,8 +149,9 @@ async function bootApp(databaseUrl: string, port = 0, extraConfig: Partial<apiRe
   root.plugin(loopDefault)
   root.plugin(agentRunner)
   root.plugin(sessionRegistry)
-  root.plugin(permissionRbac, { rules: { admin: ['admin:users:manage'] } })
+  root.plugin(permissionRbac, { rules: { admin: ['admin:users:manage', 'admin:plugins:view'] } })
   root.plugin(authUsers, { connectionString: databaseUrl })
+  root.plugin(pluginInventory, [{ name: 'tool-registry', category: 'provider', fiber: { state: 2 } }])
   root.plugin(fakeWorkspace)
   const config: apiRest.ApiRest.Config = { port, ...extraConfig }
   const fiber = root.plugin(apiRest, config)
@@ -485,6 +487,26 @@ describe('Phase 6.1 — REST API', () => {
       })
       expect(patched.status).toBe(200)
       expect((await patched.json()).user.role).toBe('admin')
+    })
+  })
+
+  it('/plugins: chỉ admin gọi được (403 cho user thường), trả đúng snapshot ctx.pluginInventory', async () => {
+    await withFreshSchemaUrl(async (databaseUrl) => {
+      const { fiber, config } = await bootApp(databaseUrl)
+      cleanup = () => fiber.dispose()
+      const base = `http://127.0.0.1:${config.port}`
+
+      const alice = await signupToken(base, 'alice') // admin
+      const bob = await signupToken(base, 'bob') // user
+
+      const forbidden = await fetch(`${base}/plugins`, { headers: { authorization: `Bearer ${bob.token}` } })
+      expect(forbidden.status).toBe(403)
+
+      const asAdmin = await fetch(`${base}/plugins`, { headers: { authorization: `Bearer ${alice.token}` } })
+      expect(asAdmin.status).toBe(200)
+      expect(await asAdmin.json()).toEqual({
+        plugins: [{ name: 'tool-registry', category: 'provider', state: 'active' }],
+      })
     })
   })
 

@@ -274,37 +274,13 @@ button:disabled {
 .upload-success .upload-progress-bar { background: var(--alias-state-success); }
 #workspace-error { padding: 6px 20px; color: var(--alias-state-error); font-size: 12px; border-bottom: 1px solid var(--alias-border-default); }
 
-#compose-form {
-  display: flex;
-  gap: 10px;
-  padding: 16px 20px 20px;
-  border-top: 1px solid var(--alias-border-default);
-}
-
-#skill-select {
-  min-width: 118px;
-  max-width: 180px;
-  border: 1px solid var(--alias-border-default);
-  border-radius: 8px;
-  background: var(--alias-bg-base);
-  color: var(--alias-label-primary);
-  padding: 0 10px;
-}
-
-#compose-input {
-  flex: 1;
-  background: var(--alias-bg-base);
-  border: 1px solid var(--alias-border-default);
-  color: var(--alias-label-primary);
-  border-radius: 10px;
-  padding: 10px 14px;
-  font-size: 14px;
-}
-
-#compose-input:focus {
-  outline: none;
-  border-color: var(--alias-accent);
-}
+/* `#compose-form`/`#skill-select`/`#compose-input` (rule cũ, thời app.js
+   trước UI redesign) đã XOÁ — dead code xác nhận thật (0 tham chiếu JSX,
+   grep trước khi xoá): Composer.tsx dùng CSS Module riêng
+   (packages/ui-conversation/src/Composer.module.css) từ Phase 16, dropdown
+   skill giờ dùng CSS Module riêng của chính plugin
+   (packages/ui-rlm-workspace/src/SkillComposerExtra.module.css) — style
+   dropdown/composer không còn phụ thuộc file này nữa. */
 
 /* `dialog`/`dialog::backdrop` đã chuyển vào packages/ui-primitives/src/
    Modal.module.css (scoped qua CSS Modules, thêm sau audit UI) — không còn

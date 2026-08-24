@@ -81,7 +81,9 @@ services:
       # container phải dùng interpreter nằm trong image; không dùng đường
       # dẫn virtualenv bind-mount từ host.
       RLM_PYTHON_BIN: /usr/local/bin/python3
-      RLM_RUNTIME_ROOT: /app/python
+      # Phase 30: python/rlm_agent + vendor/rlm dời vào đúng bundle sở hữu
+      # (bundles/loop-drivers/loop-rlm/python/), không còn ở root /app/python.
+      RLM_RUNTIME_ROOT: /app/bundles/loop-drivers/loop-rlm/python
     ports:
       - "${PORT_REST:-8787}:8787"
       - "${PORT_WS:-8788}:8788"

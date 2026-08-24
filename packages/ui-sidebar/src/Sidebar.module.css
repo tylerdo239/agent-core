@@ -185,6 +185,15 @@
   font-weight: var(--alias-font-weight-emphasis);
 }
 
+/* docs/agent-core-rlm-web-ui-plugin-plan.md mục 4 — badge phân biệt session
+   driver 'rlm' trong lịch sử. */
+.sessionDriverBadge {
+  vertical-align: -2px;
+  margin-right: var(--alias-space-xs);
+  color: var(--alias-label-secondary);
+  flex: none;
+}
+
 .foot {
   flex: none;
   width: 100%;

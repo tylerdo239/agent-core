@@ -295,7 +295,7 @@ describe('RLM backend migration', () => {
 
     expect(args.slice(0, 2)).toEqual(['run', '--rm'])
     expect(args).toContain('/repo/workspaces/s1:/workspaces/s1')
-    expect(args).toContain('RLM_RUNTIME_ROOT=/app/python')
+    expect(args).toContain('RLM_RUNTIME_ROOT=/app/bundles/loop-drivers/loop-rlm/python')
     expect(args.at(-1)).toBe('/app/bundles/loop-drivers/loop-rlm/python/worker.py')
     expect(args).toContain('--network')
     expect(args.at(-4)).toBe('agent-core:latest')

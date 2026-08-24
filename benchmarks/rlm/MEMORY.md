@@ -61,8 +61,9 @@ python3 agent-core/benchmarks/rlm/run.py                      # core suite, 8787
      one hop per iteration, answer only from observations.
    - turn-policy.md: direct path explicitly excludes real-world facts.
    - repl-protocol.md: never emit JSON-only responses; strict fence format.
-5. The runtime is now built from agent-core's own `python/requirements.txt`;
-   it includes scikit-learn/scipy/statsmodels for the iris pipeline.
+5. The runtime is now built from agent-core's own
+   `bundles/loop-drivers/loop-rlm/python/requirements.txt`; it includes
+   scikit-learn/scipy/statsmodels for the iris pipeline.
 
 ## Environment recovery
 
@@ -72,8 +73,9 @@ Do not repair a running container manually. Rebuild the self-contained image:
 docker compose up -d --build
 ```
 
-Python source lives in `python/`; dependencies live in
-`python/requirements.txt`; prompt sections are copied into the image.
+Python source lives in `bundles/loop-drivers/loop-rlm/python/`; dependencies
+live in `bundles/loop-drivers/loop-rlm/python/requirements.txt`; prompt
+sections are copied into the image.
 
 ## Debugging
 

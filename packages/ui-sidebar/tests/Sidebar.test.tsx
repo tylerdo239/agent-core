@@ -28,8 +28,8 @@ beforeEach(() => {
 afterEach(cleanup)
 
 const sessions: SessionSummary[] = [
-  { id: 's1', createdAt: 1, title: 'giá vàng SJC hôm nay bao nhiêu' },
-  { id: 's2', createdAt: 2, title: 'khiếu nại sự cố mạng' },
+  { id: 's1', createdAt: 1, title: 'giá vàng SJC hôm nay bao nhiêu', driver: 'default' },
+  { id: 's2', createdAt: 2, title: 'khiếu nại sự cố mạng', driver: 'default' },
 ]
 
 function renderSidebar(overrides: Partial<ComponentProps<typeof Sidebar>> = {}) {
@@ -38,10 +38,12 @@ function renderSidebar(overrides: Partial<ComponentProps<typeof Sidebar>> = {}) 
       sessions={sessions}
       activeSessionId={null}
       onNewChat={vi.fn()}
+      onNewDataSession={vi.fn()}
       onSelectSession={vi.fn()}
       onOpenSettings={vi.fn()}
       isAdmin={false}
       onOpenAdminPanel={vi.fn()}
+      onOpenPluginInventory={vi.fn()}
       currentUsername="alice"
       onLogout={vi.fn()}
       {...overrides}
@@ -67,7 +69,7 @@ describe('Sidebar — logo + collapse + search trigger', () => {
   })
 
   it('nhóm lịch sử theo ngày — session tạo hôm nay hiện dưới nhãn "Hôm nay"', () => {
-    renderSidebar({ sessions: [{ id: 's-today', createdAt: Date.now(), title: 'câu hỏi vừa tạo' }] })
+    renderSidebar({ sessions: [{ id: 's-today', createdAt: Date.now(), title: 'câu hỏi vừa tạo', driver: 'default' }] })
     const historyNav = screen.getByRole('navigation', { name: 'Lịch sử hội thoại' })
     expect(within(historyNav).getByText('Hôm nay')).toBeTruthy()
     expect(within(historyNav).getByText('câu hỏi vừa tạo')).toBeTruthy()
@@ -104,5 +106,44 @@ describe('Sidebar — module auth: username/đăng xuất/admin panel', () => {
     renderSidebar({ isAdmin: true, onOpenAdminPanel })
     fireEvent.click(screen.getByText('Quản lý người dùng'))
     expect(onOpenAdminPanel).toHaveBeenCalled()
+  })
+
+  it('isAdmin=false -> KHÔNG hiện trigger "Plugin đang chạy"', () => {
+    renderSidebar({ isAdmin: false })
+    expect(screen.queryByText('Plugin đang chạy')).toBeNull()
+  })
+
+  it('isAdmin=true -> hiện trigger "Plugin đang chạy", bấm gọi onOpenPluginInventory', () => {
+    const onOpenPluginInventory = vi.fn()
+    renderSidebar({ isAdmin: true, onOpenPluginInventory })
+    fireEvent.click(screen.getByText('Plugin đang chạy'))
+    expect(onOpenPluginInventory).toHaveBeenCalled()
+  })
+})
+
+// docs/agent-core-rlm-web-ui-plugin-plan.md mục 6, case 4: entry point
+// riêng cho session RLM + badge phân biệt trong lịch sử.
+describe('Sidebar — entry point RLM (docs/agent-core-rlm-web-ui-plugin-plan.md)', () => {
+  it('bấm "Phân tích dữ liệu" -> gọi onNewDataSession (KHÔNG gọi onNewChat)', () => {
+    const onNewDataSession = vi.fn()
+    const onNewChat = vi.fn()
+    renderSidebar({ onNewDataSession, onNewChat })
+    fireEvent.click(screen.getByText('Phân tích dữ liệu'))
+    expect(onNewDataSession).toHaveBeenCalled()
+    expect(onNewChat).not.toHaveBeenCalled()
+  })
+
+  it('session driver "rlm" hiện badge trong lịch sử; session "default" thì không', () => {
+    renderSidebar({
+      sessions: [
+        { id: 's-rlm', createdAt: 1, title: 'phân tích doanh thu', driver: 'rlm' },
+        { id: 's-default', createdAt: 2, title: 'hỏi thường', driver: 'default' },
+      ],
+    })
+    const historyNav = screen.getByRole('navigation', { name: 'Lịch sử hội thoại' })
+    const rlmItem = within(historyNav).getByText('phân tích doanh thu').closest('button')!
+    const defaultItem = within(historyNav).getByText('hỏi thường').closest('button')!
+    expect(rlmItem.querySelector('svg')).not.toBeNull()
+    expect(defaultItem.querySelector('svg')).toBeNull()
   })
 })

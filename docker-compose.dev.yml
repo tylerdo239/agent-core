@@ -12,7 +12,9 @@ services:
       - ./seams:/app/seams
       - ./bundles:/app/bundles
       - ./src:/app/src
-      - ./python:/app/python:ro
+      # python/ (rlm_agent + vendor/rlm) giờ nằm trong
+      # bundles/loop-drivers/loop-rlm/python/ — mount ./bundles ở trên đã
+      # mang theo, không cần dòng riêng nữa (Phase 30).
       - ./packages:/app/packages
       - ./apps/web/src:/app/apps/web/src
       - ./apps/web/dist:/app/apps/web/dist

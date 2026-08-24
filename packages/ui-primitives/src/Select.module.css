@@ -1,0 +1,95 @@
+/* align-self: flex-start — trigger thường nằm trong container flex-column
+   không set align-items (mặc định 'stretch', vd. AppFrame.module.css's
+   .main) -> không có override này, button sẽ bị kéo giãn hết chiều ngang
+   container thay vì ôm theo nội dung (user báo lại thật: "kéo dài fix
+   width quá"). max-width vẫn giữ làm trần cho label dài. */
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: var(--alias-space-xs);
+  max-width: 220px;
+  padding: var(--alias-space-xs) var(--alias-space-sm) var(--alias-space-xs) var(--alias-space-md);
+  border: 1px solid var(--alias-border-default);
+  border-radius: var(--alias-radius-control);
+  background: var(--alias-bg-base);
+  color: var(--alias-label-primary);
+  font-family: inherit;
+  font-size: var(--alias-font-size-body-sm);
+  cursor: pointer;
+  transition: border-color var(--alias-motion-fast) var(--alias-motion-ease);
+}
+
+.trigger:hover:not(:disabled) {
+  border-color: var(--alias-accent);
+}
+
+.trigger:focus-visible {
+  outline: 2px solid var(--alias-accent);
+  outline-offset: 2px;
+}
+
+.trigger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.triggerLabel {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron {
+  flex-shrink: 0;
+  color: var(--alias-label-secondary);
+  transition: transform var(--alias-motion-fast) var(--alias-motion-ease);
+}
+
+/* Xoay 180deg khi mở, KHÔNG phụ thuộc direction — quy ước phổ biến (Radix,
+   Material...): chevron-down xoay lên khi popup đang mở, bất kể popup đó
+   xoè lên hay xuống, chỉ để báo trạng thái toggle. */
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+/* position: fixed (không absolute) — portal ra document.body, toạ độ tính
+   bằng JS truyền qua inline style (Select.tsx), thoát mọi ancestor có thể
+   clip (cùng lý do Tooltip.tsx). z-index cao hơn Tooltip (9999) — menu đang
+   mở không nên bị tooltip nào khác đè lên. */
+/* width: max-content — popup KHÔNG lấy width cố định của trigger (trigger
+   giờ co theo nội dung, "Tự động" rất ngắn) mà rộng ra theo chính nội dung
+   option dài nhất; min-width (truyền qua inline style, JS) chỉ đảm bảo
+   không hẹp hơn trigger để căn trái không bị lệch. max-width chặn trần khi
+   có tên skill/description quá dài. */
+.list {
+  position: fixed;
+  width: max-content;
+  max-width: 320px;
+  margin: 0;
+  padding: var(--alias-space-xs);
+  list-style: none;
+  background: var(--alias-bg-base);
+  border: 1px solid var(--alias-border-default);
+  border-radius: var(--alias-radius-panel);
+  box-shadow: var(--alias-shadow-overlay);
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 10000;
+}
+
+.option {
+  padding: var(--alias-space-sm) var(--alias-space-md);
+  border-radius: var(--alias-radius-control);
+  font-size: var(--alias-font-size-body-sm);
+  color: var(--alias-label-primary);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.optionActive {
+  background: var(--alias-accent-subtle-bg);
+}

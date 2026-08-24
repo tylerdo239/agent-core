@@ -4,7 +4,7 @@
 
 FROM python:3.11-slim-bookworm AS rlm-python
 WORKDIR /runtime
-COPY python/requirements.txt ./requirements.txt
+COPY bundles/loop-drivers/loop-rlm/python/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
 RUN pip install --no-cache-dir -r requirements.txt
 

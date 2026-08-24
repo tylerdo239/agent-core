@@ -21,9 +21,9 @@ beforeEach(() => {
 afterEach(cleanup)
 
 const sessions: SessionSummary[] = [
-  { id: 's1', createdAt: 1, title: 'giá vàng SJC hôm nay bao nhiêu' },
-  { id: 's2', createdAt: 2, title: 'khiếu nại sự cố mạng' },
-  { id: 's3', createdAt: 3, title: 'viết báo cáo tuần' },
+  { id: 's1', createdAt: 1, title: 'giá vàng SJC hôm nay bao nhiêu', driver: 'default' },
+  { id: 's2', createdAt: 2, title: 'khiếu nại sự cố mạng', driver: 'default' },
+  { id: 's3', createdAt: 3, title: 'viết báo cáo tuần', driver: 'default' },
 ]
 
 describe('SearchModal', () => {

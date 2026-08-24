@@ -33,7 +33,7 @@
 // người dùng" riêng, tách biệt với "Cấu hình" (URL kết nối, không liên quan
 // tài khoản).
 import { useState } from 'react'
-import { LogOut, PanelLeftClose, PanelLeftOpen, Search, Settings, Users } from 'lucide-react'
+import { Database, LogOut, PanelLeftClose, PanelLeftOpen, Puzzle, Search, Settings, Users } from 'lucide-react'
 import { Button, Tooltip } from '@agent-core/ui-primitives'
 import { loadSidebarCollapsed, saveSidebarCollapsed } from './sidebarState.ts'
 import { groupSessionsByDate } from './groupSessionsByDate.ts'
@@ -45,12 +45,22 @@ export interface SidebarProps {
   sessions: SessionSummary[]
   activeSessionId: string | null
   onNewChat: () => void
+  /** docs/agent-core-rlm-web-ui-plugin-plan.md mục 3 — tạo session MỚI với
+   * driver 'rlm' (KHÔNG đổi driver session đang chạy — RLM giữ Python REPL
+   * persistent gắn 1-1 với sessionId, trộn 2 loại loop trên cùng session
+   * tạo ngữ nghĩa mơ hồ). */
+  onNewDataSession: () => void
   onSelectSession: (id: string) => void
   /** Mở modal cấu hình (chỉ REST/WS URL — API key đã bỏ, xem
    * packages/ui-settings-general/src/settings.ts). */
   onOpenSettings: () => void
   isAdmin: boolean
   onOpenAdminPanel: () => void
+  /** Tham khảo dsh (packages/client/ui-settings-plugin-inventory) — panel
+   * read-only liệt kê bundle đang mount + trạng thái Fiber, xem
+   * packages/ui-plugin-inventory. Admin-only cùng lý do AdminUsersPanel:
+   * thông tin hạ tầng nội bộ, không phải thứ user thường cần thấy. */
+  onOpenPluginInventory: () => void
   currentUsername: string
   onLogout: () => void
 }
@@ -59,10 +69,12 @@ export function Sidebar({
   sessions,
   activeSessionId,
   onNewChat,
+  onNewDataSession,
   onSelectSession,
   onOpenSettings,
   isAdmin,
   onOpenAdminPanel,
+  onOpenPluginInventory,
   currentUsername,
   onLogout,
 }: SidebarProps) {
@@ -121,6 +133,30 @@ export function Sidebar({
         </Button>
       )}
 
+      {/* docs/agent-core-rlm-web-ui-plugin-plan.md mục 3 — entry point RIÊNG
+          cho session RLM, luôn tạo session MỚI. 'default' (nút trên) vẫn là
+          lựa chọn mặc định, RLM là hành động chủ động — tái dùng style
+          .settingsTrigger (icon+label phụ, cùng kiểu "Cấu hình"/"Quản lý
+          người dùng" ở footer) thay vì tạo class mới, đủ phân biệt trực
+          quan với nút primary "+ Chat mới" phía trên. */}
+      {collapsed ? (
+        <Tooltip label="Phân tích dữ liệu">
+          <button
+            type="button"
+            onClick={onNewDataSession}
+            className={`${styles.settingsTrigger} ${styles.settingsTriggerCollapsed}`}
+            aria-label="Phân tích dữ liệu"
+          >
+            <Database size={16} aria-hidden="true" />
+          </button>
+        </Tooltip>
+      ) : (
+        <button type="button" onClick={onNewDataSession} className={styles.settingsTrigger}>
+          <Database size={16} aria-hidden="true" />
+          <span className={styles.settingsLabel}>Phân tích dữ liệu</span>
+        </button>
+      )}
+
       {/* Luôn render (khác trước đây, unmount hẳn khi collapsed) — collapse
           giờ là crossfade opacity riêng của .history, độc lập với width
           transition của .sidebar, đọc mượt hơn 1 cú "unmount đột ngột". */}
@@ -138,9 +174,13 @@ export function Sidebar({
                       type="button"
                       className={s.id === activeSessionId ? `${styles.sessionItem} ${styles.sessionItemActive}` : styles.sessionItem}
                       onClick={() => onSelectSession(s.id)}
-                      title={s.title}
+                      title={s.driver === 'rlm' ? `${s.title} (phân tích dữ liệu)` : s.title}
                       tabIndex={collapsed ? -1 : undefined}
                     >
+                      {/* docs/agent-core-rlm-web-ui-plugin-plan.md mục 4 —
+                          phân biệt session RLM với chat thường ngay trong
+                          lịch sử, không cần bấm vào mới biết. */}
+                      {s.driver === 'rlm' && <Database size={12} className={styles.sessionDriverBadge} aria-hidden="true" />}
                       {s.title}
                     </button>
                   </li>
@@ -188,6 +228,25 @@ export function Sidebar({
             <button type="button" className={styles.settingsTrigger} onClick={onOpenAdminPanel}>
               <Users size={16} aria-hidden="true" />
               <span className={styles.settingsLabel}>Quản lý người dùng</span>
+            </button>
+          ))}
+
+        {isAdmin &&
+          (collapsed ? (
+            <Tooltip label="Plugin đang chạy">
+              <button
+                type="button"
+                className={`${styles.settingsTrigger} ${styles.settingsTriggerCollapsed}`}
+                aria-label="Plugin đang chạy"
+                onClick={onOpenPluginInventory}
+              >
+                <Puzzle size={16} aria-hidden="true" />
+              </button>
+            </Tooltip>
+          ) : (
+            <button type="button" className={styles.settingsTrigger} onClick={onOpenPluginInventory}>
+              <Puzzle size={16} aria-hidden="true" />
+              <span className={styles.settingsLabel}>Plugin đang chạy</span>
             </button>
           ))}
 

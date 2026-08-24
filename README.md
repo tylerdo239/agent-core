@@ -91,9 +91,9 @@ docker compose up postgres -d   # cần Postgres reachable trước khi serve �
 OPENAI_API_KEY=sk-... OPENAI_BASE_URL=... OPENAI_MODEL_ID=... DATABASE_URL=postgres://agent_core:<mật khẩu>@localhost:5432/agent_core_users npm run serve
 ```
 
-Mở `http://localhost:8790`, đăng ký tài khoản đầu tiên (tự động thành `admin`), chat luôn.
+Mở `http://localhost:8790`, đăng ký tài khoản đầu tiên (tự động thành `admin`), chat luôn — "+ Chat mới" tạo phiên chat thường (`driver:"default"`); "+ Phân tích dữ liệu" (Sidebar) tạo phiên RLM riêng, chỉ phiên đó mới hiện workspace bar/skill-select (xem `docs/agent-core-rlm-web-ui-plugin-plan.md`).
 
-Để dùng RLM backend, tạo session với `driver: "rlm"`. Compose mặc định chạy
+Để dùng RLM backend qua API trực tiếp (không qua Web UI), tạo session với `driver: "rlm"`. Compose mặc định chạy
 Python worker persistent ngay trong container `agent-core`; source adapter/core
 RLM nằm trong `python/` và dependencies được Dockerfile tự cài. Host không cần
 Python và không cần clone/build thêm repo nào.
@@ -144,7 +144,7 @@ trong runtime vendored và không sở hữu catalog của harness.
 `bundles/loop-drivers/loop-rlm/protocol.ts` là nơi duy nhất dựng context gửi
 sang Python. `HarnessRLM` không tự load selected skill và không persist memory;
 worker chỉ bridge model call về `ctx.llm`. `RLMDataAgent.stream_turn()` vẫn còn
-trong `python/rlm_agent` như compatibility path, nhưng plugin không gọi đường
+trong `bundles/loop-drivers/loop-rlm/python/rlm_agent` như compatibility path, nhưng plugin không gọi đường
 này. Vì vậy có thể thay skill/memory/workspace provider mà không sửa core
 RLM. Notebook execution, RLM subcall, compaction và human-control hook vẫn nằm
 trong Python vì chúng gắn trực tiếp với lifecycle của core RLM.
@@ -209,5 +209,9 @@ Lịch sử build chi tiết (thiết kế, đánh đổi, bug thật phát hi�
 - [`docs/agent-core-memory-integration-plan.md`](docs/agent-core-memory-integration-plan.md) — plan tích hợp TencentDB Agent Memory vào `ctx.memory` (đã build + đã verify end-to-end thật qua Docker — xem Phase 25 trong build-plan)
 - [`docs/agent-core-rate-limit-and-security-audit.md`](docs/agent-core-rate-limit-and-security-audit.md) — audit security thật (authn/authz toàn bộ plugin, file:line + kịch bản khai thác cụ thể) + plan rate-limiting (seam `ctx.ratelimit` mới, chưa implement — xem Phase 26 trong build-plan)
 - [`docs/agent-core-rlm-harness-merge-plan.md`](docs/agent-core-rlm-harness-merge-plan.md) — merge RLM harness (data-agent Python đa lượt) vào `dev`: logic/flow, quyết định thiết kế, gap thật phát hiện lúc merge
-- [`docs/system-architecture.md`](docs/system-architecture.md) — kiến trúc RLM harness (loop-rlm/sandbox/workspace/prompt), request flow, ownership và tác dụng từng folder/file quan trọng
+- [`docs/agent-core-rlm-harness-components.md`](docs/agent-core-rlm-harness-components.md) — giới thiệu chi tiết logic/flow/cấu trúc các cấu phần RLM harness sau merge (viết lại, phản ánh đúng trạng thái hiện tại — `ctx.turnMemory`, security fix...)
+- [`docs/agent-core-rlm-web-ui-flow.md`](docs/agent-core-rlm-web-ui-flow.md) — flow web UI hiện dùng RLM thế nào, bảng đối chiếu 14 loại `LoopStep` RLM phát ra vs 4 loại UI thật sự hiện (khảo sát cho việc lên kế hoạch update UI, chưa sửa gì)
+- [`docs/agent-core-rlm-web-ui-plugin-plan.md`](docs/agent-core-rlm-web-ui-plugin-plan.md) — tách UI workspace RLM thành UI-plugin thật (`ctx.slots`), đổi driver mặc định về `default`, RLM thành lựa chọn chủ động (ĐÃ implement + verify — xem Phase 28 trong build-plan)
+- [`docs/system-architecture.md`](docs/system-architecture.md) — kiến trúc RLM harness (loop-rlm/sandbox/workspace/prompt), request flow, ownership và tác dụng từng folder/file quan trọng (viết trước merge, đã vá vài chỗ lỗi thời)
 - [`docs/frontend-backend-handoff.md`](docs/frontend-backend-handoff.md) — contract REST/WebSocket/workspace và checklist bàn giao cho đội frontend
+- [`docs/agent-core-adding-plugins.md`](docs/agent-core-adding-plugins.md) — thêm 1 plugin: sửa source (`bundles/`) hay bên ngoài không cần sửa source (`EXTRA_PLUGINS`) — hướng dẫn + ví dụ đầy đủ

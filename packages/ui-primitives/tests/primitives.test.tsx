@@ -13,6 +13,7 @@ import { useToasts, ToastContainer } from '../src/Toast.tsx'
 import { SourceList } from '../src/SourceList.tsx'
 import { Skeleton } from '../src/Skeleton.tsx'
 import { TextField } from '../src/TextField.tsx'
+import { Select } from '../src/Select.tsx'
 
 // jsdom không implement HTMLDialogElement.showModal()/close() -- cùng giới
 // hạn môi trường test đã gặp ở apps/web/tests/App.smoke.test.tsx, KHÔNG
@@ -259,5 +260,84 @@ describe('TextField', () => {
   it('không có error -> KHÔNG có aria-invalid', () => {
     render(<TextField label="Mật khẩu" value="" onChange={vi.fn()} />)
     expect(screen.getByLabelText('Mật khẩu').getAttribute('aria-invalid')).toBeNull()
+  })
+})
+
+// UI riêng theo theme (thay native <select>, không style được popup của
+// nó) — user yêu cầu rõ, xem packages/ui-rlm-workspace/src/SkillComposerExtra.tsx.
+describe('Select', () => {
+  const options = [
+    { value: 'a', label: 'Skill A', description: 'mô tả A' },
+    { value: 'b', label: 'Skill B' },
+  ]
+
+  it('rỗng -> hiện placeholder; có value khớp option -> hiện đúng label', () => {
+    const { rerender } = render(<Select value="" options={options} placeholder="Tự động" ariaLabel="Chọn skill" onChange={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Chọn skill' }).textContent).toContain('Tự động')
+
+    rerender(<Select value="a" options={options} placeholder="Tự động" ariaLabel="Chọn skill" onChange={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Chọn skill' }).textContent).toContain('Skill A')
+  })
+
+  it('chưa bấm -> popup (role="listbox") KHÔNG có trong DOM', () => {
+    render(<Select value="" options={options} placeholder="Tự động" ariaLabel="Chọn skill" onChange={vi.fn()} />)
+    expect(screen.queryByRole('listbox')).toBeNull()
+  })
+
+  it('bấm trigger -> mở popup; bấm 1 option -> gọi onChange đúng value, tự đóng popup', () => {
+    const onChange = vi.fn()
+    render(<Select value="" options={options} placeholder="Tự động" ariaLabel="Chọn skill" onChange={onChange} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Chọn skill' }))
+    expect(screen.getByRole('listbox')).toBeTruthy()
+
+    fireEvent.mouseDown(screen.getByText('Skill B'))
+    expect(onChange).toHaveBeenCalledWith('b')
+    expect(screen.queryByRole('listbox')).toBeNull()
+  })
+
+  it('bấm ra ngoài -> đóng popup, KHÔNG gọi onChange', () => {
+    const onChange = vi.fn()
+    render(
+      <div>
+        <Select value="" options={options} placeholder="Tự động" ariaLabel="Chọn skill" onChange={onChange} />
+        <button>ngoài</button>
+      </div>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Chọn skill' }))
+    expect(screen.getByRole('listbox')).toBeTruthy()
+
+    fireEvent.mouseDown(screen.getByText('ngoài'))
+    expect(screen.queryByRole('listbox')).toBeNull()
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('phím Escape đóng popup', () => {
+    render(<Select value="" options={options} placeholder="Tự động" ariaLabel="Chọn skill" onChange={vi.fn()} />)
+    const trigger = screen.getByRole('button', { name: 'Chọn skill' })
+    fireEvent.click(trigger)
+    expect(screen.getByRole('listbox')).toBeTruthy()
+
+    fireEvent.keyDown(trigger, { key: 'Escape' })
+    expect(screen.queryByRole('listbox')).toBeNull()
+  })
+
+  it('bàn phím: ArrowDown mở popup, ArrowDown/Enter chọn đúng option', () => {
+    const onChange = vi.fn()
+    render(<Select value="" options={options} placeholder="Tự động" ariaLabel="Chọn skill" onChange={onChange} />)
+    const trigger = screen.getByRole('button', { name: 'Chọn skill' })
+
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+    expect(screen.getByRole('listbox')).toBeTruthy()
+
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' }) // active: a (0) -> b (1)
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    expect(onChange).toHaveBeenCalledWith('b')
+  })
+
+  it('disabled -> bấm trigger KHÔNG mở popup', () => {
+    render(<Select value="" options={options} placeholder="Tự động" ariaLabel="Chọn skill" disabled onChange={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Chọn skill' }))
+    expect(screen.queryByRole('listbox')).toBeNull()
   })
 })

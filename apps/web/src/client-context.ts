@@ -15,6 +15,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import * as uiSlots from '@agent-core/ui-slots'
 import * as uiToolWebSearch from '@agent-core/ui-tool-web-search'
+import * as uiRlmWorkspace from '@agent-core/ui-rlm-workspace'
 
 export async function createClientContext(): Promise<Context> {
   const ctx = new Context()
@@ -22,6 +23,13 @@ export async function createClientContext(): Promise<Context> {
   const slotsFiber = ctx.plugin(uiSlots)
   await slotsFiber.await()
   ctx.slots.declare('tool.call.toolview', 'keyed')
+  // docs/agent-core-rlm-web-ui-plugin-plan.md mục 1 — chrome của cả phiên
+  // (workspace bar/skill-select), key = tên loop driver. Session
+  // 'default'/'planner-critic' không có registrant khớp -> App.tsx tự rơi
+  // về fallback null qua RenderSlot, không hiện gì (khác 'tool.call.toolview'
+  // ở trên, phạm vi hẹp hơn: 1 tool-call cụ thể, không phải cả chrome phiên).
+  ctx.slots.declare('session.chrome.header', 'keyed')
+  ctx.slots.declare('session.chrome.composer', 'keyed')
 
   // Phase 9.5: `tool-web-search` có UI-plugin riêng thật (WebSearchCard, có
   // state cục bộ + hành động "mở tất cả" — khác biệt VỀ LOẠI so với
@@ -30,6 +38,11 @@ export async function createClientContext(): Promise<Context> {
   // tool không đăng ký gì (đa số tool tương lai), không phải thiếu sót.
   const webSearchFiber = ctx.plugin(uiToolWebSearch)
   await webSearchFiber.await()
+
+  // docs/agent-core-rlm-web-ui-plugin-plan.md — workspace bar/skill-select
+  // của RLM, tách khỏi App.tsx, đăng ký key 'rlm' vào 2 slot khai ở trên.
+  const rlmWorkspaceFiber = ctx.plugin(uiRlmWorkspace)
+  await rlmWorkspaceFiber.await()
 
   return ctx
 }

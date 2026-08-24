@@ -52,7 +52,7 @@ chạy bằng:
 
 ```text
 RLM_PYTHON_BIN=/usr/local/bin/python3
-RLM_RUNTIME_ROOT=/app/python
+RLM_RUNTIME_ROOT=/app/bundles/loop-drivers/loop-rlm/python
 ```
 
 Không trỏ `RLM_PYTHON_BIN` vào `.venv` trên host: virtualenv có thể chứa
@@ -479,9 +479,12 @@ người backend tái lập kết quả.
 
 ## 12. Python runtime trong repo
 
-- `python/rlm_agent/` chứa adapter/runtime RLM của application.
-- `python/vendor/rlm/` chứa core RLM đã pin và license upstream.
-- `python/requirements.txt` là dependency contract của worker/image.
+- `bundles/loop-drivers/loop-rlm/python/` — nằm HẲN TRONG bundle sở hữu nó
+  (chuẩn cấu trúc plugin, xem `docs/plugin-standard-structure.md`), không
+  còn ở `python/` root repo.
+- `.../python/rlm_agent/` chứa adapter/runtime RLM của application.
+- `.../python/vendor/rlm/` chứa core RLM đã pin và license upstream.
+- `.../python/requirements.txt` là dependency contract của worker/image.
 - Frontend contributor không cần đọc Python để dùng public API.
 - Backend contributor có thể clone riêng `agent-core` và build E2E; không còn
   runtime dependency vào sibling `data-agent`.

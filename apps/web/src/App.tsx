@@ -32,12 +32,14 @@ import { useEffect, useRef, useState } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import { RenderSlot } from '@agent-core/ui-react'
 import type { ToolViewOwnerProps } from '@agent-core/ui-slots'
-import { Button, Modal, Pill, StateDot, ToastContainer, useToasts } from '@agent-core/ui-primitives'
+import { Modal, Pill, StateDot, ToastContainer, useToasts } from '@agent-core/ui-primitives'
 import { AppFrame } from '@agent-core/ui-layout'
 import { AdminUsersPanel, clearAuthState, loadAuthState, LoginForm, saveAuthState, SignupForm, type AuthState } from '@agent-core/ui-auth'
+import { PluginInventoryPanel } from '@agent-core/ui-plugin-inventory'
 import { cacheSessionTitle, fetchSessionHistory, Sidebar, type SessionSummary } from '@agent-core/ui-sidebar'
 import { Composer, EmptyState, GenericToolCard, MessageBubble, StreamingRow, ToolRow } from '@agent-core/ui-conversation'
 import { defaultSettings, loadSettings, saveSettings, SettingsForm, type Settings } from '@agent-core/ui-settings-general'
+import type { WorkspaceHeaderPanelProps, SkillComposerExtraProps } from '@agent-core/ui-rlm-workspace'
 import styles from './App.module.css'
 import { createClientContext } from './client-context.ts'
 
@@ -78,12 +80,14 @@ interface LoopStep {
   reason?: string
 }
 
-export const UI_AGENT_DRIVER = 'rlm'
-
-export function createSessionCommand() {
+// docs/agent-core-rlm-web-ui-plugin-plan.md mục 3: mặc định quay về
+// 'default' (chat thường) — RLM không còn là driver CỐ ĐỊNH cho MỌI
+// session nữa, chỉ tạo khi user chủ động bấm "Phân tích dữ liệu"
+// (Sidebar.onNewDataSession).
+export function createSessionCommand(driver: 'default' | 'rlm' = 'default') {
   return {
     type: 'create_session',
-    driver: UI_AGENT_DRIVER,
+    driver,
   }
 }
 
@@ -132,12 +136,19 @@ export function App() {
   const [authView, setAuthView] = useState<'login' | 'signup'>('login')
   const [status, setStatus] = useState<ConnStatus>('connecting')
   const [sessionId, setSessionId] = useState<string | null>(null)
+  // docs/agent-core-rlm-web-ui-plugin-plan.md mục 1/3: key để dispatch
+  // 'session.chrome.header'/'session.chrome.composer' (ctx.slots, kind
+  // 'keyed') — workspace bar/skill-select CHỈ hiện khi driver phiên hiện
+  // tại có registrant khớp ('rlm'); 'default'/'planner-critic' rơi về
+  // fallback null, không hiện gì.
+  const [sessionDriver, setSessionDriver] = useState<string>('default')
   const [items, setItems] = useState<ChatItem[]>([])
   const [turnInFlight, setTurnInFlight] = useState(false)
   const [composerText, setComposerText] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsDraft, setSettingsDraft] = useState<Settings>(settings)
   const [adminPanelOpen, setAdminPanelOpen] = useState(false)
+  const [pluginInventoryOpen, setPluginInventoryOpen] = useState(false)
   // Module auth (Phase 24): server GET /sessions là nguồn sự thật, KHÔNG
   // phải localStorage nữa (loadSessionHistory() cũ) — xem
   // packages/ui-sidebar/src/sessionHistory.ts.
@@ -150,7 +161,6 @@ export function App() {
   const [workspaceLoading, setWorkspaceLoading] = useState(false)
   const [workspaceError, setWorkspaceError] = useState('')
   const [uploadState, setUploadState] = useState<UploadState | null>(null)
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const { toasts, push: pushToast } = useToasts()
 
@@ -177,18 +187,22 @@ export function App() {
     }
   }
 
-  async function handleFileUpload(event: React.ChangeEvent<HTMLInputElement>) {
+  // docs/agent-core-rlm-web-ui-plugin-plan.md mục 2: nhận thẳng 1 File —
+  // <input type="file"> giờ nằm TRONG WorkspaceHeaderPanel (ui-rlm-workspace),
+  // App.tsx không còn sở hữu DOM input đó nữa, chỉ còn phần gọi API thật.
+  async function handleFileUpload(file: File) {
     if (!auth) return
-    const file = event.target.files?.[0]
-    if (!file) return
     let sid = sessionId
     if (!sid) {
-      // Tự tạo session nếu chưa có (user chưa chat gì đã muốn upload)
+      // Tự tạo session nếu chưa có (nhánh phòng thủ hiếm gặp — workspace bar
+      // chỉ hiện cho session driver 'rlm' đã tồn tại, xem mục 3; vẫn giữ vì
+      // race window hẹp giữa lúc bấm "Phân tích dữ liệu" và session_created
+      // WS trả về).
       try {
         const res = await fetch(`${settings.restUrl}/sessions`, {
           method: 'POST',
           headers: { authorization: `Bearer ${auth.token}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ driver: UI_AGENT_DRIVER }),
+          body: JSON.stringify({ driver: 'rlm' }),
         })
         if (!res.ok) throw new Error(await res.text())
         const data = (await res.json()) as { id: string }
@@ -226,8 +240,6 @@ export function App() {
       const message = e instanceof Error ? e.message : String(e)
       setUploadState({ phase: 'error', filename: file.name, progress: 0, message })
       pushToast(`Upload thất bại: ${message}`, 'error')
-    } finally {
-      if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }
 
@@ -284,7 +296,10 @@ export function App() {
   // Phase 8.1). WS protocol không có message riêng "resume" — `send_message`
   // chấp nhận BẤT KỲ sessionId hợp lệ nào, không quan tâm nó được tạo qua
   // kết nối WS nào, nên chỉ cần bỏ qua bước create_session là đủ.
-  function connect(current: Settings, token: string, resumeSessionId?: string) {
+  // `newSessionDriver` (docs/agent-core-rlm-web-ui-plugin-plan.md mục 3):
+  // CHỈ dùng lúc tạo session MỚI (bỏ qua khi resume — driver của session cũ
+  // do server quyết định từ lúc tạo, không đổi được).
+  function connect(current: Settings, token: string, resumeSessionId?: string, newSessionDriver: 'default' | 'rlm' = 'default') {
     setStatus('connecting')
     void fetch(`${current.restUrl}/skills`, {
       headers: { authorization: `Bearer ${token}` },
@@ -307,7 +322,7 @@ export function App() {
         setStatus('connected')
         return
       }
-      ws.send(JSON.stringify(createSessionCommand()))
+      ws.send(JSON.stringify(createSessionCommand(newSessionDriver)))
     })
 
     ws.addEventListener('message', (event) => {
@@ -315,14 +330,15 @@ export function App() {
 
       if (msg.type === 'session_created') {
         setSessionId(msg.id)
+        setSessionDriver(msg.driver)
         setStatus('connected')
         setItems((prev) => [...prev, { kind: 'system', id: genId(), text: `Session mới: ${msg.id} (driver: ${msg.driver})`, ts: Date.now() }])
         // Thêm optimistic lên ĐẦU list — server đã gắn ownerId thật lúc tạo
         // (create_session qua WS truyền identity đã verify), lần fetch
         // GET /sessions tiếp theo sẽ thấy đúng session này; thêm ngay ở đây
         // để UI phản hồi tức thời, không đợi round-trip fetch lại.
-        setSessions((prev) => [{ id: msg.id, createdAt: Date.now(), title: 'Cuộc trò chuyện mới' }, ...prev])
-        refreshWorkspaceFiles(msg.id)
+        setSessions((prev) => [{ id: msg.id, createdAt: Date.now(), title: 'Cuộc trò chuyện mới', driver: msg.driver }, ...prev])
+        if (msg.driver === 'rlm') refreshWorkspaceFiles(msg.id)
         return
       }
 
@@ -423,12 +439,12 @@ export function App() {
     }
   }
 
-  function startNewChat(current: Settings, token: string) {
+  function startNewChat(current: Settings, token: string, driver: 'default' | 'rlm' = 'default') {
     wsRef.current?.close()
     wsRef.current = null
     activeToolItemIdRef.current = null
     setItems([])
-    connect(current, token)
+    connect(current, token, undefined, driver)
   }
 
   // Dựng lại ChatItem[] từ event log THẬT (GET /sessions/:id/events) — khác
@@ -497,7 +513,12 @@ export function App() {
   // WS mới bỏ qua create_session (session đã tồn tại server-side).
   async function resumeSession(id: string) {
     if (id === sessionId || !auth) return
-    refreshWorkspaceFiles(id)
+    // docs/agent-core-rlm-web-ui-plugin-plan.md mục 1: driver của session cũ
+    // đã có sẵn trong `sessions` (GET /sessions trả đúng field này) — không
+    // cần gọi thêm API riêng chỉ để biết driver.
+    const driver = sessions.find((s) => s.id === id)?.driver ?? 'default'
+    setSessionDriver(driver)
+    if (driver === 'rlm') refreshWorkspaceFiles(id)
     try {
       const res = await fetch(`${settings.restUrl}/sessions/${id}/events`, {
         headers: { authorization: `Bearer ${auth.token}` },
@@ -647,10 +668,12 @@ export function App() {
             sessions={sessions}
             activeSessionId={sessionId}
             onNewChat={() => startNewChat(settings, auth.token)}
+            onNewDataSession={() => startNewChat(settings, auth.token, 'rlm')}
             onSelectSession={resumeSession}
             onOpenSettings={() => setSettingsOpen(true)}
             isAdmin={auth.user.role === 'admin'}
             onOpenAdminPanel={() => setAdminPanelOpen(true)}
+            onOpenPluginInventory={() => setPluginInventoryOpen(true)}
             currentUsername={auth.user.username}
             onLogout={handleLogout}
           />
@@ -664,71 +687,54 @@ export function App() {
                 {statusLabel}
               </Pill>
             </div>
-            {/* Workspace bar (nhánh RLM harness merge) — vùng chrome cố định,
-                không cuộn theo message, nên đặt trong header thay vì children
-                của AppFrame (children = vùng #messages cuộn được, xem
-                packages/ui-layout/src/AppFrame.tsx). */}
-            <div id="workspace-bar">
-              <div className="workspace-bar-left">
-                <span className="workspace-bar-title">Workspace</span>
-                {workspaceDatasets.length > 0 && <span className="workspace-bar-count">{workspaceDatasets.length} dataset(s)</span>}
-                {workspaceArtifacts.length > 0 && <span className="workspace-bar-count">{workspaceArtifacts.length} output(s)</span>}
-                {workspaceEntries.length === 0 && <span className="workspace-bar-count" style={{ opacity: 0.6 }}>chưa có file</span>}
-                {workspaceLoading && <span className="workspace-bar-count">đang cập nhật…</span>}
-              </div>
-              <div className="workspace-bar-actions">
-                <input ref={fileInputRef} type="file" accept=".csv,.tsv,.xlsx,.xls,.parquet,.json,.txt" style={{ display: 'none' }} onChange={handleFileUpload} />
-                <Button variant="default" disabled={status !== 'connected' && !sessionId} onClick={() => fileInputRef.current?.click()}>📎 Upload file</Button>
-                <Button variant="default" disabled={!sessionId} onClick={() => sessionId && refreshWorkspaceFiles(sessionId)}>↻ Refresh</Button>
-              </div>
-            </div>
-            {uploadState && (
-              <div id="upload-status" className={`upload-${uploadState.phase}`} role="status" aria-live="polite">
-                <div className="upload-status-label">
-                  <span>{uploadState.phase === 'uploading' ? `Đang upload ${uploadState.filename}` : uploadState.phase === 'success' ? `✓ ${uploadState.filename}` : `✕ ${uploadState.filename}`}</span>
-                  <span>{uploadState.phase === 'uploading' ? `${uploadState.progress}%` : uploadState.message}</span>
-                </div>
-                <div className="upload-progress-track">
-                  <div className="upload-progress-bar" style={{ width: `${uploadState.progress}%` }} />
-                </div>
-              </div>
-            )}
-            {workspaceError && <div id="workspace-error" role="alert">Không đọc được workspace: {workspaceError}</div>}
-            <div id="workspace-files">
-              {workspaceEntries.length === 0 && uploadState?.phase !== 'uploading' && (
-                <span className="workspace-empty">Chưa có file — bấm 📎 Upload để thêm CSV/Excel</span>
-              )}
-              {workspaceEntries.map((file) => (
-                <button
-                  key={file.path}
-                  type="button"
-                  className={`workspace-file workspace-file-${file.kind}`}
-                  onClick={() => downloadWorkspaceFile(file.path)}
-                  title={`Tải ${file.path}${file.size ? ` · ${(file.size / 1024).toFixed(1)} KB` : ''}`}
-                >
-                  <span>{file.kind === 'output' ? '📦 Output' : file.kind === 'dataset' ? '▦ Dataset' : '📄 File'}</span>
-                  <strong>{file.path}</strong>
-                  {file.size > 0 && <span className="workspace-file-size">{(file.size / 1024).toFixed(1)} KB</span>}
-                </button>
-              ))}
-            </div>
           </>
+        }
+        // UI redesign (follow-up): workspace bar từng nhét CHUNG vào `header`
+        // ở trên — nhưng `.header` (AppFrame.module.css) là flex row
+        // `justify-content: space-between` DÀNH ĐÚNG cho 2 phần tử (tiêu đề +
+        // trạng thái); thêm phần tử thứ 3 vào đó ép mọi thứ nằm chung 1 hàng
+        // ngang với tiêu đề thay vì xuống hàng riêng — gap thị giác thật user
+        // báo lại. Dùng `subHeader` (mới thêm vào AppFrame cho đúng việc
+        // này) thay vì `header` — xuống hàng riêng, tách bạch khỏi tiêu đề.
+        subHeader={
+          clientCtx && (
+            <RenderSlot<WorkspaceHeaderPanelProps>
+              ctx={clientCtx}
+              name="session.chrome.header"
+              entryKey={sessionDriver}
+              owner={{
+                uploadDisabled: status !== 'connected' && !sessionId,
+                refreshDisabled: !sessionId,
+                onUpload: handleFileUpload,
+                onRefresh: () => sessionId && refreshWorkspaceFiles(sessionId),
+                onDownload: downloadWorkspaceFile,
+                datasetsCount: workspaceDatasets.length,
+                artifactsCount: workspaceArtifacts.length,
+                loading: workspaceLoading,
+                error: workspaceError,
+                uploadState,
+                entries: workspaceEntries,
+              }}
+              fallback={() => null}
+            />
+          )
         }
         footer={
           <>
-            <select
-              id="skill-select"
-              aria-label="Chọn skill"
-              title={selectedSkill ? skills.find((skill) => skill.name === selectedSkill)?.description : 'Để agent tự chọn workflow'}
-              disabled={!composerEnabled}
-              value={selectedSkill}
-              onChange={(event) => setSelectedSkill(event.target.value)}
-            >
-              <option value="">Tự động</option>
-              {skills.map((skill) => (
-                <option key={skill.name} value={skill.name}>{skill.name}</option>
-              ))}
-            </select>
+            {clientCtx && (
+              <RenderSlot<SkillComposerExtraProps>
+                ctx={clientCtx}
+                name="session.chrome.composer"
+                entryKey={sessionDriver}
+                owner={{
+                  skills,
+                  selectedSkill,
+                  disabled: !composerEnabled,
+                  onSelectSkill: setSelectedSkill,
+                }}
+                fallback={() => null}
+              />
+            )}
             <Composer value={composerText} onChange={setComposerText} onSubmit={handleSubmit} disabled={!composerEnabled} />
           </>
         }
@@ -781,6 +787,13 @@ export function App() {
         restUrl={settings.restUrl}
         token={auth.token}
         currentUserId={auth.user.id}
+      />
+
+      <PluginInventoryPanel
+        open={pluginInventoryOpen}
+        onClose={() => setPluginInventoryOpen(false)}
+        restUrl={settings.restUrl}
+        token={auth.token}
       />
     </>
   )
