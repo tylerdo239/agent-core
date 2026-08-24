@@ -28,12 +28,28 @@
 
 .step {
   align-self: flex-start;
-  background: var(--alias-bg-subtle);
-  border: 1px solid var(--alias-border-default);
+  display: flex;
+  align-items: center;
+  gap: var(--alias-space-xs);
   color: var(--alias-label-secondary);
   font-size: var(--alias-font-size-caption);
-  border-radius: var(--alias-radius-panel);
-  max-width: 90%;
+  max-width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.activityTitle,
+.separator {
+  flex: none;
+}
+
+.description {
+  color: var(--alias-label-disabled);
+  font-size: var(--alias-font-size-caption);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .error {

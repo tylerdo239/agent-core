@@ -58,16 +58,17 @@ RLM_RUNTIME_ROOT=/app/bundles/loop-drivers/loop-rlm/python
 Không trỏ `RLM_PYTHON_BIN` vào `.venv` trên host: virtualenv có thể chứa
 symlink tuyệt đối không tồn tại trong container và gây `spawn ... ENOENT`.
 
-Development/hot reload:
+Chạy hệ thống (một Compose duy nhất, source mount + hot reload):
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+docker compose up -d --build
 ```
 
-Production-like:
+Sau khi sửa TypeScript/React/CSS không cần rebuild. Backend tự restart, UI tự
+HMR. Nếu sửa Python worker và cần tạo process mới:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+docker compose restart agent-core
 ```
 
 Các port mặc định trên host:

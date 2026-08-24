@@ -1,6 +1,6 @@
 # Dockerfile.dev — Development container: live code + hot reload
 # Dùng cho chỉnh sửa trực tiếp, không cần rebuild khi đổi code.
-# Chạy: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# Chạy: docker compose up -d --build
 
 FROM python:3.11-slim-bookworm AS rlm-python
 WORKDIR /runtime
@@ -30,7 +30,16 @@ RUN npm install --global "opencode-ai@${OPENCODE_VERSION}" 2>/dev/null || true
 COPY package.json package-lock.json ./
 COPY packages/ui-slots/package.json ./packages/ui-slots/package.json
 COPY packages/ui-react/package.json ./packages/ui-react/package.json
+COPY packages/ui-theme/package.json ./packages/ui-theme/package.json
+COPY packages/ui-primitives/package.json ./packages/ui-primitives/package.json
 COPY packages/ui-tool-web-search/package.json ./packages/ui-tool-web-search/package.json
+COPY packages/ui-sidebar/package.json ./packages/ui-sidebar/package.json
+COPY packages/ui-layout/package.json ./packages/ui-layout/package.json
+COPY packages/ui-conversation/package.json ./packages/ui-conversation/package.json
+COPY packages/ui-settings-general/package.json ./packages/ui-settings-general/package.json
+COPY packages/ui-auth/package.json ./packages/ui-auth/package.json
+COPY packages/ui-rlm-workspace/package.json ./packages/ui-rlm-workspace/package.json
+COPY packages/ui-plugin-inventory/package.json ./packages/ui-plugin-inventory/package.json
 COPY apps/web/package.json ./apps/web/package.json
 RUN npm ci
 

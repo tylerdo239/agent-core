@@ -340,15 +340,12 @@ là summary bền hơn dành cho multi-turn RLM.
 | `.env.example` | Contract cấu hình, không chứa secret thật | Thêm/đổi env var |
 | `Dockerfile` | Build image runtime, UI và copy Python dependencies | Đổi production image/runtime |
 | `Dockerfile.dev` | Image development có source mount + watch | Đổi môi trường dev |
-| `docker-compose.yml` | Service/port/volume/env nền | Đổi deployment mặc định |
-| `docker-compose.dev.yml` | Override live mount/hot reload | Đổi workflow dev |
-| `docker-compose.prod.yml` | Override production dùng source đã COPY trong image | Đổi policy deploy/restart |
+| `docker-compose.yml` | Compose duy nhất: service, port, volume, source mount và hot reload | Đổi cách chạy hệ thống |
 | `README.md` | Quick start và giới hạn tổng quát | Thay đổi cách chạy chính |
 | `tsconfig.json` | Luật typecheck TypeScript | Đổi compiler/module settings |
 
-Compose base chỉ mount named volume `agent-core-data`. Dev override mount source
-thuộc chính repo để hot reload; production image chứa cả TypeScript, frontend
-build và Python RLM runtime nên có thể chạy từ một checkout độc lập.
+Compose mount source thuộc chính repo vào container. Backend dùng `tsx watch`,
+UI dùng Vite HMR; sửa TypeScript/React/CSS không cần rebuild image.
 
 ### 6.2 `src/`
 
@@ -697,7 +694,7 @@ So sánh commit khởi tạo `2bb50b2` với branch migration tại `30f4120`:
 | REST/WS/gRPC nhận `selectedSkill`, metadata, stream event; REST quản lý file workspace | `bundles/adapters/api-{rest,ws,grpc}/` |
 | UI có upload progress, danh sách workspace và artifact đầu ra | `apps/web/src/App.tsx`, `apps/web/src/style.css` |
 | Runtime Python RLM và scientific stack nằm trọn trong bundle sở hữu nó | `bundles/loop-drivers/loop-rlm/python/{rlm_agent/,vendor/rlm/,requirements.txt,worker.py}` |
-| Image/Compose độc lập, có cấu hình dev hot-reload và production | `Dockerfile`, `Dockerfile.dev`, `docker-compose*.yml` |
+| Một Compose duy nhất có source mount và hot reload | `Dockerfile.dev`, `docker-compose.yml` |
 | Benchmark core, skill, tool, memory, REPL, DABench và multi-turn | `benchmarks/rlm/` |
 | Test migration, worker protocol, REST và UI smoke | `tests/rlm-migration.test.ts`, `tests/rlm-worker-protocol.test.ts`, `tests/api-rest.test.ts`, `apps/web/tests/App.smoke.test.tsx` |
 

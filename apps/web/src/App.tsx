@@ -102,7 +102,7 @@ export function createSessionCommand(driver: 'default' | 'rlm' = 'default') {
 }
 
 type ChatItem =
-  | { kind: 'user' | 'assistant' | 'system' | 'error' | 'critic'; id: string; text: string; ts?: number }
+  | { kind: 'user' | 'assistant' | 'system' | 'error' | 'critic'; id: string; text: string; description?: string; ts?: number }
   | {
       kind: 'tool'
       id: string
@@ -137,6 +137,28 @@ function toolRowSummary(item: Extract<ChatItem, { kind: 'tool' }>): string {
     if (Array.isArray(results)) return results.length ? `${results.length} nguồn` : 'không tìm thấy kết quả'
   }
   return JSON.stringify(item.toolCall.args ?? {})
+}
+
+function workspaceReadActivity(step: Pick<LoopStep, 'action' | 'path'>) {
+  const action = step.action ?? 'đọc'
+  const normalized = action.toLowerCase()
+  let description = 'Đọc dữ liệu từ workspace để phục vụ lượt phân tích hiện tại.'
+  if (normalized === 'list datasets') description = 'Kiểm tra các dataset hiện có trong workspace.'
+  else if (normalized === 'profile dataset') description = 'Đọc cấu trúc, kiểu dữ liệu và thống kê cơ bản của dataset.'
+  else if (normalized === 'load dataset') description = `Nạp ${step.path || 'dataset'} vào môi trường Python để xử lý.`
+  else if (normalized === 'list files') description = 'Kiểm tra các file hiện có trong workspace.'
+  else if (normalized === 'read file') description = `Đọc ${step.path || 'file'} từ workspace.`
+  return { text: `📄 ${action}`, description }
+}
+
+function workspaceWriteActivity(path = '') {
+  const lower = path.toLowerCase()
+  let description = 'Lưu kết quả vào workspace để tải xuống hoặc sử dụng ở lượt sau.'
+  if (lower.endsWith('.json')) description = 'Lưu kết quả dạng JSON vào workspace để tải xuống hoặc dùng lại.'
+  else if (/\.(md|html|pdf)$/.test(lower)) description = 'Lưu báo cáo hoàn chỉnh vào workspace.'
+  else if (/\.(csv|parquet|xlsx)$/.test(lower)) description = 'Lưu dataset kết quả vào workspace.'
+  if (path) description = `${description.replace(/\.$/, '')}: ${path}`
+  return { text: '💾 ghi output', description }
 }
 
 export function App() {
@@ -436,7 +458,7 @@ export function App() {
       return
     }
     if (step.type === 'critic_message') {
-      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `🔍 đang rà soát: ${step.content}`, ts: Date.now() }])
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '🔍 Rà soát', description: step.content, ts: Date.now() }])
       return
     }
     if (step.type === 'final') {
@@ -444,23 +466,23 @@ export function App() {
       return
     }
     if (step.type === 'analysis' && step.content) {
-      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `🧠 think: ${step.content}` }])
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '🧠 Think', description: step.content }])
       return
     }
     if (step.type === 'skill_loaded') {
-      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `📚 đọc skill: ${step.skill ?? 'unknown'}` }])
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '📚 Skill', description: `Đọc ${step.skill ?? 'unknown'} để áp dụng hướng dẫn chuyên môn.` }])
       return
     }
     if (step.type === 'skill_resource') {
-      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `📚 đọc skill resource: ${step.skill ?? 'unknown'}${step.path ? `/${step.path}` : ''}` }])
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '📚 Skill resource', description: `Đọc ${step.skill ?? 'unknown'}${step.path ? `/${step.path}` : ''}.` }])
       return
     }
     if (step.type === 'workspace_read') {
-      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `📄 ${step.action ?? 'đọc'}${step.path ? `: ${step.path}` : ''}` }])
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), ...workspaceReadActivity(step) }])
       return
     }
     if (step.type === 'workspace_write') {
-      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `💾 ghi output: ${step.path ?? ''}` }])
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), ...workspaceWriteActivity(step.path) }])
       return
     }
     if (step.type === 'human_decision') {
@@ -526,27 +548,27 @@ export function App() {
         continue
       }
       if (step.type === 'critic_message') {
-        result.push({ kind: 'critic', id: genId(), text: `🔍 đang rà soát: ${step.content}` })
+        result.push({ kind: 'critic', id: genId(), text: '🔍 Rà soát', description: step.content })
         continue
       }
       if (step.type === 'analysis' && step.content) {
-        result.push({ kind: 'critic', id: genId(), text: `🧠 think: ${step.content}` })
+        result.push({ kind: 'critic', id: genId(), text: '🧠 Think', description: step.content })
         continue
       }
       if (step.type === 'skill_loaded') {
-        result.push({ kind: 'critic', id: genId(), text: `📚 đọc skill: ${step.skill ?? 'unknown'}` })
+        result.push({ kind: 'critic', id: genId(), text: '📚 Skill', description: `Đọc ${step.skill ?? 'unknown'} để áp dụng hướng dẫn chuyên môn.` })
         continue
       }
       if (step.type === 'skill_resource') {
-        result.push({ kind: 'critic', id: genId(), text: `📚 đọc skill resource: ${step.skill ?? 'unknown'}${step.path ? `/${step.path}` : ''}` })
+        result.push({ kind: 'critic', id: genId(), text: '📚 Skill resource', description: `Đọc ${step.skill ?? 'unknown'}${step.path ? `/${step.path}` : ''}.` })
         continue
       }
       if (step.type === 'workspace_read') {
-        result.push({ kind: 'critic', id: genId(), text: `📄 ${step.action ?? 'đọc'}${step.path ? `: ${step.path}` : ''}` })
+        result.push({ kind: 'critic', id: genId(), ...workspaceReadActivity(step) })
         continue
       }
       if (step.type === 'workspace_write') {
-        result.push({ kind: 'critic', id: genId(), text: `💾 ghi output: ${step.path ?? ''}` })
+        result.push({ kind: 'critic', id: genId(), ...workspaceWriteActivity(step.path) })
         continue
       }
       if (step.type === 'final_answer') {
@@ -828,6 +850,7 @@ export function App() {
               key={item.id}
               kind={item.kind}
               text={item.text}
+              description={item.description}
               ts={item.ts}
               onCopied={() => pushToast('Đã sao chép')}
             />
