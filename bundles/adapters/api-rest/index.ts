@@ -58,7 +58,7 @@ export namespace ApiRest {
   }
 }
 
-export const inject = ['sessions', 'agent', 'storage', 'auth', 'permission', 'skills', 'workspace', 'pluginInventory']
+export const inject = ['sessions', 'agent', 'storage', 'auth', 'permission', 'skills', 'workspace', 'pluginInventory', 'pluginConfig', 'tools']
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024 // 1 MiB
 const FILE_MAX_BODY_BYTES = 70 * 1024 * 1024 // 70 MiB for uploads
@@ -120,7 +120,7 @@ export const apply = async (ctx: Context, config: ApiRest.Config = {}) => {
 
   const server = createServer((req, res) => {
     res.setHeader('access-control-allow-origin', corsOrigin)
-    res.setHeader('access-control-allow-methods', 'GET, POST, PATCH, DELETE, OPTIONS')
+    res.setHeader('access-control-allow-methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
     res.setHeader('access-control-allow-headers', 'content-type, authorization, x-file-name')
     if (req.method === 'OPTIONS') {
       res.writeHead(204)
@@ -232,6 +232,46 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse, m
   if (req.method === 'GET' && pathname === '/plugins') {
     if (!(await ctx.permission.check(identity!.role, 'admin:plugins:view'))) return sendJson(res, 403, { error: 'forbidden' })
     return sendJson(res, 200, { plugins: ctx.pluginInventory.list() })
+  }
+
+  // docs: seams/plugin-config.ts — cấu hình plugin (vd. serperApiKey) admin
+  // đổi được qua UI, không cần restart (ctx.pluginConfig, Postgres). Action
+  // riêng 'admin:plugins:configure' (khác 'admin:plugins:view' — xem/sửa là
+  // 2 quyền khác nhau). CHỈ trả danh sách key ĐANG có giá trị — không bao
+  // giờ trả giá trị thật qua GET, secret không rời DB qua đường này (đúng
+  // pattern dsh: "a key control starts blank, reports only whether one is
+  // configured" — xem docs/agent-core-adding-plugins.md tinh thần tương tự).
+  if (req.method === 'GET' && pathname === '/plugin-settings') {
+    if (!(await ctx.permission.check(identity!.role, 'admin:plugins:configure'))) return sendJson(res, 403, { error: 'forbidden' })
+    return sendJson(res, 200, { configured: await ctx.pluginConfig.listConfiguredKeys() })
+  }
+
+  const pluginSettingMatch = pathname.match(/^\/plugin-settings\/([^/]+)$/)
+  if (req.method === 'PUT' && pluginSettingMatch) {
+    if (!(await ctx.permission.check(identity!.role, 'admin:plugins:configure'))) return sendJson(res, 403, { error: 'forbidden' })
+    const body = await readJsonBody(req, maxBodyBytes)
+    if (typeof body.value !== 'string' || !body.value) {
+      return sendJson(res, 400, { error: '"value" phải là chuỗi không rỗng' })
+    }
+    await ctx.pluginConfig.set(pluginSettingMatch[1], body.value)
+    return sendJson(res, 200, { key: pluginSettingMatch[1], configured: true })
+  }
+  if (req.method === 'DELETE' && pluginSettingMatch) {
+    if (!(await ctx.permission.check(identity!.role, 'admin:plugins:configure'))) return sendJson(res, 403, { error: 'forbidden' })
+    await ctx.pluginConfig.delete(pluginSettingMatch[1])
+    res.writeHead(204)
+    return res.end()
+  }
+
+  // docs: seams/tools.ts (ToolDefinition.configSchema) — tool TỰ khai field
+  // cấu hình của chính nó (thay vì 1 catalog hardcode ở tầng UI), nên tool
+  // bên thứ 3 nạp qua EXTRA_PLUGINS cũng tự động xuất hiện đúng ở đây, không
+  // cần sửa source lõi. Cùng action 'admin:plugins:configure' — đọc SCHEMA
+  // (tên field/nhãn), không phải giá trị thật.
+  if (req.method === 'GET' && pathname === '/tool-config-schema') {
+    if (!(await ctx.permission.check(identity!.role, 'admin:plugins:configure'))) return sendJson(res, 403, { error: 'forbidden' })
+    const entries = ctx.tools.list().flatMap((def) => (def.configSchema ?? []).map((field) => ({ toolName: def.name, ...field })))
+    return sendJson(res, 200, { entries })
   }
 
   if (req.method === 'GET' && pathname === '/skills') {

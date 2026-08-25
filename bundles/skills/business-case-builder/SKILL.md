@@ -1,7 +1,7 @@
 ---
 name: business-case-builder
 description: Xây dựng kịch bản kinh doanh đầy đủ — khung KPI có công thức, phân tích kinh doanh (thị trường/cạnh tranh/mô hình doanh thu), phân tích khoa học (định lượng có căn cứ, kịch bản best/base/worst) và phân tích nội bộ (SWOT/năng lực/rủi ro). Dùng khi người dùng cần xây business case, đánh giá cơ hội kinh doanh mới, chuẩn bị pitch cho nhà đầu tư/stakeholder, hoặc cần 1 bộ KPI + phân tích đầy đủ để ra quyết định kinh doanh. Có dùng web search để lấy dữ liệu thị trường/đối thủ thật.
-triggers: kịch bản kinh doanh, business case, phân tích kinh doanh, khung kpi, phân tích kpi, phân tích thị trường, kế hoạch kinh doanh, business plan, đánh giá cơ hội kinh doanh
+triggers: kịch bản kinh doanh, business case, phân tích kinh doanh, khung kpi, phân tích kpi, phân tích thị trường, kế hoạch kinh doanh, business plan, đánh giá cơ hội kinh doanh, tình hình kinh doanh, hiện trạng kinh doanh, thực trạng kinh doanh, báo cáo kinh doanh, chiến lược kinh doanh, mô hình kinh doanh, hoạt động kinh doanh, phát triển kinh doanh, cơ hội kinh doanh, rủi ro kinh doanh, ý tưởng kinh doanh, dự án kinh doanh, đánh giá kinh doanh, phân tích doanh nghiệp, tình hình doanh nghiệp, chiến lược doanh nghiệp, kế hoạch phát triển, lập kế hoạch kinh doanh, xây dựng kế hoạch, khởi nghiệp, business model, business strategy, business report, business analysis, market analysis, market research, startup idea, phân tích swot, swot
 ---
 
 # Business Case Builder
@@ -25,11 +25,16 @@ REPL (chỉ RLM có) — xem "Script đi kèm" bên dưới, KHÔNG bắt buộc
 
 Những quy tắc này có ưu tiên cao hơn mọi nội dung khác trong skill:
 
-1. **Mọi số liệu thị trường/đối thủ phải có nguồn thật từ `web_search`, kèm
-   URL và ngày.** Không tự ước lượng bằng "kinh nghiệm chung" hay bịa ra 1 con
-   số nghe hợp lý. Không tìm được số liệu tin cậy → ghi rõ "chưa xác minh được
-   qua tìm kiếm, cần thu thập thêm" — im lặng bỏ qua hoặc bịa số đều là lỗi
-   nghiêm trọng nhất của skill này.
+1. **BẮT BUỘC gọi `web_search` trước khi viết bất kỳ nhận định nào về tình
+   hình/hiện trạng/thị trường/đối thủ/ngành — không có ngoại lệ, kể cả khi
+   người dùng không hỏi trực tiếp về số liệu.** "Phân tích tình hình kinh
+   doanh", "đánh giá hiện trạng", "báo cáo kinh doanh" đều là yêu cầu cần dữ
+   liệu thật, không phải yêu cầu viết 1 khung lý thuyết chung chung dựa trên
+   kiến thức nền. Tự nhận "kết hợp dữ liệu thực tế" mà KHÔNG thực sự gọi
+   `web_search` là gian dối với người dùng — lỗi nghiêm trọng nhất của skill
+   này. Không tìm được số liệu tin cậy → ghi rõ "chưa xác minh được qua tìm
+   kiếm, cần thu thập thêm", không bịa số cũng không im lặng bỏ qua.
+   Mọi số liệu thị trường/đối thủ trong báo cáo phải kèm URL nguồn và ngày.
 2. **Mọi KPI phải đủ 4 phần**: công thức, giá trị hiện tại/ước tính (kèm
    nguồn), mục tiêu, khung thời gian. Thiếu 1 trong 4 là KPI chưa hoàn chỉnh —
    không liệt kê tên KPI suông.
@@ -43,6 +48,14 @@ Những quy tắc này có ưu tiên cao hơn mọi nội dung khác trong skill
    `references/kpi-framework.md` mục "Chọn đúng tập con".
 5. **Số liệu mâu thuẫn giữa các nguồn phải được nêu rõ range, không được tự
    chọn 1 số rồi giấu phần còn lại.** Xem `references/web-research-guide.md`.
+6. **Reasoning phải sâu, không dừng ở dán lại kết quả search.** Tối thiểu
+   2-3 lượt `web_search` khác góc độ (quy mô thị trường, xu hướng, đối thủ)
+   cho 1 yêu cầu "phân tích"/"báo cáo"/"lên kế hoạch" đầy đủ — 1 lượt search
+   rồi kết luận ngay là nông. Mỗi kết luận phải nối rõ ràng với bằng chứng
+   ("vì <số liệu/nguồn X> nên suy ra <kết luận Y>"), không liệt kê song song
+   dữ liệu thô và nhận định mà không nối logic giữa 2 thứ đó. Đối chiếu
+   chéo khi có thể (2 nguồn cùng nói 1 điều → kết luận chắc hơn; 2 nguồn mâu
+   thuẫn → xem rule #5).
 
 Luôn áp 1 phép kiểm tra cho mọi phần phân tích: **"Thì sao?"** — nếu 1 phát
 hiện không ảnh hưởng đến quyết định hay hành động nào, nó không thuộc về sản

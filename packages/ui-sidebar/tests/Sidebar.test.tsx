@@ -40,10 +40,10 @@ function renderSidebar(overrides: Partial<ComponentProps<typeof Sidebar>> = {}) 
       onNewChat={vi.fn()}
       onNewDataSession={vi.fn()}
       onSelectSession={vi.fn()}
-      onOpenSettings={vi.fn()}
       isAdmin={false}
       onOpenAdminPanel={vi.fn()}
       onOpenPluginInventory={vi.fn()}
+      onOpenPluginSettings={vi.fn()}
       currentUsername="alice"
       onLogout={vi.fn()}
       {...overrides}
@@ -54,7 +54,7 @@ function renderSidebar(overrides: Partial<ComponentProps<typeof Sidebar>> = {}) 
 describe('Sidebar — logo + collapse + search trigger', () => {
   it('logo + wordmark hiện khi mở rộng', () => {
     renderSidebar()
-    expect(screen.getByText('agent-core')).toBeTruthy()
+    expect(screen.getByText('Fox Harness')).toBeTruthy()
   })
 
   it('danh sách lịch sử hiện đủ, KHÔNG lọc gì (lọc là việc của SearchModal)', () => {
@@ -118,6 +118,18 @@ describe('Sidebar — module auth: username/đăng xuất/admin panel', () => {
     renderSidebar({ isAdmin: true, onOpenPluginInventory })
     fireEvent.click(screen.getByText('Plugin đang chạy'))
     expect(onOpenPluginInventory).toHaveBeenCalled()
+  })
+
+  it('isAdmin=false -> KHÔNG hiện trigger "Cấu hình"', () => {
+    renderSidebar({ isAdmin: false })
+    expect(screen.queryByText('Cấu hình', { selector: 'span' })).toBeNull()
+  })
+
+  it('isAdmin=true -> hiện trigger "Cấu hình", bấm gọi onOpenPluginSettings', () => {
+    const onOpenPluginSettings = vi.fn()
+    renderSidebar({ isAdmin: true, onOpenPluginSettings })
+    fireEvent.click(screen.getByText('Cấu hình', { selector: 'span' }))
+    expect(onOpenPluginSettings).toHaveBeenCalled()
   })
 })
 

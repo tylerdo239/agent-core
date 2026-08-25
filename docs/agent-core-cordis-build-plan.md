@@ -2624,6 +2624,194 @@ chính best/base case + SWOT.
 
 ---
 
+## Phase 33 — Siết grounding web_search cho `business-case-builder` + Serper.dev làm provider chính — ĐÃ IMPLEMENT, ĐÃ VERIFY
+
+User báo lại 2 vấn đề thật liên tiếp, cả 2 đều quanh việc `web_search` phải
+được dùng thật, không phải chỉ khi tiện.
+
+**1) Trigger bị bỏ sót** — verify thật trên server đang chạy: câu "Phân tích
+tình hình kinh doanh của một quán cà phê nhỏ tại Đà Nẵng" KHÔNG kích hoạt
+`business-case-builder` — model tự nói "kết hợp dữ liệu thực tế" nhưng chưa
+từng gọi `web_search`. Nguyên nhân: `triggers` là substring match thuần
+(`skill-registry.ts`, không ngữ nghĩa/fuzzy), trigger cũ `"phân tích kinh
+doanh"` cần 2 từ liền kề, chữ "tình hình" chen giữa làm không khớp. Sửa:
+mở rộng `triggers` thêm ~26 cụm hay gặp (tình hình/hiện trạng/báo cáo/chiến
+lược/hoạt động/rủi ro kinh doanh, khởi nghiệp, business model/strategy/
+report/analysis...); siết `SKILL.md` Nguyên tắc #1 (bắt buộc search cho MỌI
+nhận định tình hình, không chỉ khi hỏi thẳng số liệu) + thêm Nguyên tắc #6
+(reasoning sâu — tối thiểu 2-3 lượt search khác góc độ, nối rõ bằng chứng
+với kết luận). Verify lại đúng CÂU đã fail — `web_search` được gọi thật,
+báo cáo có SWOT + trích dẫn. Giới hạn thành thật: nguyên tắc #6 là hướng dẫn
+prompt, không phải ràng buộc cứng bằng code — không đảm bảo đúng 2-3 lượt
+mọi lúc.
+
+**2) Serper.dev làm provider chính** — user tự đăng ký serper.dev, muốn làm
+provider CHÍNH cho `web_search` (chất lượng cao hơn hẳn scrape HTML), giữ
+DuckDuckGo làm dự phòng tự động khi Serper lỗi/hết hạn mức. Thiết kế: vẫn
+ĐÚNG 1 tool `web_search` (không lộ 2 tool riêng cho model chọn nhầm) —
+`bundles/tools/tool-web-search/index.ts` tách `searchSerper()`/
+`searchDuckDuckGo()` thành 2 hàm độc lập, handler thử Serper trước (nếu có
+`SERPER_API_KEY`), bắt MỌI lỗi (network/timeout/non-2xx, gồm 429 rate-limit)
+rồi fallback DuckDuckGo ngay lần gọi đó — không retry Serper trước khi
+fallback (Serper trả phí có hạn mức, DuckDuckGo miễn phí không đáng đợi).
+Không set `SERPER_API_KEY` = chạy y hệt trước đây, tương thích ngược hoàn
+toàn. Response thêm field `provider` ("serper"/"duckduckgo") minh bạch nguồn
+nào phục vụ, không phá format cũ (`SourceList`/`WebSearchCard` chỉ đọc
+`results`, không bị ảnh hưởng).
+
+**Deliverable Phase 33: ĐÃ VERIFY THẬT** — `npm run typecheck` sạch,
+`npm test` 242/242 pass (42 file, từ 237 — 5 test mới ở
+`tests/tool-web-search-serper-fallback.test.ts`: DuckDuckGo-only khi không
+có key, Serper thành công không fallback, Serper lỗi mạng fallback, Serper
+429 fallback, `serperBaseUrl` override cho test). `docker compose up --build`
+container healthy. Serper CHƯA có key thật trong `.env` lúc build — phần
+DuckDuckGo-only (mặc định hiện tại) đã verify thật qua Docker; phần Serper
+thật cần user tự thêm `SERPER_API_KEY` để verify E2E tiếp.
+
+---
+
+## Phase 34 — Cấu hình plugin qua UI (Postgres, đổi không cần restart), thay thế nút "Cấu hình" cũ — ĐÃ IMPLEMENT, ĐÃ VERIFY (phát hiện thêm 1 bug thật của dự án; xem thêm Phase 34.1 — follow-up đổi tên nút + list-first UI)
+
+User: nút "Cấu hình" (restUrl/wsUrl) ở footer sidebar dư thừa sau khi có Auth
+thật — hỏi có nên đổi nút đó thành 1 modal cấu hình PLUGIN (vd. serperApiKey
+cho tool-web-search vừa thêm ở Phase 33), nhập API key lưu DB thay vì
+`.env`, chưa cấu hình thì mặc định vẫn DuckDuckGo. Hỏi lại xác nhận: giữ
+song song 2 nút hay thay thế hẳn — user chọn **thay thế hoàn toàn** (deployment
+thật của user luôn trỏ 1 server cố định, không cần đổi restUrl/wsUrl qua UI).
+
+**Thiết kế**: seam mới `seams/plugin-config.ts` (`ctx.pluginConfig` —
+key-value thuần, KHÔNG biết ý nghĩa từng key, đúng seam-first: "catalog"
+tên/nhãn hiển thị sống ở tầng UI `packages/ui-plugin-settings`, không ép
+backend biết trước mọi plugin tương lai). Provider
+`bundles/providers/plugin-config-postgres` — Postgres, cùng `DATABASE_URL`
+đã bắt buộc cho `ctx.auth`, không thêm biến môi trường bắt buộc mới; bảng
+`plugin_settings` đơn giản (key/value/updated_at). `tool-web-search` đọc key
+LIVE mỗi lần handler chạy qua `ctx.get('pluginConfig')?.get('serperApiKey')`
+(soft-dependency, không có trong `inject` — tool vẫn chạy DuckDuckGo-only
+được nếu vì lý do nào đó `pluginConfig` chưa mount, và giữ test cô lập nhẹ
+không cần Postgres) — DB thắng nếu có, `SERPER_API_KEY` env chỉ là mặc định
+khi DB chưa từng lưu gì, không phải 2 nguồn loại trừ nhau. REST mới
+`GET/PUT/DELETE /plugin-settings(/:key)`, action RBAC riêng
+`admin:plugins:configure`. Bảo mật: GET không bao giờ trả giá trị thật, chỉ
+trả tên key đang có giá trị (đúng tinh thần dsh's ui-settings-plugins — "a
+key control starts blank, reports only whether one is configured").
+
+Frontend: `packages/ui-plugin-settings` (`PluginSettingsPanel` — Modal,
+input luôn rỗng dù đã cấu hình, badge đã/chưa cấu hình, Lưu/Xoá riêng từng
+setting). Sidebar: xoá hẳn nút "Cấu hình" (restUrl/wsUrl) + `SettingsForm`/
+`Modal` liên quan trong `App.tsx`, thay bằng "Cấu hình plugin" admin-only.
+
+**Bug thật phát hiện lúc verify E2E (không phải giả thuyết, đụng CẢ repo,
+không riêng tính năng này)**: verify "đổi key qua UI có hiệu lực ngay không
+cần restart" bằng cách PUT 1 key giả rồi trigger search thật — Serper được
+gọi đúng (403 do key giả), fallback DuckDuckGo đúng, NHƯNG dòng
+`ctx.logger('tool-web-search').warn('Serper thất bại...')` không hề xuất
+hiện trong log. Đọc thẳng `node_modules/@deepseek-ai/cordis/lib/index.js`
+(`Logger._method`) xác nhận: Cordis đánh số level NGƯỢC trực giác thường
+gặp — `error=0, info=1, warn=2, debug=3` (SỐ CÀNG CAO càng verbose, message
+bị bỏ qua nếu `configuredLevel < messageLevel`). `src/serve.ts` mặc định cũ
+`LOG_LEVEL ?? 1` vô tình ẩn TOÀN BỘ `.warn()` trong cả repo (auth-users/
+plugin-config-postgres retry warning, không riêng gì Serper) — sửa default
+lên `2`, xác nhận lại: warn hiện đúng, đúng nội dung.
+
+**Deliverable Phase 34: ĐÃ VERIFY THẬT** — `npm run typecheck` sạch,
+`npm test` 257/257 pass (44 file, từ 242 — test mới:
+`tests/plugin-config-postgres.test.ts` 6 test (get/set/delete/upsert/
+listConfiguredKeys chống Postgres thật), `tests/api-rest.test.ts` thêm 1
+test admin-only + không lộ giá trị, `packages/ui-plugin-settings/tests/`
+5 test UI). Docker rebuild + **E2E thật xuyên suốt, không restart giữa các
+bước**: baseline (chưa cấu hình) → `provider:"duckduckgo"`; `PUT
+/plugin-settings/serperApiKey` (key giả) KHÔNG restart container → turn
+search NGAY SAU ĐÓ → log xác nhận Serper thực sự được gọi + fallback đúng
+(sau khi sửa bug LOG_LEVEL) → `GET /plugin-settings` xác nhận
+`{"configured":["serperApiKey"]}`, không lộ giá trị thật; `DELETE` xong dọn
+sạch, về đúng baseline. Còn thiếu: verify với 1 API key Serper THẬT (cần
+user tự nhập qua UI hoặc cung cấp để test tiếp) — mọi thứ đã verify ở đây
+dùng key giả để xác nhận đúng cơ chế attempt+fallback+live-config, không
+phải xác nhận Serper trả kết quả tìm kiếm thật.
+
+### Phase 34.1 — Follow-up: đổi tên nút + list-first UI (như Plugin Inventory) — ĐÃ IMPLEMENT, ĐÃ VERIFY
+
+User: đổi tên nút footer từ "Cấu hình plugin" về lại đúng "Cấu hình" (bỏ chữ
+"plugin"), và khi mở panel, thứ hiện ra ĐẦU TIÊN phải là 1 DANH SÁCH các
+plugin đang mount có thể cấu hình — nêu rõ style/cấu trúc tham khảo đúng
+`packages/ui-plugin-inventory` ("Plugin đang chạy", search box + đếm dòng +
+bảng phẳng Tên/Trạng thái).
+
+**Thiết kế**: `PluginSettingsPanel` giờ gọi CẢ `GET /plugins` (đối chiếu
+plugin đang mount thật, tái dùng `listPlugins`/`PluginInventoryEntry` từ
+`@agent-core/ui-plugin-inventory` — thêm dependency cross-package giữa 2 gói
+UI, cùng pattern `ui-rlm-workspace` đã phụ thuộc `ui-primitives`/`ui-slots`)
+LẪN `GET /plugin-settings` (đã cấu hình hay chưa) ngay khi mở. `CATALOG`
+(tầng UI, backend không biết) gắn thêm field `pluginName` để đối chiếu —
+entry nào không tìm thấy plugin cùng tên đang mount thật thì KHÔNG hiện
+(tránh danh sách tĩnh lệch khỏi thực tế server). Danh sách render dạng bảng
+giống hệt `PluginInventoryPanel` (cột Tên/Trạng thái + thêm cột "Cấu hình"),
+bấm 1 dòng mở rộng ra `<tr>` full-width bên dưới chứa input+Lưu/Xoá (thay vì
+luôn hiện sẵn form như bản trước) — khớp đúng yêu cầu "list trước, cấu hình
+sau khi bấm vào".
+
+**Deliverable Phase 34.1: ĐÃ VERIFY THẬT** — `npm run typecheck` sạch,
+`npm test` vẫn 257/257 pass (số file/test không đổi — sửa tại chỗ
+`packages/ui-plugin-settings/tests/PluginSettingsPanel.test.tsx` và
+`packages/ui-sidebar/tests/Sidebar.test.tsx`, không thêm file mới).
+`npm run build:web` build sạch; grep trực tiếp bundle đã build
+(`apps/web/dist/assets/index-*.js`) xác nhận chuỗi "Cấu hình" có mặt và
+"Cấu hình plugin" đã biến mất hoàn toàn khỏi output thật — không chỉ tin
+vào source, xác nhận đúng những gì browser thật sẽ tải.
+
+### Phase 34.2 — Follow-up: tool tự khai `configSchema` — third-party không cần sửa source lõi — ĐÃ IMPLEMENT, ĐÃ VERIFY
+
+User hỏi: cơ chế hiện tại (Phase 34.1) show list dựa vào đâu — trả lời xong
+thì lộ ra chính vấn đề: `CATALOG` nằm hardcode trong
+`packages/ui-plugin-settings`, nên 1 tool bên thứ 3 nạp qua `EXTRA_PLUGINS`
+(docs/agent-core-adding-plugins.md) dù tự `ctx.tools.add()` được cũng KHÔNG
+THỂ xuất hiện trong UI cấu hình nếu không sửa source lõi — phá đúng lời hứa
+"third-party không cần đụng source" mà `EXTRA_PLUGINS` được xây ra để đảm
+bảo (Phase 31).
+
+**Thiết kế**: dùng lại đúng pattern đã chứng minh hoạt động với
+`ToolUiHint` (tool tự khai `icon`/`summaryArg` ngay tại `ToolDefinition`
+của chính nó) — thêm `ToolConfigField`/`ToolDefinition.configSchema`
+(`seams/tools.ts`). Tool nào cần 1 setting runtime-editable qua
+`ctx.pluginConfig` (vd. `serperApiKey`) tự khai `configSchema: [{ key,
+label, description }]` ngay lúc `ctx.tools.add()` — bundle nội bộ
+(`tool-web-search`) hay bên thứ 3 nạp qua `EXTRA_PLUGINS` đều dùng chung 1
+đường, không có API riêng nào cho "core" vs "third-party". `bundles/
+adapters/api-rest` thêm route mới `GET /tool-config-schema` (cùng action
+`admin:plugins:configure`) — đọc thẳng `ctx.tools.list()`, flatten
+`configSchema` của MỌI tool đang thật sự đăng ký, trả `{ entries:
+[{toolName,key,label,description}] }`.
+
+**Đơn giản hoá so với Phase 34.1**: bỏ hẳn bước cross-reference với
+`ctx.pluginInventory` (Fiber state theo tên MOUNT bundle, vd.
+`tool-web-search`) — vì `ctx.tools.list()` chỉ chứa tool THẬT SỰ đăng ký
+được (`add()` không bao giờ chạy nếu bundle lỗi lúc mount), tự nó đã là
+nguồn "đang hoạt động thật" chính xác 100%, không cần đối chiếu thêm với 1
+namespace tên khác (tên mount bundle ≠ tên tool logic, vd. `tool-web-search`
+vs `web_search` — bản Phase 34.1 phải hardcode ánh xạ này, bản 34.2 bỏ hẳn
+vấn đề đó). `packages/ui-plugin-settings/src/PluginSettingsPanel.tsx` không
+còn phụ thuộc `@agent-core/ui-plugin-inventory` nữa — gọi thẳng `GET
+/tool-config-schema` + `GET /plugin-settings`, bảng chỉ còn 2 cột (Tên/Cấu
+hình, bỏ cột Trạng thái).
+
+**Deliverable Phase 34.2: ĐÃ VERIFY THẬT** — `npm run typecheck` sạch,
+`npm test` 258/258 pass (44 file, +1 test mới `tests/api-rest.test.ts`:
+add() 2 fake tool SAU khi mount xong — 1 tool có `configSchema` mô phỏng
+đúng cách 1 plugin bên thứ 3 sẽ làm, 1 tool không khai gì — xác nhận
+endpoint chỉ trả đúng tool có khai, admin-gated 403 cho user thường; sửa lại
+5 test UI `PluginSettingsPanel.test.tsx` theo nguồn dữ liệu mới). Docker
+rebuild + verify thật trên container đang chạy: `docker compose logs` xác
+nhận boot sạch không lỗi (thêm `'tools'` vào `inject` của api-rest không vỡ
+gì); `GET /tool-config-schema` không token / token rác → đúng 401 (route có
+thật, gắn đúng auth middleware); grep trực tiếp bundle đã build
+(`apps/web/dist/assets/index-*.js` VÀ bundle container đang serve qua cổng
+8790) xác nhận chuỗi endpoint `/tool-config-schema` có mặt, nhãn nút
+"Cấu hình" đúng, "Cấu hình plugin" không còn tồn tại — không chỉ tin
+`npm test`, xác nhận đúng những gì browser thật sẽ tải từ container thật.
+
+---
+
 ## Timeline đề xuất (tham khảo, điều chỉnh theo tốc độ thật của bạn)
 
 | Phase | Nội dung                                                                 | Ưu tiên                                   |

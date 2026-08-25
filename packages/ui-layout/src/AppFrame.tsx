@@ -15,7 +15,11 @@ import styles from './AppFrame.module.css'
 
 export interface AppFrameProps {
   sidebar: ReactNode
-  header: ReactNode
+  /** `null`/`undefined` = KHÔNG render `<header>` (không chừa khoảng trống
+   * border/padding rỗng) — khác `subHeader`, vốn đã có ngữ nghĩa "không có
+   * gì = không tốn khoảng trống" từ trước (xem ghi chú subHeader dưới),
+   * follow-up (2026-08) áp dụng ĐÚNG ngữ nghĩa đó cho `header`. */
+  header?: ReactNode
   /**
    * Hàng phụ tuỳ chọn NGAY DƯỚI `header`, trên `children` — vùng chrome cố
    * định riêng (không cuộn theo message), TÁCH KHỎI `header` có chủ đích:
@@ -38,7 +42,7 @@ export function AppFrame({ sidebar, header, subHeader, footer, children }: AppFr
     <div className={styles.app}>
       {sidebar}
       <div className={styles.main}>
-        <header className={styles.header}>{header}</header>
+        {header && <header className={styles.header}>{header}</header>}
         {subHeader}
         <main className={styles.messages} aria-live="polite">
           {children}

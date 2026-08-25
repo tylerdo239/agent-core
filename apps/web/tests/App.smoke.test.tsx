@@ -124,19 +124,41 @@ describe('Phase 9.4 — App smoke test', () => {
       vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('no server in test env')))
     })
 
-    it('phiên mặc định lúc mount gửi driver "default" -> KHÔNG hiện workspace bar (session.chrome.header rơi về fallback null)', async () => {
+    // Follow-up (2026-08): bug thật user báo — mở app/bấm "Chat mới" xong F5
+    // TRƯỚC KHI gõ gì vẫn tự lưu 1 session rỗng vào history. Nguyên nhân:
+    // create_session cũ gửi NGAY lúc mount (session thật tạo dù chưa có tin
+    // nhắn nào). Sửa: hoãn create_session tới đúng lúc gửi tin nhắn ĐẦU TIÊN
+    // — 3 test dưới đây thay cho 2 test cũ verify đúng hành vi eager (đã lỗi
+    // thời, chính là hành vi gây bug).
+    it('mount KHÔNG tự gửi create_session — chưa gõ gì thì chưa tạo session nào cả (tránh session rỗng bị lưu history)', async () => {
       await act(async () => {
         render(<App />)
         await new Promise((r) => setTimeout(r, 30))
       })
 
       const socket = FakeWebSocket.instances[0]
-      expect(JSON.parse(socket.sent[0])).toMatchObject({ type: 'create_session', driver: 'default' })
+      expect(socket.sent).toEqual([])
       expect(document.getElementById('workspace-bar')).toBeNull()
       expect(screen.queryByLabelText('Chọn skill')).toBeNull()
     })
 
-    it('bấm "Phân tích dữ liệu" trong Sidebar -> mở kết nối MỚI, gửi create_session với driver "rlm"', async () => {
+    it('gõ + gửi tin nhắn đầu tiên -> LÚC ĐÓ mới gửi create_session, đúng driver "default"', async () => {
+      await act(async () => {
+        render(<App />)
+        await new Promise((r) => setTimeout(r, 30))
+      })
+      const socket = FakeWebSocket.instances[0]
+
+      await act(async () => {
+        fireEvent.change(screen.getByPlaceholderText('Nhắn gì đó cho agent...'), { target: { value: 'xin chào' } })
+        fireEvent.click(screen.getByText('Gửi'))
+        await new Promise((r) => setTimeout(r, 10))
+      })
+
+      expect(JSON.parse(socket.sent[0])).toMatchObject({ type: 'create_session', driver: 'default' })
+    })
+
+    it('bấm "Phân tích dữ liệu" trong Sidebar -> mở kết nối MỚI nhưng CHƯA tạo session; gõ + gửi tin đầu tiên mới tạo, đúng driver "rlm"', async () => {
       await act(async () => {
         render(<App />)
         await new Promise((r) => setTimeout(r, 30))
@@ -148,7 +170,37 @@ describe('Phase 9.4 — App smoke test', () => {
       })
 
       const latestSocket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1]
+      expect(latestSocket.sent).toEqual([])
+
+      await act(async () => {
+        fireEvent.change(screen.getByPlaceholderText('Nhắn gì đó cho agent...'), { target: { value: 'phân tích dữ liệu này' } })
+        fireEvent.click(screen.getByText('Gửi'))
+        await new Promise((r) => setTimeout(r, 10))
+      })
+
       expect(JSON.parse(latestSocket.sent[0])).toMatchObject({ type: 'create_session', driver: 'rlm' })
+    })
+
+    it('session_created trả về sau create_session (do gửi tin đầu) -> tự động gửi tiếp send_message với đúng nội dung đã gõ', async () => {
+      await act(async () => {
+        render(<App />)
+        await new Promise((r) => setTimeout(r, 30))
+      })
+      const socket = FakeWebSocket.instances[0]
+
+      await act(async () => {
+        fireEvent.change(screen.getByPlaceholderText('Nhắn gì đó cho agent...'), { target: { value: 'câu hỏi đầu tiên' } })
+        fireEvent.click(screen.getByText('Gửi'))
+        await new Promise((r) => setTimeout(r, 10))
+      })
+      expect(socket.sent.length).toBe(1) // chỉ create_session, chưa có send_message (đang chờ session_created)
+
+      await act(async () => {
+        socket.emitMessage({ type: 'session_created', id: 's-new', driver: 'default' })
+        await new Promise((r) => setTimeout(r, 10))
+      })
+
+      expect(JSON.parse(socket.sent[1])).toMatchObject({ type: 'send_message', sessionId: 's-new', message: 'câu hỏi đầu tiên' })
     })
 
     // Gap thật user báo lại: loop-rlm phát step 'tool_call' RIÊNG (không

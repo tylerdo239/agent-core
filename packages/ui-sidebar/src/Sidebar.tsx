@@ -28,12 +28,21 @@
 // không có ý nghĩa, kết quả vốn đã được lọc theo mức độ liên quan).
 //
 // Module auth (nhiều người dùng thật): app giờ CÓ tài khoản người dùng thật
-// (khác ghi chú cũ ở onOpenSettings dưới đây, đã lỗi thời) — footer thêm 1
-// hàng hiện username + nút đăng xuất, và (chỉ admin) 1 trigger "Quản lý
-// người dùng" riêng, tách biệt với "Cấu hình" (URL kết nối, không liên quan
-// tài khoản).
+// — footer thêm 1 hàng hiện username + nút đăng xuất, và (chỉ admin) 3
+// trigger riêng: "Quản lý người dùng", "Plugin đang chạy", "Cấu hình".
+//
+// Follow-up (2026-08): nút "Cấu hình" cũ (restUrl/wsUrl — URL server để kết
+// nối) bị THAY THẾ HOÀN TOÀN, không giữ song song — deployment thật của
+// user luôn trỏ 1 server cố định (defaultSettings() tính theo
+// location.hostname, đúng Docker Compose), URL kết nối không cần đổi tay
+// qua UI. Thay bằng nút "Cấu hình" MỚI (admin-only) — mở panel liệt kê các
+// plugin đang mount CÓ THỂ cấu hình (vd. serperApiKey cho tool-web-search),
+// lưu Postgres qua packages/ui-plugin-settings thay vì .env, đổi được không
+// cần restart service. Đổi tên lần 2: ban đầu gọi "Cấu hình plugin" để phân
+// biệt rõ với nút cũ, nhưng nút cũ đã xoá hẳn nên không còn nhập nhằng —
+// rút gọn lại "Cấu hình" cho gọn.
 import { useState } from 'react'
-import { Database, LogOut, PanelLeftClose, PanelLeftOpen, Puzzle, Search, Settings, Users } from 'lucide-react'
+import { Database, KeyRound, LogOut, PanelLeftClose, PanelLeftOpen, Puzzle, Search, Users } from 'lucide-react'
 import { Button, Tooltip } from '@agent-core/ui-primitives'
 import { loadSidebarCollapsed, saveSidebarCollapsed } from './sidebarState.ts'
 import { groupSessionsByDate } from './groupSessionsByDate.ts'
@@ -51,9 +60,6 @@ export interface SidebarProps {
    * tạo ngữ nghĩa mơ hồ). */
   onNewDataSession: () => void
   onSelectSession: (id: string) => void
-  /** Mở modal cấu hình (chỉ REST/WS URL — API key đã bỏ, xem
-   * packages/ui-settings-general/src/settings.ts). */
-  onOpenSettings: () => void
   isAdmin: boolean
   onOpenAdminPanel: () => void
   /** Tham khảo dsh (packages/client/ui-settings-plugin-inventory) — panel
@@ -61,6 +67,10 @@ export interface SidebarProps {
    * packages/ui-plugin-inventory. Admin-only cùng lý do AdminUsersPanel:
    * thông tin hạ tầng nội bộ, không phải thứ user thường cần thấy. */
   onOpenPluginInventory: () => void
+  /** Mở panel "Cấu hình" — list các plugin đang mount có thể cấu hình (vd.
+   * serperApiKey), admin-only, xem packages/ui-plugin-settings. Thay thế nút
+   * "Cấu hình" restUrl/wsUrl cũ (tên nút trùng nhưng nội dung khác hẳn). */
+  onOpenPluginSettings: () => void
   currentUsername: string
   onLogout: () => void
 }
@@ -71,10 +81,10 @@ export function Sidebar({
   onNewChat,
   onNewDataSession,
   onSelectSession,
-  onOpenSettings,
   isAdmin,
   onOpenAdminPanel,
   onOpenPluginInventory,
+  onOpenPluginSettings,
   currentUsername,
   onLogout,
 }: SidebarProps) {
@@ -94,8 +104,8 @@ export function Sidebar({
       <div className={styles.top}>
         {!collapsed && (
           <div className={styles.brand}>
-            <span className={styles.logoMark} aria-hidden="true">A</span>
-            <span className={styles.logoText}>agent-core</span>
+            <span className={styles.logoMark} aria-hidden="true">F</span>
+            <span className={styles.logoText}>Fox Harness</span>
           </div>
         )}
         {!collapsed && (
@@ -250,18 +260,24 @@ export function Sidebar({
             </button>
           ))}
 
-        {collapsed ? (
-          <Tooltip label="Cấu hình">
-            <button type="button" className={`${styles.settingsTrigger} ${styles.settingsTriggerCollapsed}`} aria-label="Cấu hình" onClick={onOpenSettings}>
-              <Settings size={16} aria-hidden="true" />
+        {isAdmin &&
+          (collapsed ? (
+            <Tooltip label="Cấu hình">
+              <button
+                type="button"
+                className={`${styles.settingsTrigger} ${styles.settingsTriggerCollapsed}`}
+                aria-label="Cấu hình"
+                onClick={onOpenPluginSettings}
+              >
+                <KeyRound size={16} aria-hidden="true" />
+              </button>
+            </Tooltip>
+          ) : (
+            <button type="button" className={styles.settingsTrigger} onClick={onOpenPluginSettings}>
+              <KeyRound size={16} aria-hidden="true" />
+              <span className={styles.settingsLabel}>Cấu hình</span>
             </button>
-          </Tooltip>
-        ) : (
-          <button type="button" className={styles.settingsTrigger} onClick={onOpenSettings}>
-            <Settings size={16} aria-hidden="true" />
-            <span className={styles.settingsLabel}>Cấu hình</span>
-          </button>
-        )}
+          ))}
       </div>
 
       <SearchModal open={searchOpen} onClose={() => setSearchOpen(false)} sessions={sessions} onSelectSession={onSelectSession} />

@@ -7,7 +7,7 @@ Backend framework cho AI agent, build trên [`@deepseek-ai/cordis`](https://www.
 - **Agent loop** có 3 driver: `default` (ReAct), `planner-critic`, và `rlm` (persistent RLM/IPython được chuyển từ `data-agent`).
 - **3 giao thức API dùng chung 1 core**: REST, WebSocket (stream từng bước xử lý real-time), gRPC (unary + server-streaming).
 - **Web UI React** đầy đủ: sidebar lịch sử hội thoại (resume lại session cũ), stream real-time theo từng bước, UI riêng cho từng loại tool-call (kiến trúc slot-registry mở rộng được).
-- **Tool registry** mở rộng được — sẵn 2 tool thật: tìm kiếm web (DuckDuckGo, không cần API key) và tra cứu dữ liệu đã lưu.
+- **Tool registry** mở rộng được — sẵn 2 tool thật: tìm kiếm web (Serper.dev nếu đã cấu hình — qua UI "Cấu hình plugin" admin-only, lưu Postgres, đổi được không cần restart, hoặc qua `SERPER_API_KEY` env làm mặc định ban đầu — tự động dự phòng DuckDuckGo khi lỗi/hết hạn mức/chưa cấu hình) và tra cứu dữ liệu đã lưu.
 - **Subagent registry** — uỷ thác 1 task cho 1 lượt chạy tách biệt (vd. viết báo cáo).
 - **Skill registry** — nạp hướng dẫn tĩnh vào system prompt có điều kiện, dựa trên từ khoá khớp tin nhắn người dùng (khác tool: không phải hàm model tự gọi).
 - **Tài khoản người dùng thật** (đăng ký/đăng nhập, mật khẩu hash `scrypt`, token bearer, vai trò admin/user, admin panel quản lý user) — thay thế hoàn toàn API key dùng chung cũ. Giới hạn kích thước request, retry cho lỗi mạng thoáng qua, TTL cho session, retention tự dọn dữ liệu cũ.

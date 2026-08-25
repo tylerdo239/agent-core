@@ -32,15 +32,15 @@ import { useEffect, useRef, useState } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import { RenderSlot } from '@agent-core/ui-react'
 import type { ToolViewOwnerProps } from '@agent-core/ui-slots'
-import { Modal, Pill, StateDot, ToastContainer, useToasts } from '@agent-core/ui-primitives'
+import { ToastContainer, useToasts } from '@agent-core/ui-primitives'
 import { AppFrame } from '@agent-core/ui-layout'
 import { AdminUsersPanel, clearAuthState, loadAuthState, LoginForm, saveAuthState, SignupForm, type AuthState } from '@agent-core/ui-auth'
 import { PluginInventoryPanel } from '@agent-core/ui-plugin-inventory'
 import { cacheSessionTitle, fetchSessionHistory, Sidebar, type SessionSummary } from '@agent-core/ui-sidebar'
 import { Composer, EmptyState, GenericToolCard, HumanDecision, MessageBubble, StreamingRow, ToolRow } from '@agent-core/ui-conversation'
-import { defaultSettings, loadSettings, saveSettings, SettingsForm, type Settings } from '@agent-core/ui-settings-general'
+import { loadSettings, type Settings } from '@agent-core/ui-settings-general'
+import { PluginSettingsPanel } from '@agent-core/ui-plugin-settings'
 import type { WorkspaceHeaderPanelProps, SkillComposerExtraProps } from '@agent-core/ui-rlm-workspace'
-import styles from './App.module.css'
 import { createClientContext } from './client-context.ts'
 
 type ToolUiHint = ToolViewOwnerProps['toolUi']
@@ -242,10 +242,14 @@ export function App() {
   const [items, setItems] = useState<ChatItem[]>([])
   const [turnInFlight, setTurnInFlight] = useState(false)
   const [composerText, setComposerText] = useState('')
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [settingsDraft, setSettingsDraft] = useState<Settings>(settings)
   const [adminPanelOpen, setAdminPanelOpen] = useState(false)
   const [pluginInventoryOpen, setPluginInventoryOpen] = useState(false)
+  // Thay thế hoàn toàn nút "Cấu hình" (restUrl/wsUrl) cũ — web UI giờ luôn
+  // trỏ 1 server cố định (defaultSettings() tính theo location.hostname,
+  // đúng deployment Docker Compose thật), không cần UI đổi tay. Đổi hẳn
+  // sang panel cấu hình PLUGIN (vd. serperApiKey), admin-only, lưu DB thay
+  // vì .env — xem packages/ui-plugin-settings.
+  const [pluginSettingsOpen, setPluginSettingsOpen] = useState(false)
   // Module auth (Phase 24): server GET /sessions là nguồn sự thật, KHÔNG
   // phải localStorage nữa (loadSessionHistory() cũ) — xem
   // packages/ui-sidebar/src/sessionHistory.ts.
@@ -366,6 +370,14 @@ export function App() {
   // Session hiện tại đã có tin nhắn user đầu tiên chưa — chỉ cập nhật title
   // lịch sử ĐÚNG 1 LẦN cho câu hỏi đầu tiên, không ghi đè bằng câu hỏi sau.
   const titledSessionIdsRef = useRef<Set<string>>(new Set())
+  // Follow-up (2026-08): bug thật user báo — mở app hoặc bấm "Chat mới" rồi
+  // KHÔNG gõ gì, F5 lại thấy 1 session rỗng tự lưu vào history. Nguyên nhân:
+  // create_session cũ gửi NGAY lúc WS mở (connect()), nên server đã có 1
+  // session thật (GET /sessions trả về) dù chưa hề có tin nhắn nào. Sửa:
+  // hoãn create_session tới đúng lúc handleSubmit() gửi tin nhắn ĐẦU TIÊN —
+  // 2 ref dưới đây giữ tạm dữ liệu cần trong lúc chờ session_created trả về.
+  const pendingFirstMessageRef = useRef<{ text: string; skill?: string } | null>(null)
+  const pendingSessionDriverRef = useRef<'default' | 'rlm'>('default')
 
   // Phase 9.4: mount cây Cordis client 1 lần khi app khởi động — xem
   // client-context.ts cho lý do PHẢI async (ctx.slots chưa sẵn sàng đồng bộ
@@ -400,10 +412,6 @@ export function App() {
     messagesEndRef.current?.scrollIntoView({ block: 'end' })
   }, [items])
 
-  useEffect(() => {
-    if (settingsOpen) setSettingsDraft(settings)
-  }, [settingsOpen, settings])
-
   // `resumeSessionId`: khi có, KHÔNG gửi 'create_session' — session đó ĐÃ
   // tồn tại server-side (miễn còn trong TTL trượt của session-registry, xem
   // Phase 8.1). WS protocol không có message riêng "resume" — `send_message`
@@ -426,18 +434,20 @@ export function App() {
     setSessionId(resumeSessionId ?? null)
     sessionIdRef.current = resumeSessionId ?? null
     activeToolItemIdRef.current = null
+    pendingFirstMessageRef.current = null
+    pendingSessionDriverRef.current = newSessionDriver
 
     const url = `${current.wsUrl}/?token=${encodeURIComponent(token)}`
     const ws = new WebSocket(url)
     wsRef.current = ws
 
+    // Follow-up (2026-08): KHÔNG còn gửi create_session ngay lúc mở WS cho
+    // chat MỚI nữa (xem ghi chú pendingFirstMessageRef ở khai báo ref) —
+    // session thật chỉ tạo lúc handleSubmit() gửi tin nhắn đầu tiên. Ở đây
+    // chỉ cần đánh dấu đã kết nối (đúng cho cả 2 trường hợp resume/mới).
     ws.addEventListener('open', () => {
       if (wsRef.current !== ws) return
-      if (resumeSessionId) {
-        setStatus('connected')
-        return
-      }
-      ws.send(JSON.stringify(createSessionCommand(newSessionDriver)))
+      setStatus('connected')
     })
 
     ws.addEventListener('message', (event) => {
@@ -450,13 +460,26 @@ export function App() {
         if (auth) rememberActiveSession(auth.user.id, msg.id)
         setSessionDriver(msg.driver)
         setStatus('connected')
-        setItems((prev) => [...prev, { kind: 'system', id: genId(), text: `Session mới: ${msg.id} (driver: ${msg.driver})`, ts: Date.now() }])
+        // Follow-up (2026-08): create_session giờ CHỈ gửi từ handleSubmit()
+        // lúc có tin nhắn đầu tiên thật đang chờ (pendingFirstMessageRef) —
+        // session vừa tạo LUÔN sắp có nội dung thật ngay sau đây, không còn
+        // ca "tạo xong rồi bỏ đó" nữa (không còn cần bubble hệ thống báo
+        // "Session mới: <id>" — cũng đúng tinh thần bỏ số hiệu session khỏi
+        // UI, xem header bên dưới). Tính title thật ngay ở đây thay vì
+        // "Cuộc trò chuyện mới" tạm rồi ghi đè sau, chỉ setSessions() 1 lần.
+        const pending = pendingFirstMessageRef.current
+        const title = pending ? cacheSessionTitle(msg.id, pending.text) : 'Cuộc trò chuyện mới'
+        if (pending) titledSessionIdsRef.current.add(msg.id)
         // Thêm optimistic lên ĐẦU list — server đã gắn ownerId thật lúc tạo
         // (create_session qua WS truyền identity đã verify), lần fetch
         // GET /sessions tiếp theo sẽ thấy đúng session này; thêm ngay ở đây
         // để UI phản hồi tức thời, không đợi round-trip fetch lại.
-        setSessions((prev) => [{ id: msg.id, createdAt: Date.now(), title: 'Cuộc trò chuyện mới', driver: msg.driver }, ...prev])
+        setSessions((prev) => [{ id: msg.id, createdAt: Date.now(), title, driver: msg.driver }, ...prev])
         if (msg.driver === 'rlm') refreshWorkspaceFiles(msg.id)
+        if (pending) {
+          pendingFirstMessageRef.current = null
+          ws.send(JSON.stringify({ type: 'send_message', sessionId: msg.id, message: pending.text, selectedSkill: pending.skill }))
+        }
         return
       }
 
@@ -801,7 +824,7 @@ export function App() {
   function sendUserMessage(rawText: string, controlItemId?: string) {
     const text = rawText.trim()
     const ws = wsRef.current
-    if (!text || !sessionId || turnInFlight || !ws || ws.readyState !== WebSocket.OPEN) return false
+    if (!text || turnInFlight || !ws || ws.readyState !== WebSocket.OPEN) return false
 
     setItems((prev) => [
       ...prev.map((item) =>
@@ -811,6 +834,17 @@ export function App() {
     ])
     setComposerText('')
     setTurnInFlight(true)
+
+    if (!sessionId) {
+      // Chưa từng gửi tin nào trong chat này -> chưa có session server-side
+      // nào cả (create_session bị hoãn tới đúng đây — xem connect() và
+      // session_created handler). Nhớ tạm tin nhắn, gửi create_session;
+      // session_created handler sẽ tự gửi tiếp send_message khi có id thật.
+      pendingFirstMessageRef.current = { text, skill: selectedSkill || undefined }
+      ws.send(JSON.stringify(createSessionCommand(pendingSessionDriverRef.current)))
+      return true
+    }
+
     // Chỉ đặt title 1 LẦN cho câu hỏi ĐẦU TIÊN của session (Set tránh ghi đè
     // bằng câu hỏi sau, và tránh ghi đè session đã resume có title thật).
     if (!titledSessionIdsRef.current.has(sessionId)) {
@@ -832,18 +866,6 @@ export function App() {
     sendUserMessage(composerText)
   }
 
-  function handleSettingsSubmit(event: React.FormEvent) {
-    event.preventDefault()
-    const next: Settings = {
-      restUrl: settingsDraft.restUrl.trim() || defaultSettings().restUrl,
-      wsUrl: settingsDraft.wsUrl.trim() || defaultSettings().wsUrl,
-    }
-    saveSettings(next)
-    setSettings(next)
-    setSettingsOpen(false)
-    if (auth) startNewChat(next, auth.token)
-  }
-
   function handleLogout() {
     wsRef.current?.close()
     wsRef.current = null
@@ -859,10 +881,10 @@ export function App() {
   const lastItem = items[items.length - 1]
   const showStreamingRow = turnInFlight && !(lastItem?.kind === 'tool' && lastItem.state === 'running')
 
-  const composerEnabled = status === 'connected' && !!sessionId && !turnInFlight
-  const statusLabel =
-    status === 'connected' && sessionId ? `đã kết nối — session ${sessionId.slice(0, 8)}` : status === 'connecting' ? 'đang kết nối...' : 'mất kết nối'
-  const statusTone = status === 'connected' ? 'success' : status === 'disconnected' ? 'error' : 'neutral'
+  // Follow-up (2026-08): chat MỚI (chưa gõ gì) giờ hợp lệ để gõ/gửi dù
+  // `sessionId` còn null (session thật chỉ tạo lúc gửi — xem handleSubmit),
+  // nên composer không còn chờ sessionId nữa, chỉ cần WS đã 'connected'.
+  const composerEnabled = status === 'connected' && !turnInFlight
   const datasetPaths = new Set(workspaceDatasets.flatMap((dataset) => [dataset.path, dataset.filename].filter(Boolean) as string[]))
   const artifactPaths = new Set(workspaceArtifacts)
   const workspaceEntries = [
@@ -911,25 +933,18 @@ export function App() {
             onNewChat={() => startNewChat(settings, auth.token)}
             onNewDataSession={() => startNewChat(settings, auth.token, 'rlm')}
             onSelectSession={resumeSession}
-            onOpenSettings={() => setSettingsOpen(true)}
             isAdmin={auth.user.role === 'admin'}
             onOpenAdminPanel={() => setAdminPanelOpen(true)}
             onOpenPluginInventory={() => setPluginInventoryOpen(true)}
+            onOpenPluginSettings={() => setPluginSettingsOpen(true)}
             currentUsername={auth.user.username}
             onLogout={handleLogout}
           />
         }
-        header={
-          <>
-            <h1>agent-core</h1>
-            <div className={styles.headerActions}>
-              <Pill tone={statusTone}>
-                <StateDot variant={status} />
-                {statusLabel}
-              </Pill>
-            </div>
-          </>
-        }
+        // Follow-up (2026-08), lần 2: xoá HẲN header (trước đó chỉ bỏ tiêu đề
+        // "agent-core" + số hiệu session, còn giữ tag trạng thái kết nối —
+        // user yêu cầu bỏ luôn cả tag đó). AppFrame không render `<header>`
+        // gì cả khi không truyền `header` (xem ghi chú AppFrameProps.header).
         // UI redesign (follow-up): workspace bar từng nhét CHUNG vào `header`
         // ở trên — nhưng `.header` (AppFrame.module.css) là flex row
         // `justify-content: space-between` DÀNH ĐÚNG cho 2 phần tử (tiêu đề +
@@ -1032,10 +1047,6 @@ export function App() {
         <div ref={messagesEndRef} />
       </AppFrame>
 
-      <Modal open={settingsOpen} onClose={() => setSettingsOpen(false)}>
-        <SettingsForm draft={settingsDraft} onChange={setSettingsDraft} onSubmit={handleSettingsSubmit} onCancel={() => setSettingsOpen(false)} />
-      </Modal>
-
       <AdminUsersPanel
         open={adminPanelOpen}
         onClose={() => setAdminPanelOpen(false)}
@@ -1047,6 +1058,13 @@ export function App() {
       <PluginInventoryPanel
         open={pluginInventoryOpen}
         onClose={() => setPluginInventoryOpen(false)}
+        restUrl={settings.restUrl}
+        token={auth.token}
+      />
+
+      <PluginSettingsPanel
+        open={pluginSettingsOpen}
+        onClose={() => setPluginSettingsOpen(false)}
         restUrl={settings.restUrl}
         token={auth.token}
       />
