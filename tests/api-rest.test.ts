@@ -20,6 +20,7 @@ import * as agentRunner from '../bundles/providers/agent-runner/index.ts'
 import * as sessionRegistry from '../bundles/providers/session-registry/index.ts'
 import * as authUsers from '../bundles/providers/auth-users/index.ts'
 import * as pluginInventory from '../bundles/providers/plugin-inventory/index.ts'
+import * as pluginConfigPostgres from '../bundles/providers/plugin-config-postgres/index.ts'
 import * as apiRest from '../bundles/adapters/api-rest/index.ts'
 import { LlmCompleteOptions, LlmCompletion, LlmMessage, LlmService } from '../seams/llm.ts'
 import { WorkspaceService, type WorkspaceSnapshot } from '../seams/workspace.ts'
@@ -149,9 +150,12 @@ async function bootApp(databaseUrl: string, port = 0, extraConfig: Partial<apiRe
   root.plugin(loopDefault)
   root.plugin(agentRunner)
   root.plugin(sessionRegistry)
-  root.plugin(permissionRbac, { rules: { admin: ['admin:users:manage', 'admin:plugins:view'] } })
+  root.plugin(permissionRbac, {
+    rules: { admin: ['admin:users:manage', 'admin:plugins:view', 'admin:plugins:configure'] },
+  })
   root.plugin(authUsers, { connectionString: databaseUrl })
   root.plugin(pluginInventory, [{ name: 'tool-registry', category: 'provider', fiber: { state: 2 } }])
+  root.plugin(pluginConfigPostgres, { connectionString: databaseUrl })
   root.plugin(fakeWorkspace)
   const config: apiRest.ApiRest.Config = { port, ...extraConfig }
   const fiber = root.plugin(apiRest, config)
@@ -388,6 +392,14 @@ describe('Phase 6.1 — REST API', () => {
       expect(preflight.headers.get('access-control-allow-origin')).toBe('*')
       expect(preflight.headers.get('access-control-allow-headers')).toContain('authorization')
       expect(preflight.headers.get('access-control-allow-headers')).toContain('x-file-name')
+      // Bug thật đã gặp: PUT /plugin-settings/:key (Phase 34) hoạt động đúng
+      // qua curl (không enforce CORS) nhưng bị MỌI trình duyệt thật chặn ở
+      // bước preflight vì method PUT không có trong danh sách -- server
+      // KHÔNG log gì (request thật chưa bao giờ tới nơi), dễ tưởng nhầm là
+      // lỗi backend. Assert danh sách đủ mọi method route thật đang dùng để
+      // regression này không lặp lại khi có route mới.
+      const allowedMethods = (preflight.headers.get('access-control-allow-methods') ?? '').split(',').map((m) => m.trim())
+      expect(allowedMethods).toEqual(expect.arrayContaining(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']))
 
       const health = await fetch(`${base}/health`)
       expect(health.headers.get('access-control-allow-origin')).toBe('*')
@@ -506,6 +518,96 @@ describe('Phase 6.1 — REST API', () => {
       expect(asAdmin.status).toBe(200)
       expect(await asAdmin.json()).toEqual({
         plugins: [{ name: 'tool-registry', category: 'provider', state: 'active' }],
+      })
+    })
+  })
+
+  it('/plugin-settings: chỉ admin gọi được, PUT/GET/DELETE hoạt động đúng, không lộ giá trị thật qua GET', async () => {
+    await withFreshSchemaUrl(async (databaseUrl) => {
+      const { fiber, config } = await bootApp(databaseUrl)
+      cleanup = () => fiber.dispose()
+      const base = `http://127.0.0.1:${config.port}`
+
+      const alice = await signupToken(base, 'alice') // admin
+      const bob = await signupToken(base, 'bob') // user
+
+      const forbiddenGet = await fetch(`${base}/plugin-settings`, { headers: { authorization: `Bearer ${bob.token}` } })
+      expect(forbiddenGet.status).toBe(403)
+      const forbiddenPut = await fetch(`${base}/plugin-settings/serperApiKey`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${bob.token}` },
+        body: JSON.stringify({ value: 'x' }),
+      })
+      expect(forbiddenPut.status).toBe(403)
+
+      const emptyList = await fetch(`${base}/plugin-settings`, { headers: { authorization: `Bearer ${alice.token}` } })
+      expect(emptyList.status).toBe(200)
+      expect(await emptyList.json()).toEqual({ configured: [] })
+
+      const putRes = await fetch(`${base}/plugin-settings/serperApiKey`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${alice.token}` },
+        body: JSON.stringify({ value: 'real-secret-key' }),
+      })
+      expect(putRes.status).toBe(200)
+      expect(await putRes.json()).toEqual({ key: 'serperApiKey', configured: true })
+
+      const afterPut = await fetch(`${base}/plugin-settings`, { headers: { authorization: `Bearer ${alice.token}` } })
+      const afterPutBody = await afterPut.json()
+      expect(afterPutBody).toEqual({ configured: ['serperApiKey'] })
+      // Giá trị thật (secret) không bao giờ được xuất hiện trong response GET.
+      expect(JSON.stringify(afterPutBody)).not.toContain('real-secret-key')
+
+      const emptyValue = await fetch(`${base}/plugin-settings/serperApiKey`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${alice.token}` },
+        body: JSON.stringify({ value: '' }),
+      })
+      expect(emptyValue.status).toBe(400)
+
+      const deleteRes = await fetch(`${base}/plugin-settings/serperApiKey`, {
+        method: 'DELETE',
+        headers: { authorization: `Bearer ${alice.token}` },
+      })
+      expect(deleteRes.status).toBe(204)
+
+      const afterDelete = await fetch(`${base}/plugin-settings`, { headers: { authorization: `Bearer ${alice.token}` } })
+      expect(await afterDelete.json()).toEqual({ configured: [] })
+    })
+  })
+
+  // Follow-up (2026-08) — third-party extensibility: tool TỰ khai
+  // `configSchema` (seams/tools.ts, ToolDefinition.configSchema) ngay tại
+  // `ctx.tools.add()` của chính nó, KHÔNG cần đăng ký gì thêm ở tầng
+  // api-rest hay pluginInventory -- verify đúng bằng cách add() 1 fake tool
+  // sau `bootApp()` (mô phỏng đúng cách 1 plugin bên thứ 3 nạp qua
+  // EXTRA_PLUGINS sẽ làm) và xác nhận nó xuất hiện qua endpoint không cần
+  // sửa gì ở api-rest.
+  it('/tool-config-schema: chỉ admin gọi được, trả đúng configSchema tool tự khai (kể cả tool add() SAU khi mount)', async () => {
+    await withFreshSchemaUrl(async (databaseUrl) => {
+      const { root, fiber, config } = await bootApp(databaseUrl)
+      cleanup = () => fiber.dispose()
+      const base = `http://127.0.0.1:${config.port}`
+
+      root.tools.add({
+        name: 'fake_third_party_tool',
+        description: 'mô phỏng tool bên thứ 3 nạp qua EXTRA_PLUGINS',
+        async handler(args) { return args },
+        configSchema: [{ key: 'fakeApiKey', label: 'Fake API key', description: 'mô tả test' }],
+      })
+      // Tool KHÔNG khai configSchema -- không được xuất hiện trong response.
+      root.tools.add({ name: 'no_config_tool', description: 'không cần cấu hình gì', async handler(args) { return args } })
+
+      const alice = await signupToken(base, 'alice') // admin
+      const bob = await signupToken(base, 'bob') // user
+
+      const forbidden = await fetch(`${base}/tool-config-schema`, { headers: { authorization: `Bearer ${bob.token}` } })
+      expect(forbidden.status).toBe(403)
+
+      const asAdmin = await fetch(`${base}/tool-config-schema`, { headers: { authorization: `Bearer ${alice.token}` } })
+      expect(asAdmin.status).toBe(200)
+      expect(await asAdmin.json()).toEqual({
+        entries: [{ toolName: 'fake_third_party_tool', key: 'fakeApiKey', label: 'Fake API key', description: 'mô tả test' }],
       })
     })
   })

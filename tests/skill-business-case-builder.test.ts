@@ -83,4 +83,33 @@ describe('skill business-case-builder — discover thật qua skill-filesystem',
     const notMatched = root.skills.match('Hôm nay thời tiết thế nào?')
     expect(notMatched.map((s) => s.name)).not.toContain('business-case-builder')
   })
+
+  // Follow-up thứ 2: user báo lại thật — "Phân tích tình hình kinh doanh của
+  // một quán cà phê nhỏ tại Đà Nẵng" KHÔNG kích hoạt skill (xác nhận thật
+  // qua turn thật trên server đang chạy: model bịa "kết hợp dữ liệu thực
+  // tế" nhưng chưa từng gọi web_search — vì trigger "phân tích kinh doanh"
+  // yêu cầu đúng 2 từ liền kề, "tình hình" chen giữa làm substring không
+  // khớp). Mở rộng triggers phủ nhiều cách diễn đạt tự nhiên hơn — triggers
+  // vẫn là substring match (seams/skill.ts + skill-registry.ts, không có gì
+  // ngữ nghĩa/fuzzy), nên fix đúng cách là thêm nhiều cụm ngắn hay gặp, không
+  // đổi cơ chế match.
+  it('mở rộng triggers -> khớp các cách diễn đạt tự nhiên hay gặp (trước đây bị bỏ sót)', async () => {
+    const root = new Context()
+    root.plugin(skillRegistry)
+    root.plugin(skillFilesystem, { root: skillsRoot })
+    await settle()
+
+    const phrasesThatMustMatch = [
+      'Phân tích tình hình kinh doanh của một quán cà phê nhỏ tại Đà Nẵng', // câu thật user báo lại bị bỏ sót
+      'Đánh giá hiện trạng kinh doanh của công ty tôi',
+      'Cho tôi báo cáo kinh doanh quý này',
+      'Lập kế hoạch phát triển kinh doanh cho quý tới',
+      'Chiến lược kinh doanh cho sản phẩm mới',
+      'Tôi muốn khởi nghiệp trong lĩnh vực F&B',
+    ]
+    for (const phrase of phrasesThatMustMatch) {
+      const matched = root.skills.match(phrase)
+      expect(matched.map((s) => s.name), `câu "${phrase}" phải kích hoạt skill`).toContain('business-case-builder')
+    }
+  })
 })

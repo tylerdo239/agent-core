@@ -25,6 +25,9 @@
 //   prune — KHÔNG set STORAGE_RETENTION_DAYS = không prune gì).
 // Audit fix (đối chiếu docs/agent-core-master-summary.md): WEB_SEARCH_TIMEOUT_MS
 //   (tool-web-search fetch() timeout — mặc định 10s, trước đây không có gì).
+// SERPER_API_KEY (tuỳ chọn) — tool-web-search dùng Serper.dev làm provider
+//   CHÍNH, DuckDuckGo tự dự phòng khi Serper lỗi/hết hạn mức. Không set =
+//   chạy y hệt trước đây (DuckDuckGo only).
 // EXTRA_PLUGINS, EXTRA_PLUGIN_CONFIG__<name> (tuỳ chọn — bên thứ ba thêm
 //   plugin KHÔNG cần sửa file này, xem docs/agent-core-adding-plugins.md).
 //
@@ -71,6 +74,7 @@ import * as toolDatabaseQuery from '../bundles/tools/tool-database-query/index.t
 import * as toolWebSearch from '../bundles/tools/tool-web-search/index.ts'
 import * as sessionRegistry from '../bundles/providers/session-registry/index.ts'
 import * as authUsers from '../bundles/providers/auth-users/index.ts'
+import * as pluginConfigPostgres from '../bundles/providers/plugin-config-postgres/index.ts'
 import * as memoryTencentdb from '../bundles/providers/memory-tencentdb/index.ts'
 import * as apiRest from '../bundles/adapters/api-rest/index.ts'
 import * as apiWs from '../bundles/adapters/api-ws/index.ts'
@@ -232,8 +236,20 @@ async function main() {
   const rlmWorkerPath = path.join(rlmBundlePythonRoot, 'worker.py')
   const rlmSandboxProvider = process.env.RLM_SANDBOX_PROVIDER ?? 'local'
 
+  // Gap thật phát hiện lúc verify E2E tính năng Serper (không phải giả
+  // thuyết): Cordis đánh số level NGƯỢC trực giác thường gặp — SỐ CÀNG CAO
+  // càng verbose (error=0, info=1, warn=2, debug=3; xem node_modules/
+  // @deepseek-ai/cordis/lib/index.js Logger._method — export message bị
+  // BỎ QUA nếu `configuredLevel < messageLevel`). Mặc định cũ `LOG_LEVEL ?? 1`
+  // vô tình ẩn TOÀN BỘ `.warn()` trong cả repo (auth-users/plugin-config-
+  // postgres retry warning, tool-web-search fallback warning...) — verify
+  // trực tiếp: thêm log tạm ở tool-web-search, `.info()` hiện ra nhưng
+  // `.warn()` bên cạnh nó (cùng chỗ, cùng lúc) hoàn toàn im lặng cho tới khi
+  // đổi default này lên 2. Không phải bug riêng của Serper — sửa 1 lần ở
+  // đây cho đúng ý định BAN ĐẦU của mọi `.warn()` đã viết trong dự án
+  // (cảnh báo vận hành cần thấy được, không phải noise nên ẩn).
   const exporter = {
-    levels: { default: Number(process.env.LOG_LEVEL ?? 1) },
+    levels: { default: Number(process.env.LOG_LEVEL ?? 2) },
     export: (message: Parameters<typeof Logger.format>[1]) => {
       const line = `[${message.name}] ${Logger.format(exporter, message)}`
       if (message.type === 'error') console.error(line)
@@ -279,9 +295,12 @@ async function main() {
   // "admin" (role, không phải actor tool) -> action 'admin:users:manage':
   // gate cho GET/PATCH/DELETE /users trong api-rest — tái dùng nguyên seam
   // RBAC đã có, không cần seam mới cho việc phân quyền admin. Cùng role
-  // 'admin' -> thêm 'admin:plugins:view' cho GET /plugins (ctx.pluginInventory).
+  // 'admin' -> thêm 'admin:plugins:view' cho GET /plugins (ctx.pluginInventory),
+  // 'admin:plugins:configure' cho GET/PUT/DELETE /plugin-settings (ctx.pluginConfig)
+  // — tách riêng action view vs configure dù cùng role, để sau này có thể
+  // cấp lẻ (vd. 1 role chỉ xem, không sửa được secret).
   mount('permission-rbac', 'provider', permissionRbac, {
-    rules: { 'web-search': ['search'], admin: ['admin:users:manage', 'admin:plugins:view'] },
+    rules: { 'web-search': ['search'], admin: ['admin:users:manage', 'admin:plugins:view', 'admin:plugins:configure'] },
   })
   mount('llm-qwen', 'provider', llmQwen, {
     apiKey: openaiApiKey,
@@ -334,6 +353,10 @@ async function main() {
     sweepIntervalMs: optionalNumber('SESSION_SWEEP_INTERVAL_MS'),
   })
   mount('auth-users', 'provider', authUsers, { connectionString: databaseUrl })
+  // ctx.pluginConfig — cấu hình plugin admin đổi được qua UI (không cần
+  // restart), vd. serperApiKey cho tool-web-search. Cùng DATABASE_URL đã
+  // bắt buộc cho ctx.auth, không thêm biến môi trường bắt buộc mới.
+  mount('plugin-config-postgres', 'provider', pluginConfigPostgres, { connectionString: databaseUrl })
 
   // Module memory (ctx.memory, TÙY CHỌN) — xem chú thích tại
   // tryBootstrapMemoryCoreAdmin ở trên. Không set MEMORY_CORE_URL = bỏ qua
@@ -412,6 +435,11 @@ async function main() {
     // Audit fix: trước đây không có timeout, fetch() có thể treo cả turn vô
     // thời hạn nếu DuckDuckGo không phản hồi — xem bundles/tools/tool-web-search.
     timeoutMs: optionalNumber('WEB_SEARCH_TIMEOUT_MS'),
+    // 2026-08: Serper.dev làm provider CHÍNH (chất lượng cao hơn hẳn scrape
+    // HTML), DuckDuckGo tự động dự phòng khi Serper lỗi/hết hạn mức — xem
+    // chú thích đầy đủ tại bundles/tools/tool-web-search/index.ts. Không set
+    // SERPER_API_KEY = bỏ qua Serper hoàn toàn, chạy y hệt trước đây.
+    serperApiKey: process.env.SERPER_API_KEY,
   })
 
   // EXTRA_PLUGINS (docs/agent-core-adding-plugins.md) — plugin bên thứ ba,
