@@ -65,6 +65,16 @@ services:
       args:
         AGENT_UID: "${AGENT_UID:-1019}"
         AGENT_GID: "${AGENT_GID:-1020}"
+        # Follow-up (2026-08) — deploy VPS domain riêng: rỗng (mặc định) =
+        # KHÔNG đổi hành vi cũ (web UI tự suy luận restUrl/wsUrl từ
+        # location.hostname, đúng deployment 1-host). Chỉ cần set khi app và
+        # API sống trên 2 domain KHÁC NHAU (vd. app-harness.onebot.meobeo.ai
+        # vs api-harness.onebot.meobeo.ai) — xem packages/ui-settings-general/
+        # src/settings.ts. Đổi giá trị 2 biến này ở .env rồi PHẢI
+        # `docker compose build agent-core` lại (bake lúc build, không phải
+        # runtime — env_file/environment bên dưới không có tác dụng ở đây).
+        VITE_REST_URL: "${VITE_REST_URL:-}"
+        VITE_WS_URL: "${VITE_WS_URL:-}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -98,6 +108,25 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  # Follow-up (2026-08) — deploy VPS domain riêng: TUỲ CHỌN, chỉ cần khi
+  # muốn REST (agent-core:8787) + WS (agent-core:8788) cùng lộ ra qua ĐÚNG 1
+  # port công khai (vd. api-harness.onebot.meobeo.ai trỏ vào 1 port duy nhất
+  # của VPS) — xem deploy/api-gateway.conf. KHÔNG tự làm TLS (nghe HTTP
+  # thường) — TLS/reverse proxy domain đã xác nhận nằm Ở NƠI KHÁC (ngoài
+  # phạm vi compose này), tự trỏ thẳng vào port PORT_API_PUBLIC của VPS.
+  # Deployment 1-host hiện tại (không set PORT_API_PUBLIC) vẫn dùng thẳng
+  # PORT_REST/PORT_WS như cũ, service này không bắt buộc phải chạy.
+  api-gateway:
+    image: nginx:1.27-alpine
+    depends_on:
+      agent-core:
+        condition: service_healthy
+    volumes:
+      - ./deploy/api-gateway.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "${PORT_API_PUBLIC:-4098}:80"
+    restart: unless-stopped
 
 volumes:
   agent-core-data:

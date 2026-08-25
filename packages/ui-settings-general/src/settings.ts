@@ -20,12 +20,29 @@
 // default tính theo `location.hostname` (khớp deployment Docker Compose
 // thật), giá trị localStorage cũ (nếu có) trở thành dữ liệu mồ côi vô hại,
 // không cần dọn chủ động.
+//
+// Follow-up (2026-08) — deploy VPS domain riêng: giả định "REST/WS sống
+// CÙNG hostname với web app, chỉ khác port" ở trên KHÔNG còn đúng khi app
+// (vd. app-harness.onebot.meobeo.ai) và API (vd. api-harness.onebot.meobeo.ai)
+// là 2 SUBDOMAIN khác nhau hoàn toàn (không chỉ khác port). `location.
+// hostname` lúc đó sẽ luôn là domain của APP, không phải domain của API —
+// không có cách nào suy ra domain API chỉ từ `location`. Thêm 2 biến build-
+// time `VITE_REST_URL`/`VITE_WS_URL` (Vite tự inject `import.meta.env.VITE_*`
+// lúc `npm run build:web`, xem Dockerfile stage `build-web` + docker-
+// compose.yml `agent-core.build.args`) — có set thì DÙNG THẲNG, không set
+// (mặc định, đúng hành vi cũ) thì rơi về suy luận từ `location.hostname` như
+// trước (deployment 1-host, backward compatible 100%).
 export interface Settings {
   restUrl: string
   wsUrl: string
 }
 
 export function defaultSettings(): Settings {
+  const envRestUrl = import.meta.env.VITE_REST_URL
+  const envWsUrl = import.meta.env.VITE_WS_URL
+  if (envRestUrl && envWsUrl) {
+    return { restUrl: envRestUrl, wsUrl: envWsUrl }
+  }
   const proto = location.protocol === 'https:' ? 'https:' : 'http:'
   const wsProto = proto === 'https:' ? 'wss:' : 'ws:'
   return {
