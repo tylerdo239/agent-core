@@ -165,8 +165,15 @@ export class Session {
      * check, không tin dữ liệu client tự khai cho chính danh tính của họ).
      */
     public ownerId?: string,
+    /** Optional project scope. Sessions in one project share its data sources. */
+    public projectId?: string,
   ) {
     if (systemPrompt) this.history.push({ role: 'system', content: systemPrompt })
+  }
+
+  /** Workspace ownership is project-first while legacy sessions stay valid. */
+  get workspaceId(): string {
+    return this.projectId ? `project:${this.projectId}` : this.id
   }
 
   private trimHistory() {
@@ -222,7 +229,6 @@ export class Session {
     const rest = hasLeadingSystem ? this.history.slice(1) : this.history
     return [merged, ...rest]
   }
-
   recordAssistant(content: string, toolCall?: LlmToolCall) {
     const label = toolCall ? `[tool_call:${toolCall.name}(${JSON.stringify(toolCall.args)})] ` : ''
     this.history.push({ role: 'assistant', content: label + content })

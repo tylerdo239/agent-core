@@ -82,6 +82,7 @@ import * as toolDatabaseQuery from '../bundles/tools/tool-database-query/index.t
 import * as toolWebSearch from '../bundles/tools/tool-web-search/index.ts'
 import * as toolSkill from '../bundles/tools/tool-skill/index.ts'
 import * as sessionRegistry from '../bundles/providers/session-registry/index.ts'
+import * as projectRegistry from '../bundles/providers/project-registry/index.ts'
 import * as authUsers from '../bundles/providers/auth-users/index.ts'
 import * as pluginConfigPostgres from '../bundles/providers/plugin-config-postgres/index.ts'
 import * as memoryTencentdb from '../bundles/providers/memory-tencentdb/index.ts'
@@ -385,6 +386,7 @@ async function main() {
     ttlMs: optionalNumber('SESSION_TTL_MS'),
     sweepIntervalMs: optionalNumber('SESSION_SWEEP_INTERVAL_MS'),
   })
+  mount('project-registry', 'provider', projectRegistry)
   mount('auth-users', 'provider', authUsers, { connectionString: databaseUrl })
   // ctx.pluginConfig — cấu hình plugin admin đổi được qua UI (không cần
   // restart), vd. serperApiKey cho tool-web-search. Cùng DATABASE_URL đã
@@ -459,7 +461,9 @@ async function main() {
       memory: process.env.RLM_DOCKER_MEMORY,
       cpus: optionalNumber('RLM_DOCKER_CPUS'),
       pidsLimit: optionalNumber('RLM_DOCKER_PIDS_LIMIT'),
-      removeWorkspaceVolumeOnClose: optionalBoolean('RLM_DOCKER_REMOVE_VOLUME_ON_CLOSE') ?? true,
+      // Project workspaces are shared by multiple chat sessions and survive
+      // worker restarts. Destruction must be an explicit project lifecycle action.
+      removeWorkspaceVolumeOnClose: optionalBoolean('RLM_DOCKER_REMOVE_VOLUME_ON_CLOSE') ?? false,
       extraBody: openaiExtraBody ? JSON.stringify(openaiExtraBody) : undefined,
     })
   }

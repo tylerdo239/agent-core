@@ -18,7 +18,7 @@ Nó lắp các capability độc lập thành một application bằng plugin:
 Client
   │ REST / WebSocket / gRPC
   ▼
-Adapters ── auth ── sessions
+Adapters ── auth ── projects ── sessions
   │
   ▼
 AgentRunner ── chọn LoopDriver
@@ -159,35 +159,43 @@ vẫn gọi cùng `ctx.llm.complete()`.
 
 ## 4. Flow của một request
 
-### 4.1 Tạo session
+### 4.1 Tạo project và session
 
 ```text
-Client
-  → POST /sessions hoặc WS create_session
+RLM UI
+  → POST /projects
+  → POST /projects/:projectId/sessions
   → adapter kiểm tra ctx.auth
-  → ctx.sessions.create({ driver: "rlm", maxSteps })
+  → ctx.projects xác nhận project thuộc user
+  → ctx.sessions.create({ driver: "rlm", projectId, ownerId })
   → SessionRegistry tạo Session domain object trong RAM
   → trả sessionId cho client
 ```
 
-`Session` giữ history ngắn hạn và extension state của loop. Nó không phải
-memory dài hạn và không phải SQLite event history.
+Project sở hữu nguồn input và output đã publish. Session sở hữu một đoạn chat,
+history, extension state và output nháp của chính nó. Nhiều session trong cùng project có cùng
+`session.workspaceId = "project:<projectId>"`, nhưng event/memory/REPL vẫn
+được định danh bằng sessionId.
 
 ### 4.2 Upload dataset
 
 ```text
 Browser chọn file
-  → POST /sessions/:id/files (raw binary)
-  → api-rest kiểm tra auth + session + giới hạn payload
-  → ctx.workspace.writeFile(sessionId, filename, bytes)
+  → POST /projects/:id/sources (raw binary; `/files` vẫn tương thích client cũ)
+  → api-rest kiểm tra auth + project ownership + giới hạn payload
+  → ctx.workspace.writeFile("project:<id>", filename, bytes)
   → provider lưu file
   → nếu là CSV/TSV/XLSX/Parquet, cập nhật index.json
-  → GET /sessions/:id/files trả Dataset / Output / File cho UI
+  → GET /projects/:id/sources chỉ trả input cho UI
 ```
 
-Mọi đường dẫn đều được resolve bên trong workspace của session để chống path
-escape. Output RLM nên ghi vào `generated/`; frontend phân loại các file này
-là **Output**.
+Mọi đường dẫn đều được resolve bên trong workspace của project để chống path
+escape. `workspace-local` dùng `data/rlm-workspaces/projects/<projectId>`;
+`workspace-docker` dùng một named volume riêng. Input nằm trong `sources/`.
+Output RLM mặc định nằm ở `.sessions/<sessionId>/generated/`, vì vậy hai đoạn
+chat không ghi đè kết quả của nhau. `POST /projects/:id/outputs` copy một draft
+được chọn sang `outputs/` để dùng chung; file cũ trong `generated/` được hiển
+thị như output dự án legacy, không bị trộn trở lại tab Nguồn.
 
 ### 4.3 Gửi một RLM turn
 
@@ -211,7 +219,7 @@ gọi RLM trực tiếp và không tự quản lý memory.
 
 ```text
 ctx.turnMemory.snapshot(sessionId)
-ctx.workspace.inspect(sessionId)
+ctx.workspace.inspect(session.workspaceId)
 ctx.skills.get(selectedSkill) / ctx.skills.match(request)
 ctx.skillSelection.select(...) khi RLM không có selected/trigger match
 ctx.tools.list()
@@ -322,13 +330,14 @@ control; turn sau được đóng gói thành `human_response`.
 
 | State | Owner | Nơi lưu | Sống qua restart? |
 |---|---|---|---|
-| Session metadata + history | `session-registry` + `state-sqlite` | SQLite; cache RAM khi chạy | Có, được restore lúc boot |
+| Project metadata/ownership | `project-registry` + `state-sqlite` | SQLite; cache RAM khi chạy | Có |
+| Session metadata + project binding + history | `session-registry` + `state-sqlite` | SQLite; cache RAM khi chạy | Có, được restore lúc boot |
 | Run lifecycle | `agent-runner` | SQLite nếu storage persistent | Có; run đang chạy lúc restart thành `interrupted` |
 | Job/pipeline lifecycle | `job-runner` | SQLite | Có record; job chưa xong lúc restart thành `interrupted` |
 | Artifact catalog | `artifact-service` | SQLite, trỏ tới file workspace | Có nếu volume workspace còn |
 | Event/audit history | `state-sqlite` | `data/sessions.db` | Có nếu volume còn |
 | Semantic rolling memory | `memory-rolling` | `data/rlm-memory/*.json` | Có nếu volume còn |
-| Dataset/output | workspace provider | `data/rlm-workspaces/<sessionId>` hoặc Docker volume | Tuỳ provider/volume |
+| Dataset/output của project | workspace provider | `data/rlm-workspaces/projects/<projectId>` hoặc Docker volume riêng | Tuỳ provider/volume |
 | Python REPL/kernel | sandbox provider | process/container theo session | Không |
 | Prompt sections | prompt plugins | source Markdown, render trong RAM | Source có; registry rebuild lúc boot |
 | Browser session list | frontend | `localStorage` | Có trong browser |
@@ -377,6 +386,7 @@ Nếu cần biết “`ctx.X` được load ở đâu”, tìm `root.plugin(...)
 | `memory.ts` | `ctx.memory`: remember/recall xuyên session/user qua TencentDB Agent Memory (Phase 25) — KHÁC `turn-memory.ts` |
 | `turn-memory.ts` | `ctx.turnMemory`: rolling summary theo TỪNG SESSION, dùng riêng cho loop-rlm (tách khỏi `ctx.memory` lúc merge — xem `docs/agent-core-rlm-harness-merge-plan.md` mục 4.1) |
 | `permission.ts` | `ctx.permission`: policy check |
+| `projects.ts` | `ctx.projects`: project ownership/lifecycle; project sở hữu workspace dùng chung |
 | `prompt.ts` | `ctx.prompts`: đăng ký section và render prompt |
 | `sandbox.ts` | `ctx.sandbox`: runtime persistent + event protocol |
 | `sessions.ts` | `ctx.sessions`: registry session dùng chung transport |
@@ -409,13 +419,14 @@ Quy tắc: seam không import provider và không chứa logic deployment.
 | `memory-rolling` | Memory JSON có giới hạn + semantic summarization |
 | `permission-rbac` | Permission deny-by-default theo actor/action |
 | `prompt-registry` | Sort section theo order, ghép prompt, tạo version hash |
+| `project-registry` | Project RAM + persistence, owner/name/updatedAt |
 | `sandbox-ipython` | Spawn worker Python local và bridge LLM/tool/skill |
 | `sandbox-docker` | Biến thể chạy worker trong container riêng |
 | `session-registry` | Session RAM, sliding TTL và lifecycle events |
 | `skill-filesystem` | Parse `SKILL.md`, discover/read package resources |
 | `skill-registry` | Catalog skill trong RAM |
 | `skill-selection-llm` | Chọn semantic skill cho RLM khi selected/trigger không có |
-| `state-sqlite` | Event store envelope, sessions/runs/jobs/artifacts SQLite và retention sweep |
+| `state-sqlite` | Event store envelope, projects/sessions/runs/jobs/artifacts SQLite và retention sweep |
 | `subagent-manager` | Catalog subagent |
 | `tool-registry` | Catalog + execution gateway cho tool |
 | `workspace-local` | Workspace bằng filesystem local |
@@ -499,7 +510,7 @@ scikit-learn, cohort/funnel/segmentation/time-series và data-quality audit.
 
 | Folder | Vai trò |
 |---|---|
-| `api-rest` | REST health/session/message/events/skills/workspace files |
+| `api-rest` | REST health/project/session/message/events/skills/project workspace files |
 | `api-ws` | Create session, send message và live `LoopStep` stream |
 | `api-grpc` | Unary + server-streaming cho non-browser clients |
 | `api-grpc/agent.proto` | Schema gRPC |
@@ -540,6 +551,7 @@ giá holdout tách trước train để tránh leakage.
 | `packages/ui-tool-web-search` | Specialized web-search card plugin |
 | `packages/ui-primitives` | Button/modal/pill/toast/tooltip dùng chung |
 | `packages/ui-theme` | Design tokens CSS |
+| `packages/ui-projects` | Danh sách/tạo project, project detail, tab Đoạn chat/Nguồn/Output và publish draft |
 
 Frontend mới có thể bỏ reference UI và viết lại hoàn toàn, miễn giữ contract
 trong `frontend-backend-handoff.md`.
@@ -717,7 +729,8 @@ team nên đọc toàn bộ flow 4 cùng các seam/provider liên quan trước 
 - Adapter không sở hữu business logic.
 - Frontend không gửi system prompt mặc định.
 - Tool execution luôn qua `ctx.tools.invoke()` và permission phù hợp.
-- File của session luôn qua `ctx.workspace`, không tự ghép path rải rác.
+- File RLM thuộc project và luôn qua `ctx.workspace`; session chỉ mang projectId/workspaceId, không tự ghép path rải rác.
+- Mọi API project/session/file/event phải kiểm tra owner; session có projectId chỉ hợp lệ khi owner của session và project trùng nhau.
 - Memory dài hạn xuyên session/user thuộc `ctx.memory`; rolling summary theo từng session (loop-rlm) thuộc `ctx.turnMemory`; event audit thuộc `ctx.storage` — 3 khái niệm khác nhau, không dùng lẫn.
 - Mỗi session chỉ có một turn in-flight.
 - Worker stdout chỉ chứa JSON-lines protocol; log đi stderr.

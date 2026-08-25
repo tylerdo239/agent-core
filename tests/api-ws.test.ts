@@ -18,6 +18,7 @@ import * as loopRegistry from '../bundles/providers/loop-registry/index.ts'
 import * as loopDefault from '../bundles/loop-drivers/loop-default/index.ts'
 import * as agentRunner from '../bundles/providers/agent-runner/index.ts'
 import * as sessionRegistry from '../bundles/providers/session-registry/index.ts'
+import * as projectRegistry from '../bundles/providers/project-registry/index.ts'
 import * as authUsers from '../bundles/providers/auth-users/index.ts'
 import * as apiWs from '../bundles/adapters/api-ws/index.ts'
 import * as promptRegistry from '../bundles/providers/prompt-registry/index.ts'
@@ -86,6 +87,7 @@ async function bootApp(databaseUrl: string) {
   root.plugin(loopDefault)
   root.plugin(agentRunner)
   root.plugin(sessionRegistry)
+  root.plugin(projectRegistry)
   root.plugin(permissionRbac, { rules: { admin: ['admin:users:manage'] } })
   root.plugin(authUsers, { connectionString: databaseUrl })
   const config: apiWs.ApiWs.Config = { port: 0 }

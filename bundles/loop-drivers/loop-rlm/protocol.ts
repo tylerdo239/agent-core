@@ -15,6 +15,8 @@ export interface RlmSessionState {
 export interface PreparedRlmTurn {
   contractVersion: 2
   sessionId: string
+  projectId?: string
+  workspaceId: string
   runId?: string
   requestId?: string
   request: string
@@ -35,9 +37,12 @@ export interface PreparedRlmTurn {
 
 const validatePreparedTurn = createContractValidator<PreparedRlmTurn>('rlm/v2', {
   type: 'object',
+  // workspaceId is emitted by the new host but remains optional on v2 so
+  // recorded/legacy prepared turns do not become invalid without a v3 bump.
   required: ['contractVersion', 'sessionId', 'request', 'contextIndex', 'historyIndex', 'availableTools', 'prompt', 'promptVersion', 'context'],
   properties: {
     contractVersion: { const: 2 }, sessionId: { type: 'string', minLength: 1 },
+    projectId: { type: 'string', minLength: 1 }, workspaceId: { type: 'string', minLength: 1 },
     runId: { type: 'string', minLength: 1 }, requestId: { type: 'string', minLength: 1 },
     request: { type: 'string' }, contextIndex: { type: 'integer', minimum: 0 },
     historyIndex: { type: 'integer', minimum: 0 }, availableTools: { type: 'array' },
@@ -120,6 +125,8 @@ export async function prepareRlmTurn(options: {
   return validatePreparedTurn({
     contractVersion: 2,
     sessionId: session.id,
+    ...(session.projectId ? { projectId: session.projectId } : {}),
+    workspaceId: session.workspaceId,
     ...(input.runId ? { runId: input.runId } : {}),
     ...(input.requestId ? { requestId: input.requestId } : {}),
     request: input.message,

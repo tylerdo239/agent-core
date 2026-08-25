@@ -1,0 +1,55 @@
+.hub { width: 100%; max-width: 1040px; margin: 0 auto; padding: 34px 18px 56px; color: var(--alias-label-primary); }
+.hero { display:flex; align-items:flex-end; justify-content:space-between; gap:24px; margin-bottom:34px; }
+.hero h1,.projectHeader h1 { margin:0; font-size:30px; letter-spacing:-.03em; }
+.eyebrow { margin:0 0 5px; color:var(--alias-label-secondary); font-size:13px; }
+.heroActions { display:flex; align-items:center; gap:12px; }
+.search { display:flex; align-items:center; gap:8px; width:270px; height:40px; padding:0 14px; border:1px solid var(--alias-border-default); border-radius:999px; background:var(--alias-bg-subtle); color:var(--alias-label-secondary); }
+.search input,.createRow input,.projectComposer input { min-width:0; flex:1; border:0; outline:0; background:transparent; color:inherit; font:inherit; }
+.primary,.secondary,.projectComposer button { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:40px; padding:0 17px; border-radius:999px; border:1px solid var(--alias-border-default); font-weight:650; }
+.primary { background:var(--alias-label-primary); color:var(--alias-bg-base); border-color:var(--alias-label-primary); }
+.secondary { background:transparent; }
+.createRow { display:flex; gap:10px; margin:-16px 0 24px; padding:12px; border:1px solid var(--alias-border-default); border-radius:14px; }
+.createRow input { padding:0 10px; }
+.filterRow { display:flex; align-items:center; gap:28px; margin-bottom:14px; font-size:14px; font-weight:600; }
+.pill { padding:10px 19px; border-radius:999px; background:var(--alias-bg-subtle); }
+.tableHead,.projectRow { display:grid; grid-template-columns:1fr 210px; align-items:center; text-align:left; }
+.tableHead { padding:12px 2px; border-bottom:1px solid var(--alias-border-default); color:var(--alias-label-secondary); font-size:12px; }
+.projectList { display:flex; flex-direction:column; }
+.projectRow { width:100%; padding:15px 2px; border:0; border-bottom:1px solid var(--alias-border-default); border-radius:0; background:transparent; color:inherit; font:inherit; }
+.projectRow:hover { background:var(--alias-bg-subtle); }
+.projectName { display:flex; align-items:center; gap:12px; font-weight:600; }
+.folderIcon { display:grid; place-items:center; width:38px; height:38px; border:1px solid var(--alias-border-default); border-radius:10px; background:var(--alias-bg-subtle); }
+.projectHeader { display:flex; align-items:center; gap:12px; margin-bottom:24px; }
+.back { display:grid; place-items:center; width:36px; height:36px; padding:0; border:0; border-radius:999px; background:transparent; }
+.projectComposer { display:flex; align-items:center; gap:13px; padding:8px 9px 8px 18px; min-height:58px; border:1px solid var(--alias-border-default); border-radius:22px; background:var(--alias-bg-subtle); }
+.projectComposer button:disabled { opacity:.45; }
+.tabs { display:flex; gap:4px; margin-top:26px; border-bottom:1px solid var(--alias-border-default); }
+.tabs button { padding:11px 17px; border:0; border-bottom:2px solid transparent; border-radius:0; background:transparent; color:var(--alias-label-secondary); }
+.tabs button span { margin-left:6px; opacity:.65; }
+.tabs .activeTab { border-bottom-color:var(--alias-label-primary); color:var(--alias-label-primary); font-weight:650; }
+.contentList { display:flex; flex-direction:column; }
+.contentRow { display:flex; align-items:center; gap:13px; width:100%; padding:15px 8px; border:0; border-bottom:1px solid var(--alias-border-default); border-radius:0; background:transparent; text-align:left; color:inherit; }
+.contentRow span { display:flex; min-width:0; flex-direction:column; gap:4px; }
+.contentRow strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.contentRow small { color:var(--alias-label-secondary); }
+.sources { padding-top:18px; }
+.outputs { display:grid; gap:28px; padding-top:22px; }
+.outputGroup { overflow:hidden; border:1px solid var(--alias-border-default); border-radius:18px; }
+.outputHeading { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; padding:18px 20px; background:var(--alias-bg-subtle); }
+.outputHeading h2 { margin:0 0 5px; font-size:16px; }
+.outputHeading p { margin:0; color:var(--alias-label-secondary); font-size:13px; }
+.outputHeading > span { display:grid; place-items:center; min-width:28px; height:28px; border-radius:999px; background:var(--alias-bg-base); color:var(--alias-label-secondary); font-size:12px; }
+.outputRow { display:flex; align-items:center; gap:12px; padding-right:12px; border-bottom:1px solid var(--alias-border-default); }
+.outputRow:last-child { border-bottom:0; }
+.outputFile { display:flex; align-items:center; gap:13px; min-width:0; flex:1; padding:15px 8px; border:0; background:transparent; text-align:left; color:inherit; }
+.outputFile span { display:flex; min-width:0; flex-direction:column; gap:4px; }
+.outputFile strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.outputFile small { color:var(--alias-label-secondary); }
+.promote { display:inline-flex; align-items:center; gap:6px; flex:none; min-height:34px; padding:0 12px; border:1px solid var(--alias-border-default); border-radius:999px; background:transparent; color:inherit; font-weight:600; }
+.promote:hover { background:var(--alias-bg-subtle); }
+.dropzone { display:flex; flex-direction:column; align-items:center; gap:7px; width:100%; padding:35px 20px; border:1px dashed var(--alias-border-default); border-radius:18px; background:transparent; color:inherit; }
+.dropzone span { color:var(--alias-label-secondary); font-size:13px; }
+.progress { width:min(360px,80%); height:5px; margin-top:5px; overflow:hidden; border-radius:999px; background:var(--alias-border-default); }
+.progress i { display:block; height:100%; background:var(--alias-accent); }
+.empty { padding:44px 12px; text-align:center; color:var(--alias-label-secondary); }
+@media (max-width:720px) { .hero { align-items:stretch; flex-direction:column; } .heroActions { align-items:stretch; } .search { width:100%; } .tableHead,.projectRow { grid-template-columns:1fr 100px; } .outputRow { align-items:stretch; flex-direction:column; padding:0 10px 12px; } .promote { align-self:flex-start; } }

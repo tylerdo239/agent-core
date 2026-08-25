@@ -36,6 +36,7 @@ import { Context } from '@deepseek-ai/cordis'
 import '../../../seams/sessions.ts'
 import '../../../seams/agent.ts'
 import '../../../seams/auth.ts'
+import '../../../seams/projects.ts'
 import { AuthIdentity } from '../../../seams/auth.ts'
 import { LoopStep, Session } from '../../../seams/loop.ts'
 
@@ -48,7 +49,7 @@ export namespace ApiWs {
   }
 }
 
-export const inject = ['sessions', 'agent', 'auth']
+export const inject = ['sessions', 'projects', 'agent', 'auth']
 
 const DEFAULT_MAX_PAYLOAD_BYTES = 1024 * 1024 // 1 MiB
 
@@ -135,6 +136,12 @@ async function handleMessage(ctx: Context, socket: WebSocket, raw: string, ident
     const session = ctx.sessions.get(msg.sessionId)
     if (!session) return send(socket, { type: 'error', message: `session "${msg.sessionId}" not found` })
     if (!canAccessSession(identity, session)) return send(socket, { type: 'error', message: 'forbidden' })
+    if (session.projectId) {
+      const project = ctx.projects.get(session.projectId)
+      if (!project || project.ownerId !== session.ownerId || (identity.role !== 'admin' && project.ownerId !== identity.userId)) {
+        return send(socket, { type: 'error', message: 'invalid project scope' })
+      }
+    }
 
     // Nghe live event CHỈ cho đúng sessionId này, gỡ ngay khi turn xong —
     // không leak listener qua các turn/socket khác.

@@ -40,6 +40,8 @@ COPY packages/ui-settings-general/package.json ./packages/ui-settings-general/pa
 COPY packages/ui-auth/package.json ./packages/ui-auth/package.json
 COPY packages/ui-rlm-workspace/package.json ./packages/ui-rlm-workspace/package.json
 COPY packages/ui-plugin-inventory/package.json ./packages/ui-plugin-inventory/package.json
+COPY packages/ui-plugin-settings/package.json ./packages/ui-plugin-settings/package.json
+COPY packages/ui-projects/package.json ./packages/ui-projects/package.json
 COPY apps/web/package.json ./apps/web/package.json
 RUN npm ci
 

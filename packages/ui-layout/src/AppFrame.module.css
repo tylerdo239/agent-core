@@ -14,6 +14,8 @@
   margin: 0 auto;
 }
 
+.wide { max-width: 1180px; }
+
 .header {
   display: flex;
   align-items: center;

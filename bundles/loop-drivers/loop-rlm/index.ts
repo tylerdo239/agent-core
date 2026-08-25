@@ -192,12 +192,15 @@ export const apply = (ctx: Context) => {
         }
       }
 
-      await sandbox.openSession(session.id, { cwd: workspace.root(session.id) })
+      await sandbox.openSession(session.id, {
+        cwd: workspace.root(session.workspaceId),
+        metadata: { projectId: session.projectId, workspaceId: session.workspaceId },
+      })
       const prepared = await prepareRlmTurn({
         session,
         input,
         memory: memoryService,
-        workspace: await workspace.inspect(session.id),
+        workspace: await workspace.inspect(session.workspaceId, session.id),
         skill: active?.skill,
         skillCatalog,
         tools: runCtx.tools.list(),

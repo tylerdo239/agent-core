@@ -999,20 +999,28 @@ class RLMDataAgent(RLM):
     def next_history_index(self) -> int:
         return int(self.environment.get_history_count()) if self.environment is not None else 0
 
-    def set_workspace(self, workspace_root: str | Path) -> None:
+    def set_workspace(self, workspace_root: str | Path, runtime_session_id: str | None = None) -> None:
         root = Path(workspace_root).resolve()
         root.mkdir(parents=True, exist_ok=True)
         self.workspace_root = root
         if self.logger:
-            self.logger.log_dir = root / "rlm_logs"
+            if runtime_session_id:
+                safe = "".join(ch for ch in runtime_session_id if ch.isalnum() or ch in "._-") or "default"
+                self.logger.log_dir = root / ".sessions" / safe / "rlm_logs"
+            else:
+                self.logger.log_dir = root / "rlm_logs"
         self.environment_kwargs["setup_code"] = build_notebook_setup_code(
-            root, self.repo_root
+            root, self.repo_root, runtime_session_id
         )
         if self.environment is not None:
+            safe_session = "".join(
+                ch for ch in str(runtime_session_id or "") if ch.isalnum() or ch in "._-"
+            ).strip(".-")
             self.environment.execute_code(
                 f"_ACTIVE_WORKSPACE_ROOT = {str(root)!r}\n"
+                f"_ACTIVE_SESSION_ID = {safe_session!r}\n"
                 "_DATASET_CACHE.clear()\n"
-                "os.chdir(_workspace_path())"
+                "os.chdir(_session_path())"
             )
 
     def execute_code(self, code: str) -> Any:

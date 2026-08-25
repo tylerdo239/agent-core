@@ -14,7 +14,7 @@ describe('versioned contracts', () => {
   it('keeps the RLM v2 schema aligned with the prepared-turn bridge', () => {
     const validate = createContractValidator('rlm/v2', schema('rlm/v2.schema.json'))
     expect(validate({
-      contractVersion: 2, sessionId: 's', request: 'analyze', contextIndex: 0,
+      contractVersion: 2, sessionId: 's', projectId: 'p', workspaceId: 'project:p', request: 'analyze', contextIndex: 0,
       historyIndex: 0, availableTools: [], prompt: 'rules', promptVersion: 'v1', context: {},
     })).toBeTruthy()
     expect(() => validate({ contractVersion: 3 })).toThrow(ContractValidationError)

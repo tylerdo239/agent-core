@@ -50,6 +50,20 @@ class SaveArtifactTests(unittest.TestCase):
         self.assertEqual(text_path.read_text(), "# Report")
         self.assertIn('"score": 0.9', json_path.read_text())
 
+    def test_project_session_writes_drafts_below_its_private_output_directory(self) -> None:
+        namespace: dict[str, object] = {}
+        exec(build_notebook_setup_code(self.workspace, Path(self.temp.name), "chat-123"), namespace)
+        relative = namespace["save_artifact"]("draft.json", {"score": 0.9})
+
+        self.assertEqual(relative, "generated/draft.json")
+        self.assertTrue((self.workspace / ".sessions/chat-123/generated/draft.json").is_file())
+        self.assertFalse((self.workspace / "generated/draft.json").exists())
+        self.assertIn('"score": 0.9', namespace["read_workspace_file"]("generated/draft.json"))
+        self.assertIn(
+            "generated/draft.json",
+            [item["path"] for item in namespace["list_workspace_files"]()],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

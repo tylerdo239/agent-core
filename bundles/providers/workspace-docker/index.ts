@@ -1,6 +1,6 @@
 import { Context } from '@deepseek-ai/cordis'
 import '../../../seams/sandbox.ts'
-import { WorkspaceDataset, WorkspaceService, WorkspaceSnapshot } from '../../../seams/workspace.ts'
+import { PromotedWorkspaceOutput, WorkspaceDataset, WorkspaceFile, WorkspaceService, WorkspaceSnapshot } from '../../../seams/workspace.ts'
 
 export namespace WorkspaceDocker {
   export interface Config {
@@ -40,11 +40,12 @@ export class WorkspaceDocker extends WorkspaceService {
     return []
   }
 
-  async inspect(sessionId: string): Promise<WorkspaceSnapshot> {
+  async inspect(sessionId: string, runtimeSessionId?: string): Promise<WorkspaceSnapshot> {
     const sandbox = this.ctx.get('sandbox')
     if (!sandbox) throw new Error('workspace-docker requires a sandbox provider')
-    await sandbox.openSession(sessionId, { cwd: this.root(sessionId) })
-    for await (const event of sandbox.request(sessionId, 'inspect_workspace', { sessionId })) {
+    const workerId = runtimeSessionId ?? sessionId
+    await sandbox.openSession(workerId, { cwd: this.root(sessionId) })
+    for await (const event of sandbox.request(workerId, 'inspect_workspace', { sessionId: runtimeSessionId })) {
       if (event.type !== '__result__') continue
       const resources = event.resources && typeof event.resources === 'object'
         ? event.resources as Record<string, unknown>
@@ -68,7 +69,11 @@ export class WorkspaceDocker extends WorkspaceService {
     const sandbox = this.ctx.get('sandbox') as { request?: (id: string, op: string, p: Record<string, unknown>) => AsyncIterable<Record<string, unknown>>; openSession?: (id: string, o: { cwd: string }) => Promise<void> } | undefined
     if (!sandbox?.request) throw new Error('workspace-docker requires a sandbox provider')
     await sandbox.openSession!(sessionId, { cwd: this.root(sessionId) })
-    for await (const event of sandbox.request(sessionId, 'write_workspace_file', { filename: safe, content: content.toString('base64') })) {
+    for await (const event of sandbox.request(sessionId, 'write_workspace_file', {
+      filename: safe,
+      content: content.toString('base64'),
+      projectWorkspace: sessionId.startsWith('project:'),
+    })) {
       if (event.type === '__result__') return { path: String(event.path ?? safe), size: Number(event.size ?? content.byteLength) }
       if (event.type === 'error') throw new Error(String((event as { message?: string }).message ?? 'write failed'))
     }
@@ -97,6 +102,46 @@ export class WorkspaceDocker extends WorkspaceService {
         return Array.isArray(files) ? files as Array<{ path: string; size: number; mtime: string }> : []
       }
       if (event.type === 'error') throw new Error(String((event as { message?: string }).message ?? 'list failed'))
+    }
+    return []
+  }
+
+  async listSourceFiles(workspaceId: string): Promise<WorkspaceFile[]> {
+    return this.requestFileList(workspaceId, 'sources')
+  }
+
+  async listSessionOutputs(workspaceId: string, runtimeSessionId: string): Promise<WorkspaceFile[]> {
+    return this.requestFileList(workspaceId, 'session_outputs', runtimeSessionId)
+  }
+
+  async listProjectOutputs(workspaceId: string): Promise<WorkspaceFile[]> {
+    return this.requestFileList(workspaceId, 'project_outputs')
+  }
+
+  async promoteSessionOutput(
+    workspaceId: string,
+    runtimeSessionId: string,
+    sourcePath: string,
+    outputName?: string,
+  ): Promise<PromotedWorkspaceOutput> {
+    const sandbox = this.ctx.get('sandbox')
+    if (!sandbox) throw new Error('workspace-docker requires a sandbox provider')
+    await sandbox.openSession(runtimeSessionId, { cwd: this.root(workspaceId) })
+    for await (const event of sandbox.request(runtimeSessionId, 'promote_workspace_output', { sessionId: runtimeSessionId, sourcePath, outputName })) {
+      if (event.type === '__result__') return event as unknown as PromotedWorkspaceOutput
+      if (event.type === 'error') throw new Error(String(event.message ?? 'promote failed'))
+    }
+    throw new Error('workspace promotion ended without a result')
+  }
+
+  private async requestFileList(workspaceId: string, scope: string, runtimeSessionId?: string): Promise<WorkspaceFile[]> {
+    const sandbox = this.ctx.get('sandbox')
+    if (!sandbox) throw new Error('workspace-docker requires a sandbox provider')
+    const workerId = runtimeSessionId ?? workspaceId
+    await sandbox.openSession(workerId, { cwd: this.root(workspaceId) })
+    for await (const event of sandbox.request(workerId, 'list_workspace_files', { scope, sessionId: runtimeSessionId })) {
+      if (event.type === '__result__') return Array.isArray(event.files) ? event.files as WorkspaceFile[] : []
+      if (event.type === 'error') throw new Error(String(event.message ?? 'list failed'))
     }
     return []
   }

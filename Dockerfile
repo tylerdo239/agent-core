@@ -32,6 +32,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY package.json package-lock.json ./
 COPY packages/ui-slots/package.json ./packages/ui-slots/package.json
 COPY packages/ui-react/package.json ./packages/ui-react/package.json
+COPY packages/ui-theme/package.json ./packages/ui-theme/package.json
+COPY packages/ui-primitives/package.json ./packages/ui-primitives/package.json
 COPY packages/ui-tool-web-search/package.json ./packages/ui-tool-web-search/package.json
 COPY packages/ui-sidebar/package.json ./packages/ui-sidebar/package.json
 COPY packages/ui-layout/package.json ./packages/ui-layout/package.json
@@ -41,6 +43,7 @@ COPY packages/ui-auth/package.json ./packages/ui-auth/package.json
 COPY packages/ui-rlm-workspace/package.json ./packages/ui-rlm-workspace/package.json
 COPY packages/ui-plugin-inventory/package.json ./packages/ui-plugin-inventory/package.json
 COPY packages/ui-plugin-settings/package.json ./packages/ui-plugin-settings/package.json
+COPY packages/ui-projects/package.json ./packages/ui-projects/package.json
 COPY apps/web/package.json ./apps/web/package.json
 RUN npm ci
 

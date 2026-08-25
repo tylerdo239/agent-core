@@ -7,9 +7,16 @@ from pathlib import Path
 from .controls import control_setup_code
 
 
-def build_notebook_setup_code(workspace_root: str | Path, repo_root: str | Path) -> str:
+def build_notebook_setup_code(
+    workspace_root: str | Path,
+    repo_root: str | Path,
+    runtime_session_id: str | None = None,
+) -> str:
     workspace = str(Path(workspace_root).resolve())
     repo = str(Path(repo_root).resolve())
+    safe_session = "".join(
+        ch for ch in str(runtime_session_id or "") if ch.isalnum() or ch in "._-"
+    ).strip(".-")
     return f'''
 import json
 import os
@@ -17,6 +24,7 @@ import sys
 from pathlib import Path as _RLMPath
 
 _ACTIVE_WORKSPACE_ROOT = {workspace!r}
+_ACTIVE_SESSION_ID = {safe_session!r}
 _RLM_REPO_ROOT = {repo!r}
 _DATASET_CACHE = {{}}
 
@@ -29,6 +37,25 @@ def _workspace_path(relative_path=""):
     if _target != _root and _root not in _target.parents:
         raise ValueError("Path escapes the active workspace")
     return _target
+
+def _session_path(relative_path=""):
+    """Resolve a private path for this conversation inside the project workspace."""
+    _root = _workspace_path()
+    _session_root = (_root / ".sessions" / _ACTIVE_SESSION_ID).resolve() if _ACTIVE_SESSION_ID else _root
+    _session_root.mkdir(parents=True, exist_ok=True)
+    _target = (_session_root / str(relative_path or "")).resolve()
+    if _target != _session_root and _session_root not in _target.parents:
+        raise ValueError("Path escapes the active session")
+    return _target
+
+def _visible_path(relative_path=""):
+    """Map the model-visible generated/ alias to this conversation's drafts."""
+    _relative = _RLMPath(str(relative_path or ""))
+    if _ACTIVE_SESSION_ID and _relative.parts and _relative.parts[0] == "generated":
+        _draft = _session_path(_relative)
+        if _draft.exists():
+            return _draft
+    return _workspace_path(_relative)
 
 def _workspace_index():
     _path = _workspace_path("index.json")
@@ -161,16 +188,27 @@ def list_workspace_files():
     _root = _workspace_path()
     _items = []
     for _path in _root.rglob("*"):
+        if ".sessions" in _path.parts:
+            continue
         if _path.is_file() and not _path.name.startswith("."):
             _items.append({{
                 "path": _path.relative_to(_root).as_posix(),
                 "size_bytes": _path.stat().st_size,
             }})
+    if _ACTIVE_SESSION_ID:
+        _generated = _session_path("generated")
+        if _generated.is_dir():
+            for _path in _generated.rglob("*"):
+                if _path.is_file() and not _path.name.startswith("."):
+                    _items.append({{
+                        "path": (_RLMPath("generated") / _path.relative_to(_generated)).as_posix(),
+                        "size_bytes": _path.stat().st_size,
+                    }})
     return sorted(_items, key=lambda item: item["path"].lower())
 
 def read_workspace_file(relative_path, start=0, length=None, encoding="utf-8"):
     """Read a text slice without printing the whole file into root-model context."""
-    _path = _workspace_path(relative_path)
+    _path = _visible_path(relative_path)
     with _path.open("r", encoding=encoding) as _handle:
         if start:
             _handle.seek(int(start))
@@ -184,7 +222,7 @@ def save_artifact(relative_path, content):
     # Treat both spellings identically instead of creating generated/generated.
     if _relative.parts and _relative.parts[0] == "generated":
         _relative = _RLMPath(*_relative.parts[1:])
-    _target = _workspace_path(_RLMPath("generated") / _relative)
+    _target = _session_path(_RLMPath("generated") / _relative)
     _target.parent.mkdir(parents=True, exist_ok=True)
     _suffix = _target.suffix.lower()
     try:
@@ -227,7 +265,7 @@ def save_artifact(relative_path, content):
     except Exception:
         _target.unlink(missing_ok=True)
         raise
-    return _target.relative_to(_workspace_path()).as_posix()
+    return (_RLMPath("generated") / _relative).as_posix()
 
 import threading as _job_threading
 import time as _job_time
@@ -239,7 +277,7 @@ def run_job(code, job_id=None):
     """Run code in background thread, log to generated/jobs/<id>.log (DSH jobs pattern)."""
     _id = str(job_id or _job_uuid.uuid4().hex[:12])
     _log_rel = _RLMPath("generated") / _RLMPath("jobs") / (_id + ".log")
-    _log_path = _workspace_path(_log_rel)
+    _log_path = _session_path(_log_rel)
     _log_path.parent.mkdir(parents=True, exist_ok=True)
     def _target():
         try:
@@ -258,7 +296,7 @@ def run_job(code, job_id=None):
                 if _id in _JOBS:
                     _JOBS[_id]["status"] = "done"
     with _JOBS_LOCK:
-        _JOBS[_id] = {{"status": "running", "log": _log_path.relative_to(_workspace_path()).as_posix(), "started": _job_time.time()}}
+        _JOBS[_id] = {{"status": "running", "log": _log_rel.as_posix(), "started": _job_time.time()}}
     _t = _job_threading.Thread(target=_target, daemon=True)
     _t.start()
     print(f"job {{_id}} started, log: {{_JOBS[_id]['log']}}")
@@ -271,11 +309,11 @@ def job_output(job_id, offset=0, length=4000):
         _info = _JOBS.get(_id)
     if _info is None:
         # try direct file
-        _p = _workspace_path(_RLMPath("generated") / _RLMPath("jobs") / (_id + ".log"))
+        _p = _session_path(_RLMPath("generated") / _RLMPath("jobs") / (_id + ".log"))
         if not _p.exists():
             return f"job {{_id}} not found"
         _info = {{"log": _p.relative_to(_workspace_path()).as_posix()}}
-    _p = _workspace_path(_info["log"])
+    _p = _session_path(_info["log"])
     if not _p.exists():
         return ""
     _text = _p.read_text(encoding="utf-8", errors="replace")
@@ -286,7 +324,7 @@ def job_list():
     with _JOBS_LOCK:
         return [{{"id": k, **v}} for k, v in _JOBS.items()]
 
-os.chdir(_workspace_path())
+os.chdir(_session_path())
 
 {control_setup_code()}
 '''.strip()

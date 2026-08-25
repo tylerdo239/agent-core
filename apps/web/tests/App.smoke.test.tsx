@@ -158,7 +158,7 @@ describe('Phase 9.4 — App smoke test', () => {
       expect(JSON.parse(socket.sent[0])).toMatchObject({ type: 'create_session', driver: 'default' })
     })
 
-    it('bấm "Phân tích dữ liệu" trong Sidebar -> mở kết nối MỚI nhưng CHƯA tạo session; gõ + gửi tin đầu tiên mới tạo, đúng driver "rlm"', async () => {
+    it('bấm "Phân tích dữ liệu" -> mở project hub; chưa chọn project thì không hiện composer/workspace của một session tuỳ ý', async () => {
       await act(async () => {
         render(<App />)
         await new Promise((r) => setTimeout(r, 30))
@@ -169,16 +169,10 @@ describe('Phase 9.4 — App smoke test', () => {
         await new Promise((r) => setTimeout(r, 30))
       })
 
-      const latestSocket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1]
-      expect(latestSocket.sent).toEqual([])
-
-      await act(async () => {
-        fireEvent.change(screen.getByPlaceholderText('Nhắn gì đó cho agent...'), { target: { value: 'phân tích dữ liệu này' } })
-        fireEvent.click(screen.getByText('Gửi'))
-        await new Promise((r) => setTimeout(r, 10))
-      })
-
-      expect(JSON.parse(latestSocket.sent[0])).toMatchObject({ type: 'create_session', driver: 'rlm' })
+      expect(screen.getByRole('heading', { name: 'Dự án' })).toBeTruthy()
+      expect(screen.getByPlaceholderText('Tìm dự án')).toBeTruthy()
+      expect(document.getElementById('workspace-bar')).toBeNull()
+      expect(screen.queryByPlaceholderText('Nhắn gì đó cho agent...')).toBeNull()
     })
 
     it('session_created trả về sau create_session (do gửi tin đầu) -> tự động gửi tiếp send_message với đúng nội dung đã gõ', async () => {

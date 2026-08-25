@@ -28,6 +28,8 @@ export interface CreateSessionOptions {
   /** Module auth — xem seams/loop.ts (Session.ownerId). Adapter LUÔN truyền
    * field này từ identity đã verify() được, không phải từ client. */
   ownerId?: string
+  /** RLM project that owns the shared workspace for this conversation. */
+  projectId?: string
 }
 
 export abstract class SessionRegistryService extends Service {

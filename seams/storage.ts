@@ -28,9 +28,19 @@ export interface SessionRecord {
   systemPrompt?: string
   maxHistoryMessages: number
   ownerId?: string
+  projectId?: string
   status: 'active' | 'archived'
   createdAt: string
   lastActiveAt: string
+}
+
+export interface ProjectRecord {
+  id: string
+  name: string
+  ownerId: string
+  status: 'active' | 'archived'
+  createdAt: string
+  updatedAt: string
 }
 
 export type RunState = 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
@@ -128,6 +138,11 @@ export abstract class StorageService extends Service {
   async loadSession(_id: string): Promise<SessionRecord | undefined> { return undefined }
   async loadSessions(): Promise<SessionRecord[]> { return [] }
   async deleteSession(_id: string): Promise<void> { throw new UnsupportedStorageCapabilityError('session persistence') }
+
+  async saveProject(_record: ProjectRecord): Promise<void> { throw new UnsupportedStorageCapabilityError('project persistence') }
+  async loadProject(_id: string): Promise<ProjectRecord | undefined> { return undefined }
+  async loadProjects(): Promise<ProjectRecord[]> { return [] }
+  async deleteProject(_id: string): Promise<void> { throw new UnsupportedStorageCapabilityError('project persistence') }
 
   async saveRun(_record: RunRecord): Promise<void> { throw new UnsupportedStorageCapabilityError('run persistence') }
   async getRun(_id: string): Promise<RunRecord | undefined> { return undefined }

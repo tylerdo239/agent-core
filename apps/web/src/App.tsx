@@ -40,6 +40,7 @@ import { cacheSessionTitle, fetchSessionHistory, Sidebar, type SessionSummary } 
 import { Composer, EmptyState, GenericToolCard, HumanDecision, MessageBubble, StreamingRow, ToolRow } from '@agent-core/ui-conversation'
 import { loadSettings, type Settings } from '@agent-core/ui-settings-general'
 import { PluginSettingsPanel } from '@agent-core/ui-plugin-settings'
+import { ProjectHub, type ProjectOutputFile, type ProjectSummary } from '@agent-core/ui-projects'
 import type { WorkspaceHeaderPanelProps, SkillComposerExtraProps } from '@agent-core/ui-rlm-workspace'
 import { createClientContext } from './client-context.ts'
 
@@ -254,18 +255,23 @@ export function App() {
   // phải localStorage nữa (loadSessionHistory() cũ) — xem
   // packages/ui-sidebar/src/sessionHistory.ts.
   const [sessions, setSessions] = useState<SessionSummary[]>([])
+  const [projects, setProjects] = useState<ProjectSummary[]>([])
+  const [projectsLoading, setProjectsLoading] = useState(false)
+  const [projectView, setProjectView] = useState(false)
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
   const [skills, setSkills] = useState<SkillOption[]>([])
   const [selectedSkill, setSelectedSkill] = useState('')
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([])
   const [workspaceDatasets, setWorkspaceDatasets] = useState<WorkspaceDataset[]>([])
   const [workspaceArtifacts, setWorkspaceArtifacts] = useState<string[]>([])
+  const [projectOutputs, setProjectOutputs] = useState<ProjectOutputFile[]>([])
   const [workspaceLoading, setWorkspaceLoading] = useState(false)
   const [workspaceError, setWorkspaceError] = useState('')
   const [uploadState, setUploadState] = useState<UploadState | null>(null)
 
   const { toasts, push: pushToast } = useToasts()
 
-  async function refreshWorkspaceFiles(sid: string) {
+  async function refreshWorkspaceFiles(sid: string, explicitProjectId?: string) {
     // Module auth: `Settings` không còn `apiKey` (Phase 24) — danh tính là
     // `auth.token`. Hàm này chỉ thực sự được gọi từ chỗ đã qua gate `!auth`
     // (WS handler trong connect()/resumeSession, hoặc nút bấm trong JSX sau
@@ -274,12 +280,44 @@ export function App() {
     if (!auth) return
     setWorkspaceLoading(true)
     try {
-      const res = await fetch(`${settings.restUrl}/sessions/${sid}/files`, { headers: { authorization: `Bearer ${auth.token}` } })
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`)
-      const data = (await res.json()) as { files: WorkspaceFile[]; datasets: WorkspaceDataset[]; artifacts: string[] }
-      setWorkspaceFiles(data.files ?? [])
-      setWorkspaceDatasets(data.datasets ?? [])
-      setWorkspaceArtifacts(data.artifacts ?? [])
+      const projectId = explicitProjectId ?? sessions.find((session) => session.id === sid)?.projectId
+      if (projectId) {
+        const headers = { authorization: `Bearer ${auth.token}` }
+        const [sourceResponse, outputResponse] = await Promise.all([
+          fetch(`${settings.restUrl}/projects/${projectId}/sources`, { headers }),
+          fetch(`${settings.restUrl}/projects/${projectId}/outputs`, { headers }),
+        ])
+        if (!sourceResponse.ok) throw new Error(`HTTP ${sourceResponse.status}: ${await sourceResponse.text()}`)
+        if (!outputResponse.ok) throw new Error(`HTTP ${outputResponse.status}: ${await outputResponse.text()}`)
+        const sourceData = await sourceResponse.json() as { sources?: WorkspaceFile[]; datasets?: WorkspaceDataset[] }
+        const outputData = await outputResponse.json() as {
+          projectOutputs?: WorkspaceFile[]
+          sessionOutputs?: Array<{ sessionId: string; files: WorkspaceFile[] }>
+        }
+        const mappedOutputs: ProjectOutputFile[] = [
+          ...(outputData.projectOutputs ?? []).map((file) => ({ ...file, scope: 'project' as const })),
+          ...(outputData.sessionOutputs ?? []).flatMap((group) => group.files.map((file) => ({
+            ...file,
+            scope: 'session' as const,
+            sessionId: group.sessionId,
+            conversationTitle: sessions.find((session) => session.id === group.sessionId)?.title,
+          }))),
+        ]
+        setWorkspaceFiles(sourceData.sources ?? [])
+        setWorkspaceDatasets(sourceData.datasets ?? [])
+        setProjectOutputs(mappedOutputs)
+        setWorkspaceArtifacts(mappedOutputs
+          .filter((file) => file.scope === 'project' || file.sessionId === sid)
+          .map((file) => file.scope === 'project' ? `outputs/${file.path}` : `generated/${file.path}`))
+      } else {
+        const res = await fetch(`${settings.restUrl}/sessions/${sid}/files`, { headers: { authorization: `Bearer ${auth.token}` } })
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`)
+        const data = (await res.json()) as { files: WorkspaceFile[]; datasets: WorkspaceDataset[]; artifacts: string[] }
+        setWorkspaceFiles(data.files ?? [])
+        setWorkspaceDatasets(data.datasets ?? [])
+        setWorkspaceArtifacts(data.artifacts ?? [])
+        setProjectOutputs([])
+      }
       setWorkspaceError('')
     } catch (error: unknown) {
       setWorkspaceError(error instanceof Error ? error.message : String(error))
@@ -294,34 +332,22 @@ export function App() {
   async function handleFileUpload(file: File) {
     if (!auth) return
     let sid = sessionId
-    if (!sid) {
+    const projectId = activeProjectId
+    if (!sid && !projectId) {
       // Tự tạo session nếu chưa có (nhánh phòng thủ hiếm gặp — workspace bar
       // chỉ hiện cho session driver 'rlm' đã tồn tại, xem mục 3; vẫn giữ vì
       // race window hẹp giữa lúc bấm "Phân tích dữ liệu" và session_created
       // WS trả về).
-      try {
-        const res = await fetch(`${settings.restUrl}/sessions`, {
-          method: 'POST',
-          headers: { authorization: `Bearer ${auth.token}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ driver: 'rlm' }),
-        })
-        if (!res.ok) throw new Error(await res.text())
-        const data = (await res.json()) as { id: string }
-        sid = data.id
-        setSessionId(sid)
-        sessionIdRef.current = sid
-        setStatus('connected')
-      } catch (e: unknown) {
-        pushToast(`Không tạo được session: ${e instanceof Error ? e.message : String(e)}`, 'error')
-        return
-      }
+      pushToast('Hãy tạo hoặc chọn một dự án trước khi upload nguồn.', 'error')
+      return
     }
     if (file.size > 70 * 1024 * 1024) { pushToast('File quá lớn (tối đa 70 MiB).', 'error'); return }
     setUploadState({ phase: 'uploading', filename: file.name, progress: 0 })
     try {
       await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest()
-        xhr.open('POST', `${settings.restUrl}/sessions/${sid}/files`)
+        const endpoint = projectId ? `/projects/${projectId}/sources` : `/sessions/${sid}/files`
+        xhr.open('POST', `${settings.restUrl}${endpoint}`)
         xhr.setRequestHeader('authorization', `Bearer ${auth.token}`)
         xhr.setRequestHeader('content-type', 'application/octet-stream')
         xhr.setRequestHeader('x-file-name', encodeURIComponent(file.name))
@@ -334,7 +360,7 @@ export function App() {
         xhr.onerror = () => reject(new Error('Network error'))
         xhr.send(file)
       })
-      await refreshWorkspaceFiles(sid)
+      await refreshWorkspaceFiles(sid ?? '', projectId ?? undefined)
       setUploadState({ phase: 'success', filename: file.name, progress: 100, message: 'Đã upload và đăng ký trong workspace.' })
       pushToast(`Đã tải lên ${file.name}`, 'default')
     } catch (e: unknown) {
@@ -345,9 +371,13 @@ export function App() {
   }
 
   async function downloadWorkspaceFile(filePath: string) {
-    if (!sessionId || !auth) return
+    if ((!sessionId && !activeProjectId) || !auth) return
     try {
-      const response = await fetch(`${settings.restUrl}/sessions/${sessionId}/files/${encodeURIComponent(filePath)}`, {
+      const projectId = activeProjectId ?? sessions.find((session) => session.id === sessionId)?.projectId
+      const endpoint = projectId
+        ? `/projects/${projectId}/files/${encodeURIComponent(filePath)}`
+        : `/sessions/${sessionId}/files/${encodeURIComponent(filePath)}`
+      const response = await fetch(`${settings.restUrl}${endpoint}`, {
         headers: { authorization: `Bearer ${auth.token}` },
       })
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`)
@@ -360,6 +390,40 @@ export function App() {
     } catch (error: unknown) {
       pushToast(`Không tải được ${filePath}: ${error instanceof Error ? error.message : String(error)}`, 'error')
     }
+  }
+
+  async function downloadProjectOutput(output: ProjectOutputFile) {
+    if (!activeProjectId || !auth) return
+    const endpoint = output.scope === 'project'
+      ? `/projects/${activeProjectId}/outputs/project/${encodeURIComponent(output.path)}`
+      : `/projects/${activeProjectId}/outputs/session/${output.sessionId}/${encodeURIComponent(output.path)}`
+    try {
+      const response = await fetch(`${settings.restUrl}${endpoint}`, { headers: { authorization: `Bearer ${auth.token}` } })
+      if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`)
+      const url = URL.createObjectURL(await response.blob())
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = output.path.split('/').pop() || 'output'
+      anchor.click()
+      URL.revokeObjectURL(url)
+    } catch (error: unknown) {
+      pushToast(`Không tải được output: ${error instanceof Error ? error.message : String(error)}`, 'error')
+    }
+  }
+
+  async function promoteProjectOutput(output: ProjectOutputFile) {
+    if (!activeProjectId || !auth || output.scope !== 'session' || !output.sessionId) return
+    const response = await fetch(`${settings.restUrl}/projects/${activeProjectId}/outputs`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${auth.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: output.sessionId, path: output.path }),
+    })
+    if (!response.ok) {
+      pushToast(`Không đưa được output vào dự án: ${await response.text()}`, 'error')
+      return
+    }
+    await refreshWorkspaceFiles(sessionId ?? '', activeProjectId)
+    pushToast(`Đã đưa ${output.path} vào output chung của dự án.`, 'default')
   }
 
   const wsRef = useRef<WebSocket | null>(null)
@@ -420,7 +484,7 @@ export function App() {
   // `newSessionDriver` (docs/agent-core-rlm-web-ui-plugin-plan.md mục 3):
   // CHỈ dùng lúc tạo session MỚI (bỏ qua khi resume — driver của session cũ
   // do server quyết định từ lúc tạo, không đổi được).
-  function connect(current: Settings, token: string, resumeSessionId?: string, newSessionDriver: 'default' | 'rlm' = 'default') {
+  function connect(current: Settings, token: string, resumeSessionId?: string, newSessionDriver: 'default' | 'rlm' = 'default', initialMessage?: string) {
     setStatus('connecting')
     void fetch(`${current.restUrl}/skills`, {
       headers: { authorization: `Bearer ${token}` },
@@ -448,6 +512,14 @@ export function App() {
     ws.addEventListener('open', () => {
       if (wsRef.current !== ws) return
       setStatus('connected')
+      if (resumeSessionId && initialMessage) {
+        setItems([{ kind: 'user', id: genId(), text: initialMessage, ts: Date.now() }])
+        setTurnInFlight(true)
+        ws.send(JSON.stringify({
+          type: 'send_message', sessionId: resumeSessionId, message: initialMessage,
+          selectedSkill: selectedSkill || undefined,
+        }))
+      }
     })
 
     ws.addEventListener('message', (event) => {
@@ -475,7 +547,7 @@ export function App() {
         // GET /sessions tiếp theo sẽ thấy đúng session này; thêm ngay ở đây
         // để UI phản hồi tức thời, không đợi round-trip fetch lại.
         setSessions((prev) => [{ id: msg.id, createdAt: Date.now(), title, driver: msg.driver }, ...prev])
-        if (msg.driver === 'rlm') refreshWorkspaceFiles(msg.id)
+        if (msg.driver === 'rlm') refreshWorkspaceFiles(msg.id, activeProjectId ?? undefined)
         if (pending) {
           pendingFirstMessageRef.current = null
           ws.send(JSON.stringify({ type: 'send_message', sessionId: msg.id, message: pending.text, selectedSkill: pending.skill }))
@@ -493,7 +565,7 @@ export function App() {
         const sid = sessionIdRef.current ?? (msg as { sessionId?: string }).sessionId
         if (sid) {
           const completedSessionId = String(sid)
-          refreshWorkspaceFiles(completedSessionId)
+          refreshWorkspaceFiles(completedSessionId, activeProjectId ?? undefined)
         }
         return
       }
@@ -626,8 +698,96 @@ export function App() {
     wsRef.current = null
     activeToolItemIdRef.current = null
     sessionIdRef.current = null
+    // Driver là lựa chọn UI đã biết ngay khi user bấm "Chat mới" hoặc
+    // "Phân tích dữ liệu"; không được đợi `session_created` mới cập nhật.
+    // Session creation bị trì hoãn tới tin nhắn/upload đầu tiên, còn slot
+    // workspace + skill selector phải hiện ngay để user có thể upload trước.
+    setSessionDriver(driver)
+    setWorkspaceFiles([])
+    setWorkspaceDatasets([])
+    setWorkspaceArtifacts([])
+    setProjectOutputs([])
+    setWorkspaceError('')
+    setUploadState(null)
     setItems([])
+    setProjectView(false)
+    if (driver !== 'rlm') setActiveProjectId(null)
     connect(current, token, undefined, driver)
+  }
+
+  async function loadProjects() {
+    if (!auth) return
+    setProjectsLoading(true)
+    try {
+      const response = await fetch(`${settings.restUrl}/projects`, { headers: { authorization: `Bearer ${auth.token}` } })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const payload = await response.json() as { projects?: ProjectSummary[] }
+      setProjects(payload.projects ?? [])
+    } catch (error) {
+      pushToast(`Không tải được dự án: ${error instanceof Error ? error.message : String(error)}`, 'error')
+    } finally {
+      setProjectsLoading(false)
+    }
+  }
+
+  function openProjects(projectId?: string) {
+    wsRef.current?.close()
+    wsRef.current = null
+    setProjectView(true)
+    setActiveProjectId(projectId ?? null)
+    setSessionId(null)
+    setItems([])
+    setSessionDriver('rlm')
+    setWorkspaceFiles([])
+    setWorkspaceDatasets([])
+    setWorkspaceArtifacts([])
+    setProjectOutputs([])
+    setUploadState(null)
+    void loadProjects()
+    if (projectId) void refreshWorkspaceFiles('', projectId)
+  }
+
+  async function createProject(name: string) {
+    if (!auth) return
+    const response = await fetch(`${settings.restUrl}/projects`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${auth.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    if (!response.ok) {
+      pushToast(`Không tạo được dự án: ${await response.text()}`, 'error')
+      return
+    }
+    const { project } = await response.json() as { project: ProjectSummary }
+    setProjects((previous) => [project, ...previous])
+    setActiveProjectId(project.id)
+    await refreshWorkspaceFiles('', project.id)
+  }
+
+  async function startProjectConversation(initialMessage?: string) {
+    if (!auth || !activeProjectId) return
+    const response = await fetch(`${settings.restUrl}/projects/${activeProjectId}/sessions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${auth.token}`, 'content-type': 'application/json' },
+      body: '{}',
+    })
+    if (!response.ok) {
+      pushToast(`Không tạo được đoạn chat: ${await response.text()}`, 'error')
+      return
+    }
+    const created = await response.json() as { id: string; projectId: string }
+    const title = initialMessage ? cacheSessionTitle(created.id, initialMessage) : 'Đoạn chat mới'
+    const summary: SessionSummary = {
+      id: created.id, driver: 'rlm', projectId: created.projectId,
+      title, createdAt: Date.now(),
+    }
+    setSessions((previous) => [summary, ...previous])
+    titledSessionIdsRef.current.add(created.id)
+    setProjectView(false)
+    setSessionDriver('rlm')
+    setItems([])
+    connect(settings, auth.token, created.id, 'rlm', initialMessage)
+    await refreshWorkspaceFiles(created.id, created.projectId)
   }
 
   // Dựng lại ChatItem[] từ event log THẬT (GET /sessions/:id/events) — khác
@@ -741,9 +901,13 @@ export function App() {
     // docs/agent-core-rlm-web-ui-plugin-plan.md mục 1: driver của session cũ
     // đã có sẵn trong `sessions` (GET /sessions trả đúng field này) — không
     // cần gọi thêm API riêng chỉ để biết driver.
-    const driver = sessions.find((s) => s.id === id)?.driver ?? 'default'
+    const selected = sessions.find((s) => s.id === id)
+    const driver = selected?.driver ?? 'default'
+    const projectId = selected?.projectId
+    setProjectView(false)
+    setActiveProjectId(projectId ?? null)
     setSessionDriver(driver)
-    if (driver === 'rlm') refreshWorkspaceFiles(id)
+    if (driver === 'rlm') refreshWorkspaceFiles(id, projectId)
     try {
       let events: LoopStep[]
       try {
@@ -778,6 +942,7 @@ export function App() {
       wsRef.current?.close()
       wsRef.current = null
       setSessions([])
+      setProjects([])
       setItems([])
       setSessionId(null)
       setStatus('connecting')
@@ -788,6 +953,7 @@ export function App() {
       .then(async (history) => {
         if (disposed) return
         setSessions(history)
+        void loadProjects()
         const rememberedId = activeSessionId(auth.user.id)
         const target = history.find((session) => session.id === rememberedId) ?? history[0]
         if (!target) {
@@ -798,10 +964,11 @@ export function App() {
           const events = await fetchSessionEvents(settings.restUrl, auth.token, target.id)
           if (disposed) return
           setSessionDriver(target.driver)
+          setActiveProjectId(target.projectId ?? null)
           setItems(reconstructItems(events))
           titledSessionIdsRef.current.add(target.id)
           rememberActiveSession(auth.user.id, target.id)
-          if (target.driver === 'rlm') refreshWorkspaceFiles(target.id)
+          if (target.driver === 'rlm') refreshWorkspaceFiles(target.id, target.projectId)
           connect(settings, auth.token, target.id)
         } catch {
           if (!disposed) connect(settings, auth.token)
@@ -896,6 +1063,10 @@ export function App() {
     ...file,
     kind: artifactPaths.has(file.path) ? 'output' as const : datasetPaths.has(file.path) || datasetPaths.has(file.path.split('/').pop() ?? '') ? 'dataset' as const : 'file' as const,
   }))
+  const activeProject = projects.find((project) => project.id === activeProjectId)
+  const projectConversations = sessions
+    .filter((session) => session.projectId === activeProjectId)
+    .map(({ id, title, createdAt }) => ({ id, title, createdAt }))
 
   // Module auth: chưa đăng nhập -> thay TOÀN BỘ khung chat bằng màn hình
   // đăng nhập/đăng ký — đặt SAU mọi hook (đúng rules of hooks), TRƯỚC JSX
@@ -926,12 +1097,13 @@ export function App() {
     <>
       <ToastContainer toasts={toasts} />
       <AppFrame
+        wide={projectView}
         sidebar={
           <Sidebar
-            sessions={sessions}
+            sessions={sessions.filter((session) => !session.projectId)}
             activeSessionId={sessionId}
             onNewChat={() => startNewChat(settings, auth.token)}
-            onNewDataSession={() => startNewChat(settings, auth.token, 'rlm')}
+            onNewDataSession={() => openProjects()}
             onSelectSession={resumeSession}
             isAdmin={auth.user.role === 'admin'}
             onOpenAdminPanel={() => setAdminPanelOpen(true)}
@@ -953,7 +1125,7 @@ export function App() {
         // báo lại. Dùng `subHeader` (mới thêm vào AppFrame cho đúng việc
         // này) thay vì `header` — xuống hàng riêng, tách bạch khỏi tiêu đề.
         subHeader={
-          clientCtx && (
+          !projectView && clientCtx && (
             <RenderSlot<WorkspaceHeaderPanelProps>
               ctx={clientCtx}
               name="session.chrome.header"
@@ -975,7 +1147,7 @@ export function App() {
             />
           )
         }
-        footer={
+        footer={projectView ? null : (
           <>
             {clientCtx && (
               <RenderSlot<SkillComposerExtraProps>
@@ -993,8 +1165,29 @@ export function App() {
             )}
             <Composer value={composerText} onChange={setComposerText} onSubmit={handleSubmit} disabled={!composerEnabled} />
           </>
-        }
+        )}
       >
+        {projectView ? (
+          <ProjectHub
+            key={activeProjectId ?? 'project-list'}
+            projects={projects}
+            activeProject={activeProject}
+            conversations={projectConversations}
+            sources={workspaceEntries.filter((file) => file.kind !== 'output').map((file) => ({ ...file, kind: file.kind === 'dataset' ? 'dataset' as const : 'file' as const }))}
+            outputs={projectOutputs}
+            loading={projectsLoading || workspaceLoading}
+            uploadProgress={uploadState?.phase === 'uploading' ? uploadState.progress : undefined}
+            onCreateProject={createProject}
+            onOpenProject={(id) => openProjects(id)}
+            onBack={() => openProjects()}
+            onStartConversation={startProjectConversation}
+            onOpenConversation={resumeSession}
+            onUpload={handleFileUpload}
+            onDownloadSource={downloadWorkspaceFile}
+            onDownloadOutput={downloadProjectOutput}
+            onPromoteOutput={promoteProjectOutput}
+          />
+        ) : <>
         {items.length === 0 && <EmptyState />}
         {items.map((item) => {
           if (item.kind === 'control') {
@@ -1045,6 +1238,7 @@ export function App() {
         })}
         {showStreamingRow && <StreamingRow />}
         <div ref={messagesEndRef} />
+        </>}
       </AppFrame>
 
       <AdminUsersPanel

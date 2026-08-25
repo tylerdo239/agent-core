@@ -74,7 +74,7 @@ export class SessionRegistry extends SessionRegistryService {
   private async restore(storage: StorageService) {
     for (const record of await storage.loadSessions()) {
       if (this.entries.has(record.id)) continue
-      const session = new Session(record.id, record.maxSteps, record.systemPrompt, record.driver, record.maxHistoryMessages, record.ownerId)
+      const session = new Session(record.id, record.maxSteps, record.systemPrompt, record.driver, record.maxHistoryMessages, record.ownerId, record.projectId)
       if (record.driver !== 'rlm') {
         try {
           session.history.push(...replay(await storage.readEvents(record.id), record.maxHistoryMessages))
@@ -97,7 +97,7 @@ export class SessionRegistry extends SessionRegistryService {
   create(options: CreateSessionOptions = {}) {
     const id = options.id ?? randomUUID()
     if (this.entries.has(id)) throw new Error(`session "${id}" already exists`)
-    const session = new Session(id, options.maxSteps ?? 8, options.systemPrompt, options.driver ?? 'default', options.maxHistoryMessages, options.ownerId)
+    const session = new Session(id, options.maxSteps ?? 8, options.systemPrompt, options.driver ?? 'default', options.maxHistoryMessages, options.ownerId, options.projectId)
     const now = Date.now()
     const entry = { session, createdAt: now, lastActiveAt: now, lastPersistedAt: now }
     this.entries.set(id, entry)
@@ -143,6 +143,7 @@ export class SessionRegistry extends SessionRegistryService {
       systemPrompt: session.history[0]?.role === 'system' ? session.history[0].content : undefined,
       maxHistoryMessages: session.maxHistoryMessages, status: 'active',
       ownerId: session.ownerId,
+      projectId: session.projectId,
       createdAt: new Date(entry.createdAt).toISOString(), lastActiveAt: new Date(entry.lastActiveAt).toISOString(),
     }
     void storage.saveSession(record).catch((error) => this.ctx.logger('session-registry').warn('failed to persist session: %s', String(error)))

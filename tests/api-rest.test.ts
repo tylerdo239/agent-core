@@ -18,6 +18,7 @@ import * as loopRegistry from '../bundles/providers/loop-registry/index.ts'
 import * as loopDefault from '../bundles/loop-drivers/loop-default/index.ts'
 import * as agentRunner from '../bundles/providers/agent-runner/index.ts'
 import * as sessionRegistry from '../bundles/providers/session-registry/index.ts'
+import * as projectRegistry from '../bundles/providers/project-registry/index.ts'
 import * as authUsers from '../bundles/providers/auth-users/index.ts'
 import * as pluginInventory from '../bundles/providers/plugin-inventory/index.ts'
 import * as pluginConfigPostgres from '../bundles/providers/plugin-config-postgres/index.ts'
@@ -60,6 +61,23 @@ class FakeWorkspace extends WorkspaceService {
   }
   async listFiles(sessionId: string) {
     return [...this.session(sessionId)].map(([filePath, content]) => ({ path: filePath, size: content.byteLength, mtime: '2026-01-01T00:00:00.000Z' }))
+  }
+  async listSourceFiles(sessionId: string) {
+    return (await this.listFiles(sessionId)).filter((file) => !file.path.startsWith('generated/') && !file.path.startsWith('outputs/') && !file.path.startsWith('.sessions/'))
+  }
+  async listSessionOutputs(sessionId: string, runtimeSessionId: string) {
+    const prefix = `.sessions/${runtimeSessionId}/generated/`
+    return (await this.listFiles(sessionId)).filter((file) => file.path.startsWith(prefix)).map((file) => ({ ...file, path: file.path.slice(prefix.length) }))
+  }
+  async listProjectOutputs(sessionId: string) {
+    return (await this.listFiles(sessionId)).filter((file) => file.path.startsWith('outputs/')).map((file) => ({ ...file, path: file.path.slice('outputs/'.length) }))
+  }
+  async promoteSessionOutput(sessionId: string, runtimeSessionId: string, sourcePath: string, outputName?: string) {
+    const source = sourcePath.replace(/^generated\//, '')
+    const content = await this.readFile(sessionId, `.sessions/${runtimeSessionId}/generated/${source}`)
+    const target = outputName ?? source
+    this.session(sessionId).set(`outputs/${target}`, content)
+    return { path: target, size: content.byteLength, mtime: '2026-01-01T00:00:00.000Z', sourcePath: source, createdBySession: runtimeSessionId }
   }
 }
 
@@ -156,6 +174,7 @@ async function bootApp(databaseUrl: string, port = 0, extraConfig: Partial<apiRe
   root.plugin(loopDefault)
   root.plugin(agentRunner)
   root.plugin(sessionRegistry)
+  root.plugin(projectRegistry)
   root.plugin(permissionRbac, {
     rules: { admin: ['admin:users:manage', 'admin:plugins:view', 'admin:plugins:configure'] },
   })
@@ -197,7 +216,7 @@ afterEach(async () => {
 describe('Phase 6.1 — REST API', () => {
   it('liệt kê đúng skill mà UI được phép chọn', async () => {
     await withFreshSchemaUrl(async (databaseUrl) => {
-      const { fiber, config } = await bootApp(databaseUrl)
+      const { root, fiber, config } = await bootApp(databaseUrl)
       cleanup = () => fiber.dispose()
       const base = `http://127.0.0.1:${config.port}`
       const { token } = await signupToken(base, 'alice')
@@ -327,6 +346,70 @@ describe('Phase 6.1 — REST API', () => {
         body: 'a,b\n1,2\n',
       })
       expect(uploadAsBob.status).toBe(403)
+    })
+  })
+
+  it('project cô lập nguồn, gom nhiều RLM chat và chặn user khác qua HTTP thật', async () => {
+    await withFreshSchemaUrl(async (databaseUrl) => {
+      const { root, fiber, config } = await bootApp(databaseUrl)
+      cleanup = () => fiber.dispose()
+      const base = `http://127.0.0.1:${config.port}`
+      await signupToken(base, 'admin')
+      const bob = await signupToken(base, 'bob')
+      const charlie = await signupToken(base, 'charlie')
+      const auth = { authorization: `Bearer ${bob.token}` }
+
+      const createProject = async (name: string) => {
+        const response = await fetch(`${base}/projects`, {
+          method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: JSON.stringify({ name }),
+        })
+        expect(response.status).toBe(201)
+        return (await response.json()).project as { id: string }
+      }
+      const a = await createProject('A')
+      const b = await createProject('B')
+      const upload = await fetch(`${base}/projects/${a.id}/files`, {
+        method: 'POST', headers: { ...auth, 'content-type': 'application/octet-stream', 'x-file-name': 'sales.csv' },
+        body: 'amount\n42\n',
+      })
+      expect(upload.status).toBe(201)
+      const listA = await (await fetch(`${base}/projects/${a.id}/files`, { headers: auth })).json()
+      const listB = await (await fetch(`${base}/projects/${b.id}/files`, { headers: auth })).json()
+      expect(listA.files.map((file: any) => file.path)).toContain('sales.csv')
+      expect(listB.files.map((file: any) => file.path)).not.toContain('sales.csv')
+      const sourcesA = await (await fetch(`${base}/projects/${a.id}/sources`, { headers: auth })).json()
+      expect(sourcesA.sources.map((file: any) => file.path)).toEqual(['sales.csv'])
+
+      const first = await (await fetch(`${base}/projects/${a.id}/sessions`, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: '{}' })).json()
+      const second = await (await fetch(`${base}/projects/${a.id}/sessions`, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: '{}' })).json()
+      expect(first).toMatchObject({ driver: 'rlm', projectId: a.id })
+      expect(second).toMatchObject({ driver: 'rlm', projectId: a.id })
+
+      await root.workspace.writeFile(`project:${a.id}`, `.sessions/${first.id}/generated/draft.json`, Buffer.from('{"score":0.9}'))
+      const outputsBefore = await (await fetch(`${base}/projects/${a.id}/outputs`, { headers: auth })).json()
+      expect(outputsBefore.projectOutputs).toEqual([])
+      expect(outputsBefore.sessionOutputs.find((group: any) => group.sessionId === first.id).files).toEqual([
+        expect.objectContaining({ path: 'draft.json' }),
+      ])
+      expect(outputsBefore.sessionOutputs.find((group: any) => group.sessionId === second.id).files).toEqual([])
+      const draftDownload = await fetch(`${base}/projects/${a.id}/outputs/session/${first.id}/${encodeURIComponent('draft.json')}`, { headers: auth })
+      expect(draftDownload.status).toBe(200)
+      expect(await draftDownload.text()).toBe('{"score":0.9}')
+
+      const promoted = await fetch(`${base}/projects/${a.id}/outputs`, {
+        method: 'POST', headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId: first.id, path: 'draft.json' }),
+      })
+      expect(promoted.status).toBe(201)
+      const outputsAfter = await (await fetch(`${base}/projects/${a.id}/outputs`, { headers: auth })).json()
+      expect(outputsAfter.projectOutputs).toEqual([expect.objectContaining({ path: 'draft.json' })])
+      const publishedDownload = await fetch(`${base}/projects/${a.id}/outputs/project/${encodeURIComponent('draft.json')}`, { headers: auth })
+      expect(publishedDownload.status).toBe(200)
+      expect(await publishedDownload.text()).toBe('{"score":0.9}')
+
+      expect((await fetch(`${base}/projects/${a.id}`, { headers: { authorization: `Bearer ${charlie.token}` } })).status).toBe(403)
+      expect((await fetch(`${base}/projects/${a.id}/files`, { headers: { authorization: `Bearer ${charlie.token}` } })).status).toBe(403)
+      expect((await fetch(`${base}/projects/${a.id}/outputs`, { headers: { authorization: `Bearer ${charlie.token}` } })).status).toBe(403)
     })
   })
 
