@@ -34,6 +34,14 @@ export interface ToolUiHint {
   label?: string
   /** 'citations' = danh sách nguồn đánh số (web search...). 'io' (mặc định) = card IN/OUT chung. */
   render?: 'citations' | 'io'
+  /**
+   * Tên field trong `args` dùng làm tóm tắt NGƯỜI ĐỌC ĐƯỢC lúc tool đang
+   * chạy (vd. 'query' cho web_search -> hiện `"<câu tìm>"` thay vì raw JSON
+   * `{"query":"..."}`). So sánh dsh (`WebBlock`)/Claude — cả 2 đều hiện
+   * NGAY câu tìm kiếm thật lúc đang chạy, không phải tham số kỹ thuật thô.
+   * Không khai field này -> UI fallback về JSON.stringify(args) như cũ.
+   */
+  summaryArg?: string
 }
 
 export interface ToolDefinition {

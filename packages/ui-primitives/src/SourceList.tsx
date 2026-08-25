@@ -51,7 +51,10 @@ export function SourceList({ results, collapsibleSnippets = false }: SourceListP
   return (
     <ol className={styles.list}>
       {results.map((r, i) => (
-        <li className={styles.item} key={r.url + i}>
+        // value={i+1}: đối chiếu dsh (WebBlock's SourceItem) — pin số thứ tự
+        // trích dẫn tường minh thay vì dựa <ol> đếm ngầm, để trong container
+        // scroll riêng (.list) số đầu mục vẫn đọc đúng dù cuộn tới đâu.
+        <li className={styles.item} key={r.url + i} value={i + 1}>
           <a className={styles.link} href={r.url} target="_blank" rel="noopener noreferrer">
             {sourceLabel(r.url, r.title)}
           </a>

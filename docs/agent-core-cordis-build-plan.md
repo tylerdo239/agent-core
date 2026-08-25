@@ -2590,6 +2590,40 @@ file demo, revert `.env` về nguyên trạng, restart lại — xác nhận v�
 
 ---
 
+## Phase 32 — Skill `business-case-builder`: kịch bản kinh doanh + KPI + 3 loại phân tích — ĐÃ IMPLEMENT, ĐÃ VERIFY (kèm 1 lần sửa sai)
+
+User: muốn 1 flow độc lập gắn vào agent-core, build bằng skill (không phải
+tool/provider mới) + dùng `tool_web_search` sẵn có, tạo kịch bản kinh doanh
+đầy đủ KPI và 3 loại phân tích (kinh doanh/khoa học/nội bộ). Chi tiết đầy đủ
+(bảng KPI có công thức, nội dung từng file, thiết kế) ở
+[`docs/agent-core-skill-business-case-builder-plan.md`](agent-core-skill-business-case-builder-plan.md)
+— không lặp lại ở đây.
+
+Skill mới `bundles/skills/business-case-builder/` (`SKILL.md` + 5
+`references/` + `templates/` + `checklists/` + `scripts/kpi_calculator.py`)
+— theo đúng mẫu cấu trúc `data-scientist` đã có, KHÔNG đụng
+seam/`src/serve.ts` nào (`skill-filesystem` tự quét `bundles/skills/`).
+
+**Sai lầm thật đã mắc và sửa lại**: verify E2E lần đầu dùng `selectedSkill`
+qua dropdown RLM — chạy đúng nhưng vô tình gắn skill vào RLM, đúng thứ user
+đã nói rõ KHÔNG muốn ngay từ đầu ("muốn tách ra"). Xác nhận lại code
+(`bundles/loop-drivers/loop-default/index.ts`) thấy `loop-default` đã tự
+`ctx.skills.match()` + expose toàn bộ tool — không có gì RLM-riêng ở tầng
+seam, chỉ thiếu `triggers:` trong frontmatter. Thêm `triggers` là đủ, không
+cần sửa gì ở backend/UI.
+
+**Deliverable Phase 32: ĐÃ VERIFY THẬT** — `npm run typecheck` sạch,
+`npm test` 233/233 pass (41 file, từ 229). `scripts/kpi_calculator.py` verify
+tay 14/14 công thức đúng (CAC/LTV/LTV:CAC/burn rate/runway/CAGR/break-even),
+input thiếu báo rõ thay vì bịa số. Docker rebuild + **1 turn thật trong
+session `driver:"default"`** (không phải RLM, không truyền `selectedSkill`):
+gửi tin nhắn chỉ chứa từ khoá trigger — skill tự kích hoạt, `web_search`
+được gọi thật (xác nhận qua `GET /sessions/:id/events`, event `tool_result`
+thật với query + kết quả thật), báo cáo trả về đủ KPI table + phân tích tài
+chính best/base case + SWOT.
+
+---
+
 ## Timeline đề xuất (tham khảo, điều chỉnh theo tốc độ thật của bạn)
 
 | Phase | Nội dung                                                                 | Ưu tiên                                   |

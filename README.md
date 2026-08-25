@@ -216,3 +216,4 @@ Lịch sử build chi tiết (thiết kế, đánh đổi, bug thật phát hi�
 - [`docs/frontend-backend-handoff.md`](docs/frontend-backend-handoff.md) — contract REST/WebSocket/workspace và checklist bàn giao cho đội frontend
 - [`docs/agent-core-adding-plugins.md`](docs/agent-core-adding-plugins.md) — thêm 1 plugin: sửa source (`bundles/`) hay bên ngoài không cần sửa source (`EXTRA_PLUGINS`) — hướng dẫn + ví dụ đầy đủ
 - [`docs/agent-core-plugin-template.md`](docs/agent-core-plugin-template.md) — code mẫu copy-paste (tool/skill/provider), đã verify typecheck thật đối chiếu type thật của repo
+- [`docs/agent-core-skill-business-case-builder-plan.md`](docs/agent-core-skill-business-case-builder-plan.md) — skill `business-case-builder`: kịch bản kinh doanh + khung KPI + 3 loại phân tích, dùng `web_search`, kích hoạt qua từ khoá ở cả chat thường lẫn RLM (ĐÃ implement + verify — xem Phase 32 trong build-plan)

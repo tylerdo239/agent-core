@@ -54,6 +54,13 @@ interface LoopStep {
   type:
     | 'user_message'
     | 'model_message'
+    // Gap thật (user báo lại: RLM chạy nhưng UI chờ không hiện đang làm gì):
+    // loop-rlm phát 'tool_call' RIÊNG (name/args tách khỏi step, không lồng
+    // trong `toolCall` như model_message của loop-default) NGAY LÚC model
+    // quyết định gọi tool — trước khi có 'tool_result'. Thiếu nhánh xử lý
+    // type này khiến card tool không bao giờ được tạo trong lượt RLM, kéo
+    // theo 'tool_result' sau đó cũng rơi (không tìm thấy tool đang active).
+    | 'tool_call'
     | 'tool_result'
     | 'critic_message'
     | 'final'
@@ -73,11 +80,13 @@ interface LoopStep {
   toolCall?: { name: string; args: Record<string, unknown> }
   toolUi?: ToolUiHint
   name?: string
+  args?: Record<string, unknown>
   result?: unknown
   message?: string
   control?: { question?: string; reason?: string; action?: string }
   question?: string
   reason?: string
+  code?: string
 }
 
 // docs/agent-core-rlm-web-ui-plugin-plan.md mục 3: mặc định quay về
@@ -125,6 +134,14 @@ function toolRowSummary(item: Extract<ChatItem, { kind: 'tool' }>): string {
   if (item.state === 'ok' && item.toolUi?.render === 'citations') {
     const results = (item.result as { results?: unknown[] } | undefined)?.results
     if (Array.isArray(results)) return results.length ? `${results.length} nguồn` : 'không tìm thấy kết quả'
+  }
+  // Đối chiếu dsh (WebBlock)/Claude: lúc tool ĐANG chạy, cả 2 hiện ngay câu
+  // tìm kiếm/tham số thật (người đọc được), không phải JSON kỹ thuật thô —
+  // tool tự khai field nào (`ToolUiHint.summaryArg`, seams/tools.ts) thay vì
+  // UI đoán tên field theo tool cụ thể.
+  if (item.state === 'running' && item.toolUi?.summaryArg) {
+    const value = (item.toolCall.args as Record<string, unknown> | undefined)?.[item.toolUi.summaryArg]
+    if (typeof value === 'string' && value) return `"${value}"`
   }
   return JSON.stringify(item.toolCall.args ?? {})
 }
@@ -402,6 +419,27 @@ export function App() {
       // ngay sau đó — không render lặp (đúng hành vi app.js cũ).
       return
     }
+    // loop-rlm phát riêng 'tool_call' (name/args tách khỏi step, xem chú
+    // thích ở khai báo LoopStep) — tạo đúng card "đang chạy" NGAY LÚC model
+    // quyết định gọi tool, để 'tool_result' theo sau tìm được đúng tool đang
+    // active mà hoàn tất (trước đây bị rơi hoàn toàn, user không thấy gì).
+    if (step.type === 'tool_call') {
+      const id = genId()
+      activeToolItemIdRef.current = id
+      setItems((prev) => [
+        ...prev,
+        { kind: 'tool', id, toolCall: { name: step.name ?? '', args: step.args ?? {} }, toolUi: step.toolUi, state: 'running' },
+      ])
+      return
+    }
+    // Hoạt động REPL của RLM giữa các tool call — chỉ báo đang chạy, KHÔNG
+    // dán nguyên code Python vào bubble chat (không phải nơi hiển thị code
+    // phù hợp, dễ rối mắt với đoạn dài) — cho cảm giác "đang làm gì" liên
+    // tục thay vì màn hình trắng chờ tới 'final'.
+    if (step.type === 'code') {
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '💻 đang chạy code…', ts: Date.now() }])
+      return
+    }
     if (step.type === 'tool_result') {
       const activeId = activeToolItemIdRef.current
       activeToolItemIdRef.current = null
@@ -472,6 +510,20 @@ export function App() {
         } else {
           result.push({ kind: 'assistant', id: genId(), text: step.content ?? '' })
         }
+        continue
+      }
+      // Cùng gap đã sửa ở applyStep() (xem chú thích khai báo LoopStep):
+      // loop-rlm lưu 'tool_call' RIÊNG (name/args tách khỏi step), khác
+      // model_message của loop-default — thiếu nhánh này khiến resume 1
+      // session RLM cũ mất sạch card tool, khác hẳn xem live qua WS.
+      if (step.type === 'tool_call') {
+        const id = genId()
+        pendingToolId = id
+        result.push({ kind: 'tool', id, toolCall: { name: step.name ?? '', args: step.args ?? {} }, toolUi: step.toolUi, state: 'running' })
+        continue
+      }
+      if (step.type === 'code') {
+        result.push({ kind: 'critic', id: genId(), text: '💻 đang chạy code…' })
         continue
       }
       if (step.type === 'tool_result' && pendingToolId) {

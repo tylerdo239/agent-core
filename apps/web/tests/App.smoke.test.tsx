@@ -41,6 +41,11 @@ class FakeWebSocket {
   close() {
     this.readyState = 3
   }
+  // Giả lập server gửi 1 message WS thật — dùng để test applyStep() với các
+  // step type RLM phát (tool_call/code/...), xem tests bên dưới.
+  emitMessage(payload: unknown) {
+    for (const cb of this.listeners.message ?? []) cb({ data: JSON.stringify(payload) })
+  }
 }
 
 // jsdom tạo đúng HTMLDialogElement cho thẻ <dialog> nhưng KHÔNG implement
@@ -141,6 +146,89 @@ describe('Phase 9.4 — App smoke test', () => {
 
       const latestSocket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1]
       expect(JSON.parse(latestSocket.sent[0])).toMatchObject({ type: 'create_session', driver: 'rlm' })
+    })
+
+    // Gap thật user báo lại: loop-rlm phát step 'tool_call' RIÊNG (không
+    // lồng trong `toolCall` như model_message của loop-default) — trước khi
+    // sửa applyStep(), card tool không bao giờ được tạo trong lượt RLM nên
+    // UI chờ không hiện gì đang chạy, và 'tool_result' theo sau cũng rơi.
+    it("step 'tool_call' (RLM) -> hiện card tool đang chạy; 'tool_result' theo sau hoàn tất đúng card đó", async () => {
+      await act(async () => {
+        render(<App />)
+        await new Promise((r) => setTimeout(r, 30))
+      })
+      const socket = FakeWebSocket.instances[0]
+
+      await act(async () => {
+        socket.emitMessage({ type: 'session_created', id: 's1', driver: 'rlm' })
+        await new Promise((r) => setTimeout(r, 10))
+      })
+
+      await act(async () => {
+        socket.emitMessage({ type: 'step', sessionId: 's1', step: { type: 'tool_call', name: 'web_search', args: { query: 'x' } } })
+        await new Promise((r) => setTimeout(r, 10))
+      })
+
+      expect(screen.getByText('web_search').closest('[data-state]')?.getAttribute('data-state')).toBe('running')
+
+      await act(async () => {
+        socket.emitMessage({ type: 'step', sessionId: 's1', step: { type: 'tool_result', name: 'web_search', result: { ok: true } } })
+        await new Promise((r) => setTimeout(r, 10))
+      })
+
+      expect(screen.getByText('web_search').closest('[data-state]')?.getAttribute('data-state')).toBe('ok')
+    })
+
+    it("step 'code' (RLM, đang chạy REPL giữa các tool call) -> hiện chỉ báo hoạt động, không màn hình trắng chờ 'final'", async () => {
+      await act(async () => {
+        render(<App />)
+        await new Promise((r) => setTimeout(r, 30))
+      })
+      const socket = FakeWebSocket.instances[0]
+
+      await act(async () => {
+        socket.emitMessage({ type: 'session_created', id: 's1', driver: 'rlm' })
+        await new Promise((r) => setTimeout(r, 10))
+      })
+
+      await act(async () => {
+        socket.emitMessage({ type: 'step', sessionId: 's1', step: { type: 'code', code: 'print(1)' } })
+        await new Promise((r) => setTimeout(r, 10))
+      })
+
+      expect(screen.getByText('💻 đang chạy code…')).toBeTruthy()
+    })
+
+    // Đối chiếu dsh (WebBlock)/Claude: lúc tool ĐANG chạy, hiện ngay câu tìm
+    // kiếm thật (người đọc được) thay vì JSON kỹ thuật thô `{"query":"..."}`.
+    it("tool_call có toolUi.summaryArg -> hiện query dạng trích dẫn, không phải raw JSON", async () => {
+      await act(async () => {
+        render(<App />)
+        await new Promise((r) => setTimeout(r, 30))
+      })
+      const socket = FakeWebSocket.instances[0]
+
+      await act(async () => {
+        socket.emitMessage({ type: 'session_created', id: 's1', driver: 'rlm' })
+        await new Promise((r) => setTimeout(r, 10))
+      })
+
+      await act(async () => {
+        socket.emitMessage({
+          type: 'step',
+          sessionId: 's1',
+          step: {
+            type: 'tool_call',
+            name: 'web_search',
+            args: { query: 'Vietnam coffee market size' },
+            toolUi: { icon: '🔍', label: 'Tìm kiếm web', render: 'citations', summaryArg: 'query' },
+          },
+        })
+        await new Promise((r) => setTimeout(r, 10))
+      })
+
+      expect(screen.getByText('"Vietnam coffee market size"')).toBeTruthy()
+      expect(screen.queryByText('{"query":"Vietnam coffee market size"}')).toBeNull()
     })
   })
 })

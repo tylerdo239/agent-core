@@ -17,5 +17,5 @@ export interface ToolViewOwnerProps {
    * thị của chính nó), nhưng `GenericToolCard` (fallback bắt buộc, Phase 9.4)
    * cần để hiển thị hợp lý khi tool không có UI-plugin riêng.
    */
-  toolUi?: { icon?: string; label?: string; render?: 'citations' | 'io' }
+  toolUi?: { icon?: string; label?: string; render?: 'citations' | 'io'; summaryArg?: string }
 }
