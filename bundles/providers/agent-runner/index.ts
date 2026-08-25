@@ -74,7 +74,23 @@ export class AgentRunner extends AgentRunnerService {
       // Pin: `driver` là tham chiếu cụ thể, không phải "cái tên" — registry có
       // đổi driver nào đứng sau tên này sau lúc này cũng không ảnh hưởng turn
       // đang chạy.
-      return await driver.runTurn(this.ctx, session, input)
+      //
+      // agent/turn-done + agent/turn-error (seams/loop.ts): phát Ở ĐÂY —
+      // entrypoint ổn định chung cho MỌI caller (coding rule B4), không phải
+      // ở từng adapter riêng — để downlink subscriber (WS) biết turn đã xong
+      // mà không cần tự gọi lại runTurn(). Caller trực tiếp (REST) vẫn dùng
+      // giá trị return/throw thật của chính lệnh gọi này, không đọc lại event.
+      try {
+        const result = await driver.runTurn(this.ctx, session, input)
+        this.ctx.emit('agent/turn-done', { sessionId: session.id, result })
+        return result
+      } catch (err) {
+        this.ctx.emit('agent/turn-error', {
+          sessionId: session.id,
+          message: err instanceof Error ? err.message : String(err),
+        })
+        throw err
+      }
     } finally {
       this.activeSessions.delete(session.id)
     }

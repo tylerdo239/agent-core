@@ -16,7 +16,33 @@ VPS này **không tự làm TLS** — chỉ mở HTTP thường ở 2 port trên
 (nơi khác) chịu trách nhiệm domain + chứng chỉ + forward vào đúng 2 port
 này.
 
-## Vấn đề thật phải sửa trước khi deploy được (đã sửa + verify thật, không phải giả thuyết)
+## Nguyên tắc tách file (follow-up quan trọng, đọc trước khi làm theo dưới)
+
+Bản đầu của plan này lỡ sửa THẲNG vào `docker-compose.yml` (file base, dùng
+chung cho local/dev mặc định) để thêm mọi thứ phục vụ VPS — user yêu cầu
+sửa lại: **`docker-compose.yml` phải giữ NGUYÊN như trước, không đụng vào**;
+mọi thứ đặc thù cho deploy thật (build-time domain riêng, gateway gộp
+REST+WS, restart policy) sống trong `docker-compose.prod.yml` — 1 file
+OVERRIDE đã có sẵn từ trước trong repo (cùng convention với
+`docker-compose.dev.yml`), giờ dùng đúng chỗ nó sinh ra để dùng.
+
+- **Local/dev mặc định**: `docker compose up ...` — CHỈ đọc
+  `docker-compose.yml`, y hệt hành vi trước khi có VPS deploy này (đã verify
+  lại: không có `api-gateway`, không có `VITE_REST_URL`/`VITE_WS_URL`, port
+  publish `0.0.0.0` như cũ).
+- **Deploy VPS (production thật)**: LUÔN thêm `-f docker-compose.prod.yml`:
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d agent-core api-gateway postgres memory-core
+  ```
+
+Đã verify thật cả 2 đường: `docker compose config` (base) chỉ ra 3 service,
+build args chỉ có `AGENT_UID`/`AGENT_GID`, port không giới hạn host_ip;
+`docker compose -f ... -f docker-compose.prod.yml config` ra đủ 4 service
+(thêm `api-gateway`), build args có thêm `VITE_REST_URL`/`VITE_WS_URL`,
+`postgres`/`memory-core` có `restart: unless-stopped`. Bật thật cả 2 đường
+bằng Docker thật, cả 2 đều `healthy`.
+
+## Vấn đề thật phải sửa trước khi deploy được (đã sửa + verify thật)
 
 1. **`restUrl`/`wsUrl` của web UI trước đây suy luận từ `location.hostname`**
    (`packages/ui-settings-general/src/settings.ts`) — đúng khi app và API
@@ -29,31 +55,54 @@ này.
    thật với `--build-arg VITE_REST_URL=... VITE_WS_URL=...`, grep bundle đã
    build xác nhận đúng domain có mặt trong `dist/assets/*.js`.
 
-2. **REST (`agent-core:8787`) và WS (`agent-core:8788`) là 2 cổng RIÊNG**,
-   nhưng chỉ có ĐÚNG 1 domain/port public cho "API" (`api-harness...:4098`).
-   Thêm service mới `api-gateway` (nginx, `deploy/api-gateway.conf`) — gộp
-   REST+WS vào 1 port bằng cách đọc header `Upgrade: websocket` để chọn
-   đúng backend (pattern `map` chuẩn của nginx cho WebSocket proxying,
-   không dùng `if` trong `location`). KHÔNG tự làm TLS — chỉ nghe HTTP
-   thường ở port nội bộ, TLS do lớp ngoài lo. Verify thật: script Node dùng
-   package `ws` — sign up thật, `GET /sessions` qua gateway (200), WS
-   handshake qua gateway (101 Switching Protocols thật + nhận đúng
-   `session_created`) — cả REST lẫn WS đều đi qua ĐÚNG 1 port 4098.
+2. **(Lúc viết mục này) REST (`agent-core:8787`) và WS (`agent-core:8788`)
+   là 2 cổng RIÊNG**, nhưng chỉ có ĐÚNG 1 domain/port public cho "API"
+   (`api-harness...:4098`). Service `api-gateway` (nginx,
+   `deploy/api-gateway.conf`, chỉ có trong `docker-compose.prod.yml`) — gộp
+   REST+WS vào 1 port bằng cách đọc header `Upgrade: websocket` để chọn đúng
+   backend (pattern `map` chuẩn của nginx cho WebSocket proxying, không dùng
+   `if` trong `location`). KHÔNG tự làm TLS — chỉ nghe HTTP thường ở port
+   nội bộ, TLS do lớp ngoài lo. Verify thật: script Node dùng package `ws` —
+   sign up thật, `GET /sessions` qua gateway (200), WS handshake qua gateway
+   (101 Switching Protocols thật + nhận đúng `session_created`) — cả REST
+   lẫn WS đều đi qua ĐÚNG 1 port 4098.
 
-Cả 2 thay đổi đều **thuần cộng thêm** (additive) — deployment 1-host hiện
-tại (localhost, không set `VITE_REST_URL`/`VITE_WS_URL`/`PORT_API_PUBLIC`)
-chạy y hệt trước đây, đã xác nhận lại bằng `npm test` (263/263 pass) sau khi
-sửa.
+   **Follow-up (Phase 6.3, đã supersede mục này)**: `agent-core:8787` và
+   `agent-core:8788` KHÔNG còn là 2 cổng riêng nữa — `bundles/adapters/api-ws`
+   đã gộp vào `bundles/adapters/api-rest`, WS giờ là
+   `GET /sessions/:id/events/stream` trên CÙNG port 8787 (downlink-only,
+   không còn `create_session`/`send_message` qua WS — session tạo qua
+   `POST /sessions`). `deploy/api-gateway.conf` đã đơn giản hoá theo — chỉ
+   còn 1 upstream, không còn `map $http_upgrade $agent_core_backend` chọn
+   giữa `rest_backend`/`ws_backend`. Phần verify "101 Switching Protocols +
+   nhận đúng `session_created`" ở trên đã lỗi thời (không còn message
+   `session_created` qua WS) — xem `docs/frontend-backend-handoff.md` mục 4-5
+   cho protocol hiện hành.
 
-## Các file đã đổi/thêm (đã có trong repo, không cần tự viết lại)
+3. **`postgres`/`memory-core` thiếu `restart:` policy** — phát hiện lúc
+   audit, khác `agent-core` (đã có `unless-stopped` từ đầu), 2 service này
+   không tự bật lại sau crash/reboot. Chỉ thêm ở `docker-compose.prod.yml`
+   (production concern thật, không phải thứ base cần) — verify bằng
+   `docker inspect ... RestartPolicy.Name` ra đúng `unless-stopped`.
+
+Cả 3 đều nằm gọn trong `docker-compose.prod.yml` — `docker-compose.yml`
+(base, dùng cho local/dev mặc định) **không đổi 1 dòng nào**, đã verify lại
+bằng `npm test` (263/263 pass, không đụng code) và chạy thật base-only
+(không có api-gateway, port `0.0.0.0` như cũ).
+
+## Các file đã đổi/thêm
 
 - `packages/ui-settings-general/src/settings.ts` — ưu tiên
-  `import.meta.env.VITE_REST_URL`/`VITE_WS_URL`.
+  `import.meta.env.VITE_REST_URL`/`VITE_WS_URL` (fallback hành vi cũ nếu
+  không set — áp dụng cho MỌI deployment, kể cả local).
 - `apps/web/src/vite-env.d.ts` — ambient type cho `import.meta.env` (chuẩn
   scaffold Vite).
-- `Dockerfile` — stage `build-web` nhận `ARG VITE_REST_URL`/`VITE_WS_URL`.
-- `docker-compose.yml` — `agent-core.build.args` truyền 2 biến trên từ
-  `.env`; service mới `api-gateway` (tuỳ chọn, chỉ chạy khi cần).
+- `Dockerfile` — stage `build-web` nhận `ARG VITE_REST_URL`/`VITE_WS_URL`
+  (rỗng mặc định — chỉ có giá trị khi `docker-compose.prod.yml` truyền vào).
+- `docker-compose.yml` — **KHÔNG đổi**, y hệt trước khi có VPS deploy.
+- `docker-compose.prod.yml` — MỌI thứ đặc thù VPS: `agent-core.build.args`
+  (VITE_REST_URL/VITE_WS_URL), `postgres`/`memory-core.restart`, service mới
+  `api-gateway` (gộp REST+WS + healthcheck).
 - `deploy/api-gateway.conf` — cấu hình nginx gộp REST+WS.
 - `.env.example` — mục mới "Deploy VPS domain riêng".
 - `packages/ui-settings-general/tests/settings.test.ts` — test mới (3 case).
@@ -100,17 +149,24 @@ VITE_REST_URL=https://api-harness.onebot.meobeo.ai:4098
 VITE_WS_URL=wss://api-harness.onebot.meobeo.ai:4098
 ```
 
-## Bước 3 — Build + chạy
+## Bước 3 — Build + chạy (LUÔN kèm `-f docker-compose.prod.yml`)
 
 ```bash
 # --build bắt buộc (VITE_REST_URL/VITE_WS_URL bake lúc build, không phải runtime)
-docker compose up --build -d agent-core api-gateway postgres memory-core
+docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+  up --build -d agent-core api-gateway postgres memory-core
 
-docker compose ps   # xác nhận cả agent-core, api-gateway, postgres (healthy)
+docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
+# xác nhận cả agent-core, api-gateway, postgres (healthy)
 ```
 
 `memory-core` là tuỳ chọn (bỏ qua nếu không dùng module memory — không set
 `MEMORY_CORE_*` thì `ctx.memory` tự không mount, không lỗi gì).
+
+**Lưu ý:** chạy thiếu `-f docker-compose.prod.yml` (bare `docker compose
+up`) vẫn build/chạy được, nhưng đó là đường LOCAL — không có `api-gateway`,
+không bake domain vào bundle, không có restart policy cho postgres. Deploy
+thật LUÔN cần cả 2 file.
 
 ## Bước 4 — Verify NGAY TRÊN VPS (trước khi đụng tới domain/TLS ở ngoài)
 
@@ -126,9 +182,8 @@ docker compose exec agent-core sh -c \
   "grep -o 'api-harness.onebot.meobeo.ai:4098' apps/web/dist/assets/*.js | sort -u"
 ```
 
-Nếu dòng cuối KHÔNG in ra gì — `.env` thiếu `VITE_REST_URL`/`VITE_WS_URL`
-hoặc image chưa được build lại sau khi thêm chúng (`docker compose build
-agent-core` lại).
+Nếu dòng cuối KHÔNG in ra gì — `.env` thiếu `VITE_REST_URL`/`VITE_WS_URL`,
+hoặc bạn build KHÔNG kèm `-f docker-compose.prod.yml`.
 
 ## Bước 5 — Trỏ reverse proxy/TLS (lớp ngoài, ngoài phạm vi VPS này)
 
@@ -154,9 +209,12 @@ sudo ufw status
 **KHÔNG mở** `8787`/`8788`/`15052`/`5432` ra ngoài — đây là port nội bộ
 (REST/WS trực tiếp, gRPC, Postgres), chỉ `api-gateway` cần chạm tới
 `agent-core:8787`/`8788` và điều đó đã xảy ra trong mạng nội bộ
-docker-compose, không cần publish ra host/internet. `docker-compose.yml`
-hiện vẫn publish các port này ra `0.0.0.0` (giữ nguyên cho tương thích
-dev/local) — `ufw` ở bước này là lớp chặn thật sự cần thiết trên VPS.
+docker-compose, không cần publish ra host/internet. Compose vẫn publish các
+port này ra `0.0.0.0` (giữ nguyên hành vi base cho tương thích dev/local) —
+`ufw` ở bước này là lớp chặn thật sự cần thiết trên VPS, không có gì ở tầng
+Compose thay thế được việc này (cân nhắc port-bind `127.0.0.1` ở
+`docker-compose.prod.yml` từng được thử, nhưng bỏ vì rủi ro merge danh sách
+`ports:` giữa nhiều file compose — `ufw` đơn giản và chắc chắn hơn).
 
 ## Bước 7 — Verify từ bên ngoài (sau khi DNS + reverse proxy đã trỏ xong)
 
@@ -174,7 +232,8 @@ ký → gửi 1 tin nhắn → nếu có phản hồi từ agent = REST + WS qua
 
 ```bash
 git pull
-docker compose up --build -d agent-core api-gateway
+docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+  up --build -d agent-core api-gateway
 ```
 
 Chỉ cần `--build` lại `agent-core` khi đổi code HOẶC đổi
@@ -189,6 +248,9 @@ Dockerfile riêng) chỉ cần restart nếu sửa `deploy/api-gateway.conf`.
   `https://app-harness.onebot.meobeo.ai` sau này, `api-rest`'s `Config` đã
   có sẵn field `corsOrigin` — cần thêm 1 dòng plumbing env var ở
   `src/serve.ts` (chưa làm ở đây, ngoài phạm vi yêu cầu deploy này).
+- **8787/8788/15052 vẫn publish `0.0.0.0`** — chỉ `ufw` chặn (xem Bước 6),
+  không có lớp phòng thủ nào ở tầng Compose. Nếu quên bật `ufw` hoặc quên
+  đúng rule, 3 port này lộ ra ngoài thật.
 - **`api-gateway` không tự retry/failover** — nếu `agent-core` container
   restart, nginx sẽ trả lỗi 502 cho tới khi `agent-core` khoẻ lại (không có
   buffering/queue) — chấp nhận được cho 1-instance deployment hiện tại.

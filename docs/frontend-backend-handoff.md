@@ -8,8 +8,10 @@ tự sở hữu prompt, memory, tool routing hoặc RLM loop.
 
 ```text
 Browser frontend
-  ├─ REST :8787  ─ session, skills, upload/download, event history
-  └─ WS   :8788  ─ create/resume turn và stream trạng thái live
+  └─ :8787 (REST + WS, CÙNG port)
+       ├─ REST  ─ tạo/gửi turn, skills, upload/download, event history
+       └─ WS    ─ GET /sessions/:id/events/stream — CHỈ nhận (downlink),
+                   không nhận create_session/send_message từ client nữa
                        │
                        ▼
                  AgentRunner
@@ -75,7 +77,7 @@ Các port mặc định trên host:
 | Chức năng | URL |
 |---|---|
 | REST | `http://localhost:8787` |
-| WebSocket | `ws://localhost:8788` |
+| WebSocket | `ws://localhost:8787` (CÙNG port với REST, xem mục 5) |
 | Reference UI | `http://localhost:8790` |
 | gRPC | `localhost:15052` |
 
@@ -99,8 +101,12 @@ Authorization: Bearer <API_KEY>
 Browser WebSocket không set được custom header, vì vậy dùng query string:
 
 ```text
-ws://localhost:8788/?key=<URL_ENCODED_API_KEY>
+ws://localhost:8787/sessions/<SESSION_UUID>/events/stream?token=<URL_ENCODED_API_KEY>
 ```
+
+Session phải đã tồn tại (tạo trước qua REST) — WS reject ngay lúc handshake
+(401/403/404, trước khi nâng cấp) nếu thiếu/sai token, không có quyền, hoặc
+session không tồn tại.
 
 Không đưa `.env` hoặc key thật vào Git. Với deployment public, đặt backend sau
 reverse proxy và đổi key query-string thành token ngắn hạn; contract hiện tại
@@ -109,61 +115,27 @@ reverse proxy và đổi key query-string thành token ngắn hạn; contract hi
 ## 4. Flow frontend được khuyến nghị
 
 ```text
-1. Mở WebSocket có auth
-2. Gửi create_session với driver="rlm"
-3. Nhận session_created và lưu sessionId
-4. Upload dataset qua REST với cùng sessionId (nếu có)
-5. Gửi send_message qua WebSocket
-6. Render 0..N message type="step"
-7. Nhận message type="done"
-8. Refresh GET /sessions/:id/files để hiện output mới
+1. POST /sessions (REST) — tạo session, driver="rlm"
+2. Mở WS GET /sessions/:id/events/stream?token=... — CHỈ để nhận step/done/error
+3. Upload dataset qua REST với cùng sessionId (nếu có)
+4. POST /sessions/:id/messages (REST) — gửi turn thật
+5. Render 0..N message type="step" (qua WS)
+6. Nhận message type="done" (qua WS) — response của bước 4 cũng trả cùng
+   `result`, dùng làm lưới an toàn nếu WS rớt giữa chừng, không render lại
+   nội dung 2 lần
+7. Refresh GET /sessions/:id/files để hiện output mới
 ```
 
 Chỉ cho một turn in-flight trên cùng session. Disable nút Send cho tới khi
-nhận `done` hoặc `error`.
+nhận `done` hoặc `error`. **Quan trọng**: mở xong WS (đợi sự kiện `open`) rồi
+mới gọi bước 4 — server phát `step` ĐỒNG BỘ ngay trong lúc xử lý message,
+subscribe trễ sẽ lỡ mất các step đầu.
 
-## 5. WebSocket contract
+## 5. WebSocket contract (downlink-only)
 
-### Tạo session
-
-Client gửi:
-
-```json
-{
-  "type": "create_session",
-  "driver": "rlm",
-  "maxSteps": 8
-}
-```
-
-`maxSteps` là optional. Không gửi `systemPrompt` từ UI thông thường.
-
-Server trả:
-
-```json
-{
-  "type": "session_created",
-  "id": "SESSION_UUID",
-  "driver": "rlm"
-}
-```
-
-### Gửi một turn
-
-```json
-{
-  "type": "send_message",
-  "sessionId": "SESSION_UUID",
-  "message": "Phân tích dataset hiện tại",
-  "selectedSkill": "explore-data",
-  "metadata": {
-    "clientRequestId": "optional-ui-id"
-  }
-}
-```
-
-`selectedSkill` và `metadata` là optional. Skill name phải lấy từ `GET
-/skills`, không hardcode danh sách trong frontend.
+WS không nhận bất kỳ message nghiệp vụ nào từ client (không còn
+`create_session`/`send_message`) — chỉ mở để NHẬN 3 loại event bên dưới, tạo
+session và gửi turn đều đi qua REST (mục 6).
 
 ### Stream
 
@@ -272,12 +244,14 @@ Authorization: Bearer ...
 {"id":"SESSION_UUID","driver":"rlm","maxSteps":8}
 ```
 
-Frontend có thể tạo session bằng REST hoặc WebSocket. Không tạo cả hai cho
-cùng một thao tác.
+REST là cách DUY NHẤT tạo session (WS không còn nhận `create_session`, xem
+mục 5).
 
 ### Gửi message qua REST
 
-REST phù hợp với client không cần live stream:
+REST là cách DUY NHẤT gửi turn — mở thêm WS stream (mục 5) trước lệnh gọi
+này nếu cần render step live, nhưng response của chính lệnh gọi này vẫn luôn
+có, kể cả không mở WS:
 
 ```http
 POST /sessions/:sessionId/messages
@@ -350,7 +324,7 @@ Frontend nên hợp nhất theo `path` để không render trùng:
 
 Refresh danh sách tại bốn thời điểm:
 
-1. Sau `session_created`.
+1. Sau khi tạo session mới thành công (`POST /sessions`, driver `rlm`).
 2. Sau upload thành công.
 3. Sau mỗi WebSocket `done`.
 4. Khi user bấm Refresh.
@@ -446,7 +420,8 @@ Composition root:
 ## 10. Checklist frontend trước khi bàn giao
 
 - [ ] API key không hardcode trong source/bundle.
-- [ ] WebSocket connect bằng URL-encoded key.
+- [ ] Session tạo qua `POST /sessions` (REST), KHÔNG qua WS.
+- [ ] WS chỉ mở SAU khi có sessionId thật, connect bằng URL-encoded key trong query string.
 - [ ] Session luôn tạo với `driver: "rlm"`.
 - [ ] Frontend không gửi system prompt mặc định.
 - [ ] Chỉ một turn chạy đồng thời trên một session.

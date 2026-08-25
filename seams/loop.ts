@@ -22,6 +22,17 @@ declare module '@deepseek-ai/cordis' {
      * adapter cần stream (WS, gRPC server-streaming). REST không cần nghe.
      */
     'agent/step'(event: { sessionId: string; step: LoopStep }): void
+    /**
+     * Phát tại entrypoint chung `bundles/providers/agent-runner` ngay sau khi
+     * `driver.runTurn()` resolve — "live tap" cho downlink subscriber (WS
+     * `/sessions/:id/events/stream`) cần biết turn đã xong để đóng vòng lặp
+     * step/done. KHÔNG phải nguồn sự thật: caller trực tiếp của `runTurn()`
+     * (REST `POST /sessions/:id/messages`) vẫn lấy `result` từ chính giá trị
+     * trả về của lệnh gọi đó, không nghe lại event này.
+     */
+    'agent/turn-done'(event: { sessionId: string; result: LoopTurnResult }): void
+    /** Cùng vị trí phát và lý do như 'agent/turn-done', cho nhánh lỗi (driver.runTurn() throw). */
+    'agent/turn-error'(event: { sessionId: string; message: string }): void
   }
 }
 

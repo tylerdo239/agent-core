@@ -17,7 +17,8 @@ describe('defaultSettings', () => {
   it('KHÔNG set VITE_REST_URL/VITE_WS_URL -> suy luận từ location.hostname (hành vi cũ, 1-host)', () => {
     expect(defaultSettings()).toEqual({
       restUrl: `${location.protocol}//${location.hostname}:8787`,
-      wsUrl: `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.hostname}:8788`,
+      // Phase 6.3: wsUrl suy từ restUrl (cùng port 8787, api-ws/8788 đã gộp vào api-rest).
+      wsUrl: `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.hostname}:8787`,
     })
   })
 
@@ -36,7 +37,8 @@ describe('defaultSettings', () => {
 
     expect(defaultSettings()).toEqual({
       restUrl: `${location.protocol}//${location.hostname}:8787`,
-      wsUrl: `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.hostname}:8788`,
+      // Phase 6.3: wsUrl suy từ restUrl (cùng port 8787, api-ws/8788 đã gộp vào api-rest).
+      wsUrl: `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.hostname}:8787`,
     })
   })
 })

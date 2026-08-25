@@ -1,4 +1,12 @@
-// bundles/api-rest — Phase 6.1: REST adapter mỏng qua ctx.sessions/ctx.agent/ctx.storage.
+// bundles/api-rest — Phase 6.1: REST adapter qua ctx.sessions/ctx.agent/ctx.storage.
+// Phase 6.3 (gộp WS): bundle này giờ sở hữu 1 http.Server DUY NHẤT phục vụ cả
+// REST route lẫn WS upgrade (`GET /sessions/:id/events/stream`) — tham khảo
+// dsh (`docs/api-gateway.md` + note kiến trúc 2026-08-04-websocket-downlink-
+// carrier.md của họ): HTTP là nguồn sự thật duy nhất cho mọi lệnh có
+// request/response (tạo session, gửi message); WebSocket chỉ downlink một
+// chiều (step/done/error), không nhận message nghiệp vụ từ client nữa —
+// tránh 2 lần cài đặt trùng nhau cho cùng 1 nghiệp vụ (create_session/
+// send_message) từng tồn tại song song ở bundles/adapters/api-ws (đã xoá).
 //
 // Dùng thẳng `node:http` — không thêm framework (coding rule A6, chỉ endpoint
 // ít, không cần routing phức tạp). `apply` tự thân là async, mở server
@@ -7,31 +15,35 @@
 // test xác nhận (giống pattern Phase 2 cho SQLite).
 //
 // Bundle này KHÔNG đăng ký vào registry nào khác (khác loop driver) — chính
-// nó sở hữu server của nó, nên rule A12 không áp dụng: handler route được
-// phép đóng gói `ctx` từ `apply()` của chính bundle này, vì fiber sở hữu
-// handler và fiber sở hữu server luôn là MỘT, dispose cùng lúc.
+// nó sở hữu server của nó (giờ là 1 server duy nhất cho cả 2 protocol), nên
+// rule A12 không áp dụng: handler route (kể cả handler WS upgrade/connection)
+// được phép đóng gói `ctx` từ `apply()` của chính bundle này, vì fiber sở
+// hữu handler và fiber sở hữu server luôn là MỘT, dispose cùng lúc.
 //
 // Production hardening: MỌI request (trừ /health, /ready, /auth/signup,
 // /auth/login) phải có `Authorization: Bearer <token>` hợp lệ qua
 // ctx.auth.verify() — coding rule B1 (chạm resource phải tự check, không
 // giả định caller đã check hộ). Body giới hạn kích thước — request lớn hơn
-// bị từ chối trước khi đọc hết, tránh 1 request ăn hết RAM process.
+// bị từ chối trước khi đọc hết, tránh 1 request ăn hết RAM process. WS
+// upgrade cũng auth NGAY LÚC HANDSHAKE (trước khi nâng cấp), cùng nguyên tắc.
 //
 // Module auth (nhiều người dùng thật): verify() giờ trả về AuthIdentity
 // (không còn boolean thuần) — mọi session tạo mới gắn `ownerId` từ CHÍNH
 // identity đã verify (KHÔNG BAO GIỜ từ field client tự khai trong body).
-// GET /sessions/:id/events và POST /sessions/:id/messages đều check thêm
-// quyền sở hữu (canAccessSession) SAU khi xác nhận session tồn tại — thiếu
-// bước này thì bất kỳ token hợp lệ nào cũng đọc/ghi được session của người
-// khác, chỉ cần biết/đoán đúng id (gap thật, không phải giả thuyết).
+// GET /sessions/:id/events, POST /sessions/:id/messages, và WS upgrade đều
+// check thêm quyền sở hữu (canAccessSession) SAU khi xác nhận session tồn
+// tại — thiếu bước này thì bất kỳ token hợp lệ nào cũng đọc/ghi được session
+// của người khác, chỉ cần biết/đoán đúng id (gap thật, không phải giả thuyết).
 //
-// CORS: bật cho MỌI request — cần thiết ngay khi có browser client
-// (bundles/adapters/web-ui chạy ở port khác = origin khác theo trình duyệt),
-// độc lập với việc mạng có internet-facing hay không. An toàn để mặc định
-// `*` vì auth ở đây dùng Bearer token (browser không tự đính kèm như
-// cookie) — không có rủi ro CSRF kiểu cookie-based, khác hẳn hệ thống dùng
-// session cookie.
+// CORS: bật cho MỌI request REST — cần thiết ngay khi có browser client
+// (frontend serve ở apps/web/dist qua bundles/adapters/web-ui, port khác =
+// origin khác theo trình duyệt), độc lập với việc mạng có internet-facing
+// hay không. An toàn để mặc định `*` vì auth ở đây dùng Bearer token
+// (browser không tự đính kèm như cookie) — không có rủi ro CSRF kiểu
+// cookie-based, khác hẳn hệ thống dùng session cookie.
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import type { Duplex } from 'node:stream'
+import { WebSocketServer, type WebSocket } from 'ws'
 import { Context } from '@deepseek-ai/cordis'
 import '../../../seams/sessions.ts'
 import '../../../seams/agent.ts'
@@ -39,7 +51,7 @@ import '../../../seams/storage.ts'
 import '../../../seams/permission.ts'
 import '../../../seams/auth.ts'
 import { AuthIdentity } from '../../../seams/auth.ts'
-import { Session } from '../../../seams/loop.ts'
+import { LoopStep, LoopTurnResult, Session } from '../../../seams/loop.ts'
 import '../../../seams/skill.ts'
 import '../../../seams/workspace.ts'
 
@@ -51,6 +63,8 @@ export namespace ApiRest {
     maxBodyBytes?: number
     /** Access-Control-Allow-Origin — mặc định "*" (xem ghi chú CORS ở đầu file). */
     corsOrigin?: string
+    /** Giới hạn 1 message WS downlink (byte) — mặc định 1 MiB. Client không gửi message nghiệp vụ nên hiếm khi chạm; vẫn giữ giới hạn để chặn frame rác khổng lồ. */
+    wsMaxPayloadBytes?: number
   }
 }
 
@@ -58,6 +72,7 @@ export const inject = ['sessions', 'agent', 'storage', 'auth', 'permission', 'sk
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024 // 1 MiB
 const FILE_MAX_BODY_BYTES = 70 * 1024 * 1024 // 70 MiB for uploads
+const DEFAULT_WS_MAX_PAYLOAD_BYTES = 1024 * 1024 // 1 MiB
 
 async function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
   const chunks: Buffer[] = []
@@ -102,6 +117,52 @@ function canAccessSession(identity: AuthIdentity, session: Session): boolean {
 
 const PUBLIC_PATHS = new Set(['/health', '/ready', '/auth/signup', '/auth/login'])
 
+// ── WS downlink (Phase 6.3, port từ bundles/adapters/api-ws đã xoá) ──────────
+
+const WS_STREAM_PATH = /^\/sessions\/([^/]+)\/events\/stream$/
+
+/**
+ * Token cho WS lấy từ 2 nguồn (header trước, query string sau) — KHÔNG phải
+ * 1 trong 2 là đủ cho mọi client thật: `new WebSocket(url)` theo Web spec
+ * KHÔNG có tham số set custom header (khác client Node package `ws` dùng
+ * trong test, có hỗ trợ `{ headers }`). Browser thật (apps/web) PHẢI dùng
+ * query string (`?token=...`); giữ header cho client Node hiện có.
+ */
+function extractWsToken(req: IncomingMessage): string | undefined {
+  const header = req.headers.authorization
+  if (header?.startsWith('Bearer ')) return header.slice('Bearer '.length)
+  const url = new URL(req.url ?? '/', 'http://localhost')
+  return url.searchParams.get('token') ?? undefined
+}
+
+function sendWs(ws: WebSocket, payload: unknown) {
+  ws.send(JSON.stringify(payload))
+}
+
+/** Từ chối upgrade bằng 1 HTTP status thật TRƯỚC khi nâng cấp — không accept-rồi-đóng. */
+function rejectUpgrade(socket: Duplex, status: number) {
+  const statusText: Record<number, string> = { 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found' }
+  socket.write(`HTTP/1.1 ${status} ${statusText[status] ?? 'Bad Request'}\r\n\r\n`)
+  socket.destroy()
+}
+
+async function handleUpgrade(ctx: Context, wss: WebSocketServer, req: IncomingMessage, socket: Duplex, head: Buffer) {
+  const pathname = new URL(req.url ?? '/', 'http://localhost').pathname
+  const match = pathname.match(WS_STREAM_PATH)
+  if (!match) return rejectUpgrade(socket, 404)
+
+  const identity = await ctx.auth.verify(extractWsToken(req))
+  if (!identity) return rejectUpgrade(socket, 401)
+
+  const session = ctx.sessions.get(match[1])
+  if (!session) return rejectUpgrade(socket, 404)
+  if (!canAccessSession(identity, session)) return rejectUpgrade(socket, 403)
+
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit('connection', ws, req, session)
+  })
+}
+
 // LƯU Ý (coding rule A13): `apply` ở đây PHẢI là `async` và return disposer
 // TRỰC TIẾP (Promise<Disposable>) — không bọc qua `ctx.effect()` bên trong 1
 // `apply` đồng bộ. Đã verify thực nghiệm: nếu `apply` đồng bộ chỉ *gọi*
@@ -113,6 +174,7 @@ const PUBLIC_PATHS = new Set(['/health', '/ready', '/auth/signup', '/auth/login'
 export const apply = async (ctx: Context, config: ApiRest.Config = {}) => {
   const maxBodyBytes = config.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES
   const corsOrigin = config.corsOrigin ?? '*'
+  const wsMaxPayloadBytes = config.wsMaxPayloadBytes ?? DEFAULT_WS_MAX_PAYLOAD_BYTES
 
   const server = createServer((req, res) => {
     res.setHeader('access-control-allow-origin', corsOrigin)
@@ -128,14 +190,57 @@ export const apply = async (ctx: Context, config: ApiRest.Config = {}) => {
     })
   })
 
+  // `noServer: true` — TỰ dispatch upgrade thay vì cho `ws` chiếm hẳn server
+  // (khác `{ port }` độc lập của bundle api-ws cũ): server.listen() chỉ gọi
+  // 1 LẦN duy nhất bên dưới, dùng chung cho cả REST lẫn WS upgrade.
+  const wss = new WebSocketServer({ noServer: true, maxPayload: wsMaxPayloadBytes })
+
+  server.on('upgrade', (req, socket, head) => {
+    handleUpgrade(ctx, wss, req, socket, head).catch((err: any) => {
+      ctx.logger('api-rest').error(err)
+      socket.destroy()
+    })
+  })
+
+  wss.on('connection', (ws: WebSocket, _req: IncomingMessage, session: Session) => {
+    // Downlink-only: KHÔNG có ws.on('message', ...) — WS không nhận message
+    // nghiệp vụ từ client nữa (xem header file). Chỉ forward 3 event, lọc
+    // theo đúng sessionId của socket này, gỡ hết khi socket đóng.
+    const onStep = (e: { sessionId: string; step: LoopStep }) => {
+      if (e.sessionId !== session.id) return
+      sendWs(ws, { type: 'step', sessionId: e.sessionId, step: e.step })
+    }
+    const onDone = (e: { sessionId: string; result: LoopTurnResult }) => {
+      if (e.sessionId !== session.id) return
+      sendWs(ws, { type: 'done', sessionId: e.sessionId, result: e.result })
+    }
+    const onError = (e: { sessionId: string; message: string }) => {
+      if (e.sessionId !== session.id) return
+      sendWs(ws, { type: 'error', message: e.message })
+    }
+    const offStep = ctx.on('agent/step', onStep)
+    const offDone = ctx.on('agent/turn-done', onDone)
+    const offError = ctx.on('agent/turn-error', onError)
+    ws.on('close', () => {
+      offStep()
+      offDone()
+      offError()
+    })
+  })
+
   await new Promise<void>((resolve) => server.listen(config.port ?? 8787, resolve))
   const address = server.address()
   if (address && typeof address === 'object') config.port = address.port
-  ctx.logger('api-rest').info('listening on :%d', config.port)
+  ctx.logger('api-rest').info('listening on :%d (REST + WS /sessions/:id/events/stream)', config.port)
 
   return () =>
     new Promise<void>((resolve, reject) => {
-      server.close((err) => (err ? reject(err) : resolve()))
+      // A4: mount → unmount → 0 resource leak — chủ động terminate mọi
+      // socket WS còn mở trước khi đóng server, không dựa vào client tự đóng.
+      for (const client of wss.clients) client.terminate()
+      wss.close(() => {
+        server.close((err) => (err ? reject(err) : resolve()))
+      })
     })
 }
 

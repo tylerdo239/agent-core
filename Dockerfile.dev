@@ -43,7 +43,7 @@ RUN groupadd --gid "${AGENT_GID}" agent 2>/dev/null || true \
  && mkdir -p /app/data && chown -R agent:agent /app
 
 USER agent
-EXPOSE 8787 8788 8790 50051
+EXPOSE 8787 8790 50051
 VOLUME ["/app/data"]
 
 # Hot reload: tsx --watch tự restart khi file đổi (không cần kill PID 1)

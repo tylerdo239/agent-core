@@ -1,13 +1,64 @@
-# docker-compose.prod.yml — Production override: không mount code, chạy image thuần túy
+# docker-compose.prod.yml — Production override: không mount code, chạy image thuần túy.
 # Chạy prod: docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
-# Compose base vốn không bind-mount source; override này chỉ nói rõ production
-# dùng Dockerfile chuẩn và named volume cho dữ liệu.
+# Compose base (docker-compose.yml) giữ NGUYÊN cho local/dev mặc định — mọi
+# thứ đặc thù cho deploy thật (VPS, domain riêng cho app/API, gateway gộp
+# REST+WS) sống Ở ĐÂY, không đụng vào file base (follow-up 2026-08, sau khi
+# user yêu cầu tách rõ: "bản build local trả về ban đầu, bản build mới cho
+# VPS" — trước đó lỡ sửa thẳng vào docker-compose.yml).
 
 services:
   agent-core:
     build:
       dockerfile: Dockerfile
+      # Deploy VPS domain riêng (app và API ở 2 subdomain KHÁC NHAU, vd.
+      # app-harness.onebot.meobeo.ai vs api-harness.onebot.meobeo.ai) —
+      # rỗng (mặc định, không set trong .env) = KHÔNG đổi hành vi, web UI
+      # tự suy luận restUrl/wsUrl từ location.hostname như bình thường. Xem
+      # packages/ui-settings-general/src/settings.ts. Đổi giá trị 2 biến
+      # này ở .env rồi PHẢI build lại (bake lúc build, không phải runtime).
+      args:
+        VITE_REST_URL: "${VITE_REST_URL:-}"
+        VITE_WS_URL: "${VITE_WS_URL:-}"
     volumes:
       - agent-core-data:/app/data
       # Không mount source/prompt — mọi runtime code đã COPY trong image.
     restart: unless-stopped
+
+  # Gap thật phát hiện lúc audit deploy VPS: base không có restart policy
+  # cho 2 service này (khác agent-core) — không tự bật lại sau khi crash/
+  # reboot. Với local/dev thường chạy tay/attach log nên chấp nhận được,
+  # nhưng deploy thật (chạy nền dài hạn) thì cần — thêm ở override này thay
+  # vì base, đúng tinh thần "production-only concern".
+  postgres:
+    restart: unless-stopped
+
+  memory-core:
+    restart: unless-stopped
+
+  # agent-core chỉ có 1 port API (8787, REST + WS chung — Phase 6.3, api-ws
+  # đã gộp vào api-rest), nhưng deploy domain riêng chỉ có ĐÚNG 1 domain/port
+  # public cho "API" (vd. api-harness.onebot.meobeo.ai:4098) — service này
+  # forward tới agent-core:8787, forward đúng header Upgrade/Connection để WS
+  # handshake đi lọt qua (xem deploy/api-gateway.conf). KHÔNG tự làm TLS —
+  # chỉ nghe HTTP thường, TLS/reverse proxy domain nằm Ở NƠI KHÁC (xác nhận
+  # với user, ngoài phạm vi compose này). Service MỚI hoàn toàn (không có trong
+  # base) — không có gì để merge/xung đột.
+  api-gateway:
+    image: nginx:1.27-alpine
+    depends_on:
+      agent-core:
+        condition: service_healthy
+    volumes:
+      - ./deploy/api-gateway.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "${PORT_API_PUBLIC:-4098}:80"
+    restart: unless-stopped
+    healthcheck:
+      # "localhost" resolve ra ::1 (IPv6) trước trong image nginx:alpine —
+      # nginx `listen 80;` mặc định chỉ bind IPv4, "Connection refused" giả
+      # (gap thật gặp lúc test, không phải giả thuyết) — dùng thẳng 127.0.0.1.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

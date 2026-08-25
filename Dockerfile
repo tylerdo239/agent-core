@@ -132,7 +132,7 @@ RUN groupadd --gid "${AGENT_GID}" agent \
   && chown -R agent:agent /app
 USER agent
 
-EXPOSE 8787 8788 8790 50051
+EXPOSE 8787 8790 50051
 VOLUME ["/app/data"]
 
 CMD ["npx", "tsx", "src/serve.ts"]

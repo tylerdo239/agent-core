@@ -37,6 +37,18 @@ export interface Settings {
   wsUrl: string
 }
 
+// Follow-up (Phase 6.3): api-ws (port 8788 riêng) đã gộp vào api-rest —
+// WS giờ sống CHUNG port với REST (`GET /sessions/:id/events/stream`, xem
+// bundles/adapters/api-rest). Default không hardcode :8788 nữa — suy wsUrl
+// trực tiếp từ restUrl (đổi http(s) -> ws(s), giữ nguyên host:port) qua
+// deriveWsUrl(). VITE_REST_URL/VITE_WS_URL vẫn giữ nguyên hành vi cũ (dùng
+// thẳng, không suy luận) cho ai còn tách domain API khác domain app qua
+// build-time env — không phải trường hợp phổ biến nữa nhưng chưa chắc
+// KHÔNG còn ai cần (rule A6: không xoá đường thoát hiểm đã có người dùng).
+function deriveWsUrl(restUrl: string): string {
+  return restUrl.replace(/^http/, 'ws')
+}
+
 export function defaultSettings(): Settings {
   const envRestUrl = import.meta.env.VITE_REST_URL
   const envWsUrl = import.meta.env.VITE_WS_URL
@@ -44,11 +56,8 @@ export function defaultSettings(): Settings {
     return { restUrl: envRestUrl, wsUrl: envWsUrl }
   }
   const proto = location.protocol === 'https:' ? 'https:' : 'http:'
-  const wsProto = proto === 'https:' ? 'wss:' : 'ws:'
-  return {
-    restUrl: `${proto}//${location.hostname}:8787`,
-    wsUrl: `${wsProto}//${location.hostname}:8788`,
-  }
+  const restUrl = `${proto}//${location.hostname}:8787`
+  return { restUrl, wsUrl: deriveWsUrl(restUrl) }
 }
 
 export function loadSettings(): Settings {

@@ -8,6 +8,7 @@
 // tĩnh — đúng luồng thật client sẽ đi qua.
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
+import { WebSocket } from 'ws'
 import { Context } from '@deepseek-ai/cordis'
 import pg from 'pg'
 import * as toolRegistry from '../bundles/providers/tool-registry/index.ts'
@@ -71,6 +72,25 @@ class FakeLlm extends LlmService {
 const fakeLlm = (ctx: Context) => {
   ctx.plugin(FakeLlm)
 }
+// Phase 6.3 (dồn từ tests/api-ws.test.ts đã xoá): LLM có kịch bản gọi tool
+// rồi mới trả lời cuối — dùng riêng cho describe('WS downlink') bên dưới,
+// KHÔNG dùng chung `fakeLlm` (chỉ echo phẳng) để không ảnh hưởng các test
+// REST hiện có phía trên.
+class ScriptedToolLlm extends LlmService {
+  async complete(messages: LlmMessage[], _options: LlmCompleteOptions = {}): Promise<LlmCompletion> {
+    const hasToolResult = messages.some((m) => m.role === 'tool')
+    if (!hasToolResult) return { content: 'tra dữ liệu', toolCall: { name: 'echo', args: { text: 'hi' } } }
+    return { content: 'xong rồi' }
+  }
+}
+const scriptedToolLlm = (ctx: Context) => { ctx.plugin(ScriptedToolLlm) }
+const echoTool = Object.assign(
+  (ctx: Context) => {
+    ctx.tools.add({ name: 'echo', description: 'echo', ui: { icon: '🔁', label: 'Echo' }, async handler(args) { return args } })
+  },
+  { inject: ['tools'] },
+)
+
 const fakeSkills = Object.assign(
   (ctx: Context) => {
     ctx.skills.register({
@@ -168,6 +188,63 @@ async function bootApp(databaseUrl: string, port = 0, extraConfig: Partial<apiRe
   await settle()
   await fiber.await()
   return { root, fiber, config }
+}
+
+// Phase 6.3: y hệt bootApp() nhưng LLM có kịch bản gọi tool (scriptedToolLlm
+// + echoTool) thay vì fakeLlm — chỉ describe('WS downlink') bên dưới dùng.
+async function bootAppForStreaming(databaseUrl: string) {
+  const root = new Context()
+  root.plugin(toolRegistry)
+  root.plugin(skillRegistry)
+  root.plugin(fakeSkills)
+  root.plugin(stateSqlite, { path: ':memory:' })
+  root.plugin(echoTool)
+  root.plugin(scriptedToolLlm)
+  root.plugin(loopRegistry)
+  root.plugin(loopDefault)
+  root.plugin(agentRunner)
+  root.plugin(sessionRegistry)
+  root.plugin(permissionRbac, {
+    rules: { admin: ['admin:users:manage', 'admin:plugins:view', 'admin:plugins:configure'] },
+  })
+  root.plugin(authUsers, { connectionString: databaseUrl })
+  root.plugin(pluginInventory, [{ name: 'tool-registry', category: 'provider', fiber: { state: 2 } }])
+  root.plugin(pluginConfigPostgres, { connectionString: databaseUrl })
+  root.plugin(fakeWorkspace)
+  const config: apiRest.ApiRest.Config = { port: 0 }
+  const fiber = root.plugin(apiRest, config)
+  await settle()
+  await fiber.await()
+  return { root, fiber, config }
+}
+
+function connectWs(port: number, path: string, authorization?: string) {
+  return new Promise<WebSocket>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}${path}`, { headers: authorization ? { authorization } : {} })
+    ws.once('open', () => resolve(ws))
+    ws.once('error', reject)
+  })
+}
+
+// Queue-based collector — KHÔNG dùng ws.once('message') tuần tự: server có
+// thể gửi nhiều message dồn dập (step -> step -> done) nhanh hơn tốc độ
+// vòng lặp test kịp await/re-attach listener, làm mất message. Đăng ký 1
+// listener DUY NHẤT, thường trực, đẩy vào hàng đợi; consumer chỉ lấy ra.
+function messageQueue(ws: WebSocket) {
+  const queue: any[] = []
+  const waiters: ((msg: any) => void)[] = []
+  ws.on('message', (raw) => {
+    const msg = JSON.parse(raw.toString())
+    const waiter = waiters.shift()
+    if (waiter) waiter(msg)
+    else queue.push(msg)
+  })
+  return {
+    next(): Promise<any> {
+      if (queue.length) return Promise.resolve(queue.shift())
+      return new Promise((resolve) => waiters.push(resolve))
+    },
+  }
 }
 
 async function signupToken(base: string, username: string, password = 'correcthorse123') {
@@ -612,16 +689,154 @@ describe('Phase 6.1 — REST API', () => {
     })
   })
 
-  it('mount -> unmount -> cổng đóng sạch (không còn ai lắng nghe)', async () => {
+  // Phase 6.3: gộp 2 test mount->unmount cũ (api-rest + api-ws) thành 1 —
+  // giờ là CÙNG 1 server nên phải đóng sạch cho CẢ 2 protocol cùng lúc.
+  it('mount -> unmount -> cổng đóng sạch cho CẢ REST lẫn WS (không còn ai lắng nghe)', async () => {
     await withFreshSchemaUrl(async (databaseUrl) => {
       const { fiber, config } = await bootApp(databaseUrl)
       const base = `http://127.0.0.1:${config.port}`
+      const { token } = await signupToken(base, 'alice')
+      const created = await fetch(`${base}/sessions`, { method: 'POST', headers: { authorization: `Bearer ${token}` } })
+      const { id: sessionId } = await created.json()
 
       expect((await fetch(`${base}/health`)).status).toBe(200)
+      const ws = await connectWs(config.port!, `/sessions/${sessionId}/events/stream`, `Bearer ${token}`)
+      ws.close()
+      await new Promise((r) => setTimeout(r, 10))
 
       await fiber.dispose()
 
       await expect(fetch(`${base}/health`)).rejects.toThrow()
+      await expect(connectWs(config.port!, `/sessions/${sessionId}/events/stream`, `Bearer ${token}`)).rejects.toThrow()
+    })
+  })
+})
+
+describe('Phase 6.3 — WS downlink (chung server với REST, không còn create_session/send_message qua WS)', () => {
+  it('POST /sessions -> WS subscribe -> POST /sessions/:id/messages -> stream step...done khớp response REST', async () => {
+    await withFreshSchemaUrl(async (databaseUrl) => {
+      const { fiber, config } = await bootAppForStreaming(databaseUrl)
+      cleanup = () => fiber.dispose()
+      const base = `http://127.0.0.1:${config.port}`
+      const { token } = await signupToken(base, 'alice')
+
+      const createRes = await fetch(`${base}/sessions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({}),
+      })
+      const { id: sessionId } = await createRes.json()
+
+      const ws = await connectWs(config.port!, `/sessions/${sessionId}/events/stream`, `Bearer ${token}`)
+      const queue = messageQueue(ws)
+      try {
+        const msgRes = await fetch(`${base}/sessions/${sessionId}/messages`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+          body: JSON.stringify({ message: 'chào' }),
+        })
+        expect(msgRes.status).toBe(200)
+        const restResult = await msgRes.json()
+
+        const messages: any[] = []
+        while (true) {
+          const m = await queue.next()
+          messages.push(m)
+          if (m.type === 'done' || m.type === 'error') break
+        }
+
+        // loop-default emit 'model_message' MỖI vòng lặp (tool-call hay không),
+        // và emit thêm 'final' riêng khi model không gọi tool nữa — xem
+        // bundles/loop-default. Nên turn có 1 tool call = 4 step + 1 done.
+        expect(messages.map((m) => m.type)).toEqual(['step', 'step', 'step', 'step', 'done'])
+        expect(messages[0].step).toEqual({
+          type: 'model_message',
+          content: 'tra dữ liệu',
+          toolCall: { name: 'echo', args: { text: 'hi' } },
+          toolUi: { icon: '🔁', label: 'Echo' },
+        })
+        expect(messages[1].step).toEqual({ type: 'tool_result', name: 'echo', result: { text: 'hi' }, toolUi: { icon: '🔁', label: 'Echo' } })
+        expect(messages[2].step).toEqual({ type: 'model_message', content: 'xong rồi', toolCall: undefined })
+        expect(messages[3].step).toEqual({ type: 'final', content: 'xong rồi' })
+        // 'done' qua WS phải khớp CHÍNH XÁC response JSON của POST /messages
+        // — 2 con đường đọc cùng 1 kết quả (agent/turn-done vs return value),
+        // không phải 2 nguồn có thể lệch nhau.
+        expect(messages[4].result).toEqual(restResult)
+        for (const m of messages) expect(m.sessionId).toBe(sessionId)
+      } finally {
+        ws.close()
+      }
+    })
+  })
+
+  it('WS upgrade bị từ chối 401 khi thiếu/sai token — trước khi nâng cấp', async () => {
+    await withFreshSchemaUrl(async (databaseUrl) => {
+      const { fiber, config } = await bootAppForStreaming(databaseUrl)
+      cleanup = () => fiber.dispose()
+      const base = `http://127.0.0.1:${config.port}`
+      const { token } = await signupToken(base, 'alice')
+      const created = await fetch(`${base}/sessions`, { method: 'POST', headers: { authorization: `Bearer ${token}` } })
+      const { id: sessionId } = await created.json()
+
+      await expect(connectWs(config.port!, `/sessions/${sessionId}/events/stream`, undefined)).rejects.toThrow(/401/)
+      await expect(connectWs(config.port!, `/sessions/${sessionId}/events/stream`, 'Bearer sai-token')).rejects.toThrow(/401/)
+    })
+  })
+
+  it('auth qua query string (?token=...) — cách duy nhất browser thật dùng được, không qua header', async () => {
+    await withFreshSchemaUrl(async (databaseUrl) => {
+      const { fiber, config } = await bootAppForStreaming(databaseUrl)
+      cleanup = () => fiber.dispose()
+      const base = `http://127.0.0.1:${config.port}`
+      const { token } = await signupToken(base, 'alice')
+      const created = await fetch(`${base}/sessions`, { method: 'POST', headers: { authorization: `Bearer ${token}` } })
+      const { id: sessionId } = await created.json()
+
+      // Không set header authorization — mô phỏng đúng `new WebSocket(url)`
+      // của trình duyệt, không có tham số headers.
+      const ws = await new Promise<WebSocket>((resolve, reject) => {
+        const socket = new WebSocket(`ws://127.0.0.1:${config.port}/sessions/${sessionId}/events/stream?token=${encodeURIComponent(token)}`)
+        socket.once('open', () => resolve(socket))
+        socket.once('error', reject)
+      })
+      ws.close()
+
+      await expect(
+        new Promise<WebSocket>((resolve, reject) => {
+          const socket = new WebSocket(`ws://127.0.0.1:${config.port}/sessions/${sessionId}/events/stream?token=sai-token`)
+          socket.once('open', () => resolve(socket))
+          socket.once('error', reject)
+        }),
+      ).rejects.toThrow(/401/)
+    })
+  })
+
+  // Hành vi ĐỔI có chủ đích so với api-ws cũ: trước đây connect được luôn,
+  // gửi send_message với id sai mới trả error frame; giờ session PHẢI có
+  // thật (tạo qua REST) trước khi mở WS, nên id sai bị chặn ngay lúc upgrade.
+  it('session không tồn tại -> upgrade bị từ chối 404 (không còn connect-rồi-nhận-error như trước)', async () => {
+    await withFreshSchemaUrl(async (databaseUrl) => {
+      const { fiber, config } = await bootAppForStreaming(databaseUrl)
+      cleanup = () => fiber.dispose()
+      const base = `http://127.0.0.1:${config.port}`
+      const { token } = await signupToken(base, 'alice')
+
+      await expect(connectWs(config.port!, `/sessions/khong-ton-tai/events/stream`, `Bearer ${token}`)).rejects.toThrow(/404/)
+    })
+  })
+
+  it('gap thật đã sửa: user KHÁC không xem được stream của session không phải mình -> 403 lúc upgrade', async () => {
+    await withFreshSchemaUrl(async (databaseUrl) => {
+      const { fiber, config } = await bootAppForStreaming(databaseUrl)
+      cleanup = () => fiber.dispose()
+      const base = `http://127.0.0.1:${config.port}`
+      const alice = await signupToken(base, 'alice')
+      const bob = await signupToken(base, 'bob')
+
+      const created = await fetch(`${base}/sessions`, { method: 'POST', headers: { authorization: `Bearer ${alice.token}` } })
+      const { id: sessionId } = await created.json()
+
+      await expect(connectWs(config.port!, `/sessions/${sessionId}/events/stream`, `Bearer ${bob.token}`)).rejects.toThrow(/403/)
     })
   })
 })
