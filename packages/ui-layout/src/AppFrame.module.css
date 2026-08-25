@@ -37,3 +37,12 @@
   flex-direction: column;
   gap: var(--alias-space-md);
 }
+
+/* Mỗi message/activity là một hàng theo chiều dọc. Mặc định flex item có
+   `flex-shrink: 1`; khi final answer dài được thêm vào, browser từng ép các
+   timeline row trước đó về chiều cao gần 0 dù node/text vẫn còn trong DOM.
+   Overflow phải tạo thanh cuộn, không được "giải quyết" bằng cách bóp mất
+   nội dung. */
+.messages > * {
+  flex-shrink: 0;
+}

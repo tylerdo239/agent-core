@@ -177,7 +177,7 @@ def read_workspace_file(relative_path, start=0, length=None, encoding="utf-8"):
         return _handle.read() if length is None else _handle.read(int(length))
 
 def save_artifact(relative_path, content):
-    """Save text/bytes below generated/ and return its workspace-relative path."""
+    """Save text, bytes, JSON, or a plot/image below generated/."""
     _relative = _RLMPath(str(relative_path))
     # The public contract says this helper writes *below* generated/. Models
     # nevertheless often pass the visible workspace path (generated/report).
@@ -186,10 +186,47 @@ def save_artifact(relative_path, content):
         _relative = _RLMPath(*_relative.parts[1:])
     _target = _workspace_path(_RLMPath("generated") / _relative)
     _target.parent.mkdir(parents=True, exist_ok=True)
-    if isinstance(content, bytes):
-        _target.write_bytes(content)
-    else:
-        _target.write_text(str(content), encoding="utf-8")
+    _suffix = _target.suffix.lower()
+    try:
+        if isinstance(content, (bytes, bytearray, memoryview)):
+            _target.write_bytes(bytes(content))
+        elif isinstance(content, str):
+            _target.write_text(content, encoding="utf-8")
+        elif callable(getattr(content, "savefig", None)):
+            # Matplotlib Figure: str(fig) is only "Figure(1800x1200)" and
+            # used to create a corrupt 17-byte .png. Let Matplotlib encode
+            # the actual image using the requested file extension.
+            if not _suffix:
+                raise ValueError("A plotted figure requires a file extension such as .png or .pdf")
+            content.savefig(_target, format=_suffix.lstrip("."), bbox_inches="tight")
+        elif _suffix in {{".png", ".jpg", ".jpeg", ".webp", ".gif"}} and callable(getattr(content, "save", None)):
+            # Pillow Image and compatible image objects.
+            content.save(_target)
+        elif isinstance(content, (dict, list, tuple, int, float, bool)) or content is None:
+            _target.write_text(json.dumps(content, ensure_ascii=False, indent=2), encoding="utf-8")
+        else:
+            raise TypeError(
+                "save_artifact content must be text, bytes, JSON-compatible data, "
+                "a Matplotlib Figure, or a Pillow Image"
+            )
+
+        # Fail at creation time instead of advertising a corrupt download.
+        _data = _target.read_bytes()
+        if not _data:
+            raise ValueError(f"Artifact {{_target.name}} is empty")
+        _valid = {{
+            ".png": _data.startswith(b"\\x89PNG\\r\\n\\x1a\\n"),
+            ".jpg": _data.startswith(b"\\xff\\xd8\\xff"),
+            ".jpeg": _data.startswith(b"\\xff\\xd8\\xff"),
+            ".gif": _data.startswith((b"GIF87a", b"GIF89a")),
+            ".webp": len(_data) >= 12 and _data[:4] == b"RIFF" and _data[8:12] == b"WEBP",
+            ".pdf": _data.startswith(b"%PDF-"),
+        }}
+        if _suffix in _valid and not _valid[_suffix]:
+            raise ValueError(f"Artifact {{_target.name}} is not valid {{_suffix}} data")
+    except Exception:
+        _target.unlink(missing_ok=True)
+        raise
     return _target.relative_to(_workspace_path()).as_posix()
 
 import threading as _job_threading

@@ -41,6 +41,9 @@ class FakeWebSocket {
   close() {
     this.readyState = 3
   }
+  emit(type: string, event: unknown) {
+    for (const cb of this.listeners[type] ?? []) cb(event)
+  }
 }
 
 // jsdom tạo đúng HTMLDialogElement cho thẻ <dialog> nhưng KHÔNG implement
@@ -141,6 +144,59 @@ describe('Phase 9.4 — App smoke test', () => {
 
       const latestSocket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1]
       expect(JSON.parse(latestSocket.sent[0])).toMatchObject({ type: 'create_session', driver: 'rlm' })
+    })
+
+    it('reload mở lại session gần nhất và dựng timeline từ event log thay vì tạo session trắng', async () => {
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.endsWith('/sessions')) {
+          return { ok: true, json: async () => ({ sessions: [{ id: 'saved-rlm', createdAt: 10, driver: 'rlm' }] }) } as Response
+        }
+        if (url.endsWith('/sessions/saved-rlm/events')) {
+          return {
+            ok: true,
+            json: async () => ({ events: [
+              { type: 'analysis', content: 'Đang kiểm tra dữ liệu đã lưu' },
+              { type: 'workspace_read', action: 'list datasets' },
+              { type: 'final_answer', content: 'Đã hoàn thành' },
+            ] }),
+          } as Response
+        }
+        if (url.endsWith('/skills')) return { ok: true, json: async () => ({ skills: [] }) } as Response
+        throw new Error(`unexpected URL: ${url}`)
+      }))
+
+      await act(async () => {
+        render(<App />)
+        await new Promise((resolve) => setTimeout(resolve, 40))
+      })
+
+      expect(screen.getByText('Đang kiểm tra dữ liệu đã lưu')).toBeTruthy()
+      expect(screen.getByText('📄 list datasets')).toBeTruthy()
+      expect(screen.getByText('Đã hoàn thành')).toBeTruthy()
+      expect(FakeWebSocket.instances[0].sent).toHaveLength(0)
+    })
+
+    it('giữ nguyên timeline live sau done và tiếp tục hiện step của request sau', async () => {
+      await act(async () => {
+        render(<App />)
+        await new Promise((resolve) => setTimeout(resolve, 30))
+      })
+      const socket = FakeWebSocket.instances[0]
+
+      await act(async () => {
+        socket.emit('message', { data: JSON.stringify({ type: 'session_created', id: 'live-rlm', driver: 'rlm' }) })
+        socket.emit('message', { data: JSON.stringify({ type: 'step', step: { type: 'analysis', content: 'Đang phân tích request 1' } }) })
+        socket.emit('message', { data: JSON.stringify({ type: 'done', sessionId: 'live-rlm', result: {} }) })
+      })
+      expect(screen.getByText('Đang phân tích request 1')).toBeTruthy()
+
+      await act(async () => {
+        socket.emit('message', { data: JSON.stringify({ type: 'step', step: { type: 'workspace_read', action: 'load dataset', path: 'sales' } }) })
+      })
+      expect(screen.getByText('📄 load dataset')).toBeTruthy()
+      expect(screen.queryByText('🐍 Python REPL')).toBeNull()
+      expect(screen.queryByText('✅ Kết quả REPL')).toBeNull()
     })
   })
 })
