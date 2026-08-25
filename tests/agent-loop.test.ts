@@ -71,6 +71,7 @@ describe('Phase 4 — agent loop end-to-end', () => {
       'seed', // đã seed thẳng vào storage TRƯỚC turn, để verify query_database đọc đúng session hiện tại
       'user_message', // ghi TRƯỚC khi driver chạy, ở agent-runner (entrypoint ổn định chung mọi driver)
       'model_message', // lượt 1: model quyết định gọi tool
+      'tool_audit', // execution pipeline ghi outcome/latency trước khi loop ghi kết quả
       'tool_result', // kết quả tool được ghi TRƯỚC khi qua bước kế tiếp (rule B3)
       'model_message', // lượt 2: model trả lời cuối cùng
     ])
@@ -80,7 +81,7 @@ describe('Phase 4 — agent loop end-to-end', () => {
     const firstModelMsg = events[2] as any
     expect(firstModelMsg.toolCall).toEqual({ name: 'query_database', args: {} })
 
-    const toolResult = events[3] as any
+    const toolResult = events[4] as any
     expect(toolResult.name).toBe('query_database')
     // query_database trả về TOÀN BỘ event log của session hiện tại (kể cả
     // chính nó, event 'seed' đã ghi trước đó) — không còn nhận sessionId từ

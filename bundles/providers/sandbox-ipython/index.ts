@@ -32,24 +32,28 @@ export namespace SandboxIpython {
 
 class EventQueue implements AsyncIterable<SandboxEvent> {
   private values: SandboxEvent[] = []
-  private waiters: Array<(value: IteratorResult<SandboxEvent>) => void> = []
+  private waiters: Array<{
+    resolve: (value: IteratorResult<SandboxEvent>) => void
+    reject: (error: Error) => void
+  }> = []
   private ended = false
   private error: Error | undefined
 
   push(value: SandboxEvent) {
     const waiter = this.waiters.shift()
-    if (waiter) waiter({ value, done: false })
+    if (waiter) waiter.resolve({ value, done: false })
     else this.values.push(value)
   }
 
   end() {
     this.ended = true
-    for (const waiter of this.waiters.splice(0)) waiter({ value: undefined, done: true })
+    for (const waiter of this.waiters.splice(0)) waiter.resolve({ value: undefined, done: true })
   }
 
   fail(error: Error) {
     this.error = error
-    this.end()
+    this.ended = true
+    for (const waiter of this.waiters.splice(0)) waiter.reject(error)
   }
 
   [Symbol.asyncIterator](): AsyncIterator<SandboxEvent> {
@@ -58,7 +62,7 @@ class EventQueue implements AsyncIterable<SandboxEvent> {
         if (this.values.length) return { value: this.values.shift()!, done: false }
         if (this.error) throw this.error
         if (this.ended) return { value: undefined, done: true }
-        return new Promise<IteratorResult<SandboxEvent>>((resolve) => this.waiters.push(resolve))
+        return new Promise<IteratorResult<SandboxEvent>>((resolve, reject) => this.waiters.push({ resolve, reject }))
       },
     }
   }
@@ -76,6 +80,7 @@ interface WorkerState {
   process: ChildProcessWithoutNullStreams
   cwd: string
   requests: Map<string, EventQueue>
+  signals: Map<string, AbortSignal | undefined>
   ready: Promise<void>
 }
 
@@ -96,12 +101,12 @@ export class SandboxIpython extends SandboxService {
     }
   }
 
-  run(code: string, language: string): Promise<SandboxRunResult> {
+  run(code: string, language: string, options: { signal?: AbortSignal } = {}): Promise<SandboxRunResult> {
     if (language !== 'python' && language !== 'python3') {
       return Promise.reject(new Error(`sandbox-ipython only supports python, received "${language}"`))
     }
     return new Promise((resolve, reject) => {
-      execFile(this.config.pythonBin ?? 'python3', ['-c', code], { timeout: 300_000 }, (error, stdout, stderr) => {
+      execFile(this.config.pythonBin ?? 'python3', ['-c', code], { timeout: 300_000, signal: options.signal }, (error, stdout, stderr) => {
         if (error && typeof error.code !== 'number') return reject(error)
         resolve({ stdout, stderr, exitCode: typeof error?.code === 'number' ? error.code : 0 })
       })
@@ -144,7 +149,7 @@ export class SandboxIpython extends SandboxService {
     // A rejected startup must not become an unhandled rejection before
     // openSession reaches its await below.
     void ready.catch(() => undefined)
-    const state: WorkerState = { sessionId, process: child, cwd, requests, ready }
+    const state: WorkerState = { sessionId, process: child, cwd, requests, signals: new Map(), ready }
     this.workers.set(sessionId, state)
 
     const lines = createInterface({ input: child.stdout })
@@ -177,6 +182,7 @@ export class SandboxIpython extends SandboxService {
       if (event.type === '__done__') {
         queue.end()
         requests.delete(requestId)
+        state.signals.delete(requestId)
       } else {
         const { requestId: _requestId, ...payload } = event
         queue.push(payload)
@@ -200,18 +206,43 @@ export class SandboxIpython extends SandboxService {
     sessionId: string,
     operation: string,
     payload: Record<string, unknown> = {},
+    options: { signal?: AbortSignal } = {},
   ): AsyncIterable<SandboxEvent> {
     const state = this.workers.get(sessionId)
     if (!state) throw new Error(`sandbox session "${sessionId}" is not open`)
     const requestId = randomUUID()
     const queue = new EventQueue()
     state.requests.set(requestId, queue)
+    state.signals.set(requestId, options.signal)
     state.process.stdin.write(JSON.stringify({ requestId, operation, payload }) + '\n', (error) => {
       if (!error) return
       state.requests.delete(requestId)
+      state.signals.delete(requestId)
       queue.fail(error)
     })
-    return queue
+    const abort = () => {
+      const error = new Error('sandbox request cancelled')
+      error.name = 'AbortError'
+      state.requests.delete(requestId)
+      state.signals.delete(requestId)
+      queue.fail(error)
+      // The Python worker executes a turn synchronously and cannot consume a
+      // second cancel command. Terminating it is the only truthful hard stop;
+      // the next turn opens a fresh worker for this session.
+      void this.closeSession(sessionId)
+    }
+    if (options.signal?.aborted) abort()
+    else options.signal?.addEventListener('abort', abort, { once: true })
+
+    return {
+      [Symbol.asyncIterator]: async function* () {
+        try {
+          for await (const event of queue) yield event
+        } finally {
+          options.signal?.removeEventListener('abort', abort)
+        }
+      },
+    }
   }
 
   async closeSession(sessionId: string): Promise<void> {
@@ -220,6 +251,7 @@ export class SandboxIpython extends SandboxService {
     this.workers.delete(sessionId)
     for (const queue of state.requests.values()) queue.fail(new Error(`sandbox session "${sessionId}" closed`))
     state.requests.clear()
+    state.signals.clear()
     if (state.process.exitCode !== null || state.process.killed) return
     if (this.config.closeProcess) {
       await this.config.closeProcess(sessionId, state.process)
@@ -244,6 +276,7 @@ export class SandboxIpython extends SandboxService {
     this.workers.delete(sessionId)
     for (const queue of state.requests.values()) queue.fail(error)
     state.requests.clear()
+    state.signals.clear()
   }
 
   private async completeHostCall(state: WorkerState, event: SandboxEvent) {
@@ -263,6 +296,7 @@ export class SandboxIpython extends SandboxService {
         maxTokens: numberOrUndefined(event.max_tokens),
         purpose: event.purpose === 'memory' || event.purpose === 'sub' ? event.purpose : 'root',
         extraBody: isRecord(event.extra_body) ? event.extra_body : undefined,
+        signal: state.signals.get(requestId),
       })
       state.process.stdin.write(JSON.stringify({
         requestId,
@@ -290,6 +324,7 @@ export class SandboxIpython extends SandboxService {
       const result = await this.ctx.tools.invoke(name, args, {
         sessionId: state.sessionId,
         source: 'rlm',
+        signal: state.signals.get(requestId),
       })
       queue?.push({ type: 'tool_result', name, result, toolUi: tool?.ui })
       state.process.stdin.write(JSON.stringify({

@@ -8,7 +8,7 @@ tự sở hữu prompt, memory, tool routing hoặc RLM loop.
 
 ```text
 Browser frontend
-  ├─ REST :8787  ─ session, skills, upload/download, event history
+  ├─ REST :8787  ─ session, skills, upload/download, runs/jobs/artifacts
   └─ WS   :8788  ─ create/resume turn và stream trạng thái live
                        │
                        ▼
@@ -58,16 +58,17 @@ RLM_RUNTIME_ROOT=/app/bundles/loop-drivers/loop-rlm/python
 Không trỏ `RLM_PYTHON_BIN` vào `.venv` trên host: virtualenv có thể chứa
 symlink tuyệt đối không tồn tại trong container và gây `spawn ... ENOENT`.
 
-Development/hot reload:
+Chạy hệ thống (một Compose duy nhất, source mount + hot reload):
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+docker compose up -d --build
 ```
 
-Production-like:
+Sau khi sửa TypeScript/React/CSS không cần rebuild. Backend tự restart, UI tự
+HMR. Nếu sửa Python worker và cần tạo process mới:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+docker compose restart agent-core
 ```
 
 Các port mặc định trên host:
@@ -101,6 +102,10 @@ Browser WebSocket không set được custom header, vì vậy dùng query strin
 ```text
 ws://localhost:8788/?key=<URL_ENCODED_API_KEY>
 ```
+
+Ưu tiên an toàn hơn cho frontend mới: gọi `POST /ws-ticket` bằng Bearer key,
+rồi kết nối `ws://localhost:8788/?ticket=<ticket>`. Ticket sống ngắn và dùng
+một lần. Query `key` chỉ giữ lại để tương thích client cũ.
 
 Không đưa `.env` hoặc key thật vào Git. Với deployment public, đặt backend sau
 reverse proxy và đổi key query-string thành token ngắn hạn; contract hiện tại
@@ -408,9 +413,49 @@ Không dùng `<a href="...">` trực tiếp vì browser không tự thêm Bearer
 Dùng authenticated `fetch`, đổi response thành `Blob`, rồi tạo object URL để
 download.
 
-## 8. Session lifecycle và resume
+## 8. Runs, jobs, artifacts và pipeline
 
-- Backend session nằm trong memory registry và có sliding TTL.
+Một chat turn tạo một **run**. UI có thể poll:
+
+```text
+GET /sessions/:id/runs
+GET /runs/:runId
+POST /runs/:runId/cancel
+```
+
+Một pipeline dài tạo một **job**. Các endpoint:
+
+```text
+GET /sessions/:id/jobs
+GET /jobs/:jobId
+GET /jobs/:jobId/events
+POST /jobs/:jobId/cancel
+POST /jobs/:jobId/retry
+GET /sessions/:id/artifacts
+GET /artifacts/:artifactId
+GET /pipelines
+POST /pipelines/:name/run
+```
+
+Body chạy pipeline:
+
+```json
+{
+  "sessionId": "SESSION_UUID",
+  "override": { "train": "train-flaml" },
+  "config": { "train": { "timeBudgetSeconds": 60 } }
+}
+```
+
+Job events có progress 0..1 và message. Khi job terminal, refresh cả
+`/sessions/:id/files` và `/sessions/:id/artifacts`: file là nguồn dữ liệu để
+download/render, artifact là metadata (producer, hash, kind) để giải thích
+nó được tạo bởi stage nào. Không đoán output chỉ từ text trả lời của model.
+
+## 9. Session lifecycle và resume
+
+- Backend persist session metadata/history và rehydrate cache lúc boot; Python
+  REPL vẫn không persistent, turn tiếp theo sẽ mở worker mới.
 - Frontend hiện giữ danh sách session của chính browser trong `localStorage`.
 - Backend restart làm session registry mất; một ID cũ có thể trả `404` dù UI
   còn giữ history local.
@@ -419,7 +464,7 @@ download.
 - Không có `GET /sessions` công khai vì API key hiện chưa biểu diễn ownership
   theo từng end-user.
 
-## 9. File backend cần đọc khi tích hợp
+## 10. File backend cần đọc khi tích hợp
 
 Contract ổn định:
 
@@ -443,7 +488,7 @@ Composition root:
 
 - `src/serve.ts`
 
-## 10. Checklist frontend trước khi bàn giao
+## 11. Checklist frontend trước khi bàn giao
 
 - [ ] API key không hardcode trong source/bundle.
 - [ ] WebSocket connect bằng URL-encoded key.
@@ -458,9 +503,11 @@ Composition root:
 - [ ] Dataset và output được hợp nhất theo path, không render trùng.
 - [ ] Download dùng authenticated fetch.
 - [ ] Resume xử lý được session đã hết TTL/backend restart.
+- [ ] Có UI cho run/job đang chạy và nút cancel khi state cho phép.
+- [ ] Output panel lấy files + artifacts từ backend, không suy luận từ chat.
 - [ ] Không hiển thị internal memory/context JSON như final answer.
 
-## 11. Trạng thái verify hiện tại
+## 12. Trạng thái verify hiện tại
 
 Đã kiểm tra trên Docker Compose:
 
@@ -477,7 +524,7 @@ Generated benchmark reports trong `reports/` không phải source code và khôn
 nên commit. Benchmark definitions/runner trong `benchmarks/` có thể commit để
 người backend tái lập kết quả.
 
-## 12. Python runtime trong repo
+## 13. Python runtime trong repo
 
 - `bundles/loop-drivers/loop-rlm/python/` — nằm HẲN TRONG bundle sở hữu nó
   (chuẩn cấu trúc plugin, xem `docs/plugin-standard-structure.md`), không

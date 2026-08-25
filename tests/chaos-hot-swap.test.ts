@@ -97,7 +97,7 @@ describe('Phase 5 — chaos hot-swap', () => {
     expect(result1.steps).toBe(1) // 1 vòng tool-call đã hoàn tất trước bước trả lời cuối
 
     const events1 = await root.storage.readEvents('session-1')
-    expect(events1.map((e) => e.type)).toEqual(['user_message', 'model_message', 'tool_result', 'model_message'])
+    expect(events1.map((e) => e.type)).toEqual(['user_message', 'model_message', 'tool_audit', 'tool_result', 'model_message'])
     expect(events1.some((e) => e.type === 'critic_message')).toBe(false)
 
     // session-2 tạo SAU khi swap — dùng driver MỚI (loop-planner-critic).

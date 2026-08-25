@@ -46,8 +46,8 @@ security audit tôi vừa làm) biến `agent-core` từ "harness demo" thành 1
 - REST thêm `/sessions/:id/files` (upload/download/list dataset), `/skills`
   (catalog), `send_message` nhận thêm `selectedSkill`/`metadata`.
 - Docker: vendor nguyên Python 3.11 + scientific stack (kể cả `torch` CPU)
-  vào image, `Dockerfile.dev`/`docker-compose.dev.yml` cho hot-reload,
-  `docker-compose.prod.yml` cho production riêng.
+  vào image. Cấu hình sau đó đã được gom về một `docker-compose.yml` có
+  source mount và hot-reload để giảm độ rối vận hành.
 
 Tài liệu riêng của họ giải thích đầy đủ hơn (đã đọc toàn bộ, không phải chỉ
 lướt): `docs/system-architecture.md` (666 dòng) và

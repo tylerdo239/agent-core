@@ -91,6 +91,6 @@ describe('Phase 6.0 — agent/step event', () => {
     // storage riêng, nó trùng với model_message cuối cùng). 'user_message'
     // ghi ở agent-runner (trước cả 'agent/step' đầu tiên) nên không có step
     // 'agent/step' tương ứng — client đã biết sẵn tin nhắn mình gửi.
-    expect(events.map((e) => e.type)).toEqual(['user_message', 'model_message', 'tool_result', 'model_message'])
+    expect(events.map((e) => e.type)).toEqual(['user_message', 'model_message', 'tool_audit', 'tool_result', 'model_message'])
   })
 })

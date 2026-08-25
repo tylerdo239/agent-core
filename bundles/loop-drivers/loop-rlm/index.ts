@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
 import '../../../seams/sandbox.ts'
 import '../../../seams/storage.ts'
@@ -5,7 +6,7 @@ import '../../../seams/skill.ts'
 import '../../../seams/prompt.ts'
 import '../../../seams/workspace.ts'
 import '../../../seams/turn-memory.ts'
-import { LoopStep, LoopTurnResult, Session, TurnInput } from '../../../seams/loop.ts'
+import { assertNotCancelled, LoopStep, LoopTurnResult, Session, TurnInput } from '../../../seams/loop.ts'
 import { SandboxEvent } from '../../../seams/sandbox.ts'
 import { prepareRlmTurn, RlmSessionState } from './protocol.ts'
 
@@ -40,6 +41,22 @@ function toStep(event: SandboxEvent): LoopStep | undefined {
         iteration,
         decisionSummary: typeof event.decision_summary === 'string' ? event.decision_summary : undefined,
       }
+    case 'skill_loaded':
+    case 'skill_resource':
+      return {
+        type: event.type,
+        skill: String(event.skill ?? ''),
+        path: typeof event.path === 'string' ? event.path : undefined,
+        encoding: typeof event.encoding === 'string' ? event.encoding : undefined,
+      }
+    case 'workspace_read':
+      return {
+        type: 'workspace_read',
+        action: String(event.action ?? 'read'),
+        path: typeof event.path === 'string' ? event.path : undefined,
+      }
+    case 'workspace_write':
+      return { type: 'workspace_write', path: String(event.path ?? '') }
     case 'code':
       return { type: 'code', code: String(event.code ?? ''), iteration, block }
     case 'observation':
@@ -90,11 +107,52 @@ function toStep(event: SandboxEvent): LoopStep | undefined {
   }
 }
 
+/**
+ * The notebook is intentionally a normal Python REPL, so arbitrary Python
+ * cannot be perfectly observed. The harness helpers are the supported file
+ * boundary; turn their calls into timeline events before executing the cell.
+ * The following observation event then tells the UI whether the attempt
+ * succeeded. This is much clearer than asking the UI to parse code/stdout.
+ */
+function workspaceActivities(code: string): SandboxEvent[] {
+  const activities: SandboxEvent[] = []
+  const seen = new Set<string>()
+  const add = (action: string, path?: string) => {
+    const key = `${action}:${path ?? ''}`
+    if (seen.has(key)) return
+    seen.add(key)
+    activities.push({ type: 'workspace_read', action, ...(path ? { path } : {}) })
+  }
+  const capture = (name: string, action: string) => {
+    const pattern = new RegExp(`\\b${name}\\(\\s*['"]([^'"]+)['"]`)
+    const match = pattern.exec(code)
+    if (match) add(action, match[1])
+    else if (new RegExp(`\\b${name}\\(`).test(code)) add(action)
+  }
+  capture('load_dataset', 'load dataset')
+  capture('profile_dataset', 'profile dataset')
+  capture('read_workspace_file', 'read file')
+  if (/\blist_workspace_files\s*\(/.test(code)) add('list files')
+  if (/\blist_datasets\s*\(/.test(code)) add('list datasets')
+  const saved = /\bsave_artifact\(\s*['"]([^'"]+)['"]/.exec(code)
+  if (saved) activities.push({ type: 'workspace_write', path: `generated/${saved[1].replace(/^generated\//, '')}` })
+  const directRead = /\b(?:pd\.)?read_(?:csv|tsv|excel|parquet)\(\s*['"]([^'"]+)['"]/.exec(code)
+  if (directRead) add('read file', directRead[1])
+  const openRead = /\bopen\(\s*['"]([^'"]+)['"]\s*,\s*['"][rt]/.exec(code)
+  if (openRead) add('read file', openRead[1])
+  const directWrite = /\.to_(?:csv|excel|parquet|json)\(\s*['"]([^'"]+)['"]/.exec(code)
+  if (directWrite) activities.push({ type: 'workspace_write', path: directWrite[1] })
+  const openWrite = /\bopen\(\s*['"]([^'"]+)['"]\s*,\s*['"][waxt]/.exec(code)
+  if (openWrite) activities.push({ type: 'workspace_write', path: openWrite[1] })
+  return activities
+}
+
 export const inject = ['loop']
 
 export const apply = (ctx: Context) => {
   ctx.loop.register('rlm', {
     async runTurn(runCtx: Context, session: Session, input: TurnInput): Promise<LoopTurnResult> {
+      assertNotCancelled(input)
       // sandbox/workspace chỉ bắt buộc với driver này, không phải với
       // AgentRunner/loop-default. ctx.get() giữ dependency boundary ở đúng
       // plugin cần capability và fail rõ nếu composition thiếu provider.
@@ -130,15 +188,45 @@ export const apply = (ctx: Context) => {
         tools: runCtx.tools.list(),
         prompts,
       })
+      if (selected) {
+        const event = { type: 'skill_loaded', source: 'rlm', skill: selected.name }
+        await runCtx.storage.appendEvent(session.id, event)
+        runCtx.emit('agent/step', { sessionId: session.id, step: { type: 'skill_loaded', skill: selected.name } })
+      }
+      // H2: model-visible = logged — prompt hash for audit/replay (DSH invariant)
+      const promptHash = createHash('sha256').update(prepared.prompt).digest('hex').slice(0, 12)
+      const toolsHash = createHash('sha256').update(JSON.stringify(prepared.availableTools)).digest('hex').slice(0, 12)
+      await runCtx.storage.appendEvent(session.id, {
+        type: 'prompt_assembled',
+        source: 'rlm',
+        promptHash,
+        promptVersion: prepared.promptVersion,
+        toolsHash,
+        promptLength: prepared.prompt.length,
+        toolsCount: prepared.availableTools.length,
+      } as any)
       let result: Record<string, unknown> | undefined
       let steps = 0
       let finalContent = ''
 
       try {
-        for await (const event of sandbox.request(session.id, 'prepared_turn', prepared as unknown as Record<string, unknown>)) {
+        for await (const event of sandbox.request(
+          session.id,
+          'prepared_turn',
+          prepared as unknown as Record<string, unknown>,
+          { signal: input.signal },
+        )) {
+          assertNotCancelled(input)
           if (event.type === '__result__') {
             result = event
             continue
+          }
+          if (event.type === 'code') {
+            for (const activity of workspaceActivities(String(event.code ?? ''))) {
+              await runCtx.storage.appendEvent(session.id, { ...activity, source: 'rlm' })
+              const activityStep = toStep(activity)
+              if (activityStep) runCtx.emit('agent/step', { sessionId: session.id, step: activityStep })
+            }
           }
           await runCtx.storage.appendEvent(session.id, { ...event, source: 'rlm' })
           const step = toStep(event)

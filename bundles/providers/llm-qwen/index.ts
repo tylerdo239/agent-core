@@ -18,6 +18,7 @@ import {
   LlmService,
   LlmToolCall,
 } from "../../../seams/llm.ts";
+import { postChatCompletion } from "../shared/llm-http.ts";
 
 export namespace LlmQwen {
   export interface Config {
@@ -177,7 +178,15 @@ export class LlmQwen extends LlmService {
     }
 
     const url = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
-    const res = await this.fetchWithRetry(url, apiKey, body);
+    const res = await postChatCompletion({
+      url, apiKey, body,
+      timeoutMs: this.config.timeoutMs,
+      maxRetries: this.config.maxRetries,
+      retryBaseDelayMs: this.config.retryBaseDelayMs,
+      signal: options.signal,
+      deadline: options.deadline,
+      warn: (message, ...args) => this.ctx.logger('llm-qwen').warn(message, ...args),
+    }, 'llm-qwen');
     const data = (await res.json()) as OpenAIChatResponse;
     const choice = data.choices?.[0];
     const message = choice?.message;

@@ -17,7 +17,7 @@ import '../../../seams/tools.ts'
 import '../../../seams/loop.ts'
 import '../../../seams/skill.ts'
 import { MemoryEntry } from '../../../seams/memory.ts'
-import { LoopTurnResult, Session, TurnInput } from '../../../seams/loop.ts'
+import { assertNotCancelled, LoopTurnResult, Session, TurnInput } from '../../../seams/loop.ts'
 
 export const inject = ['loop']
 
@@ -49,13 +49,15 @@ export const apply = (ctx: Context) => {
       let steps = 0
 
       while (steps < session.maxSteps) {
+        assertNotCancelled(input)
         const toolSpecs = runCtx.tools.list().map((t) => ({
           name: t.name,
           description: t.description,
           parameters: t.parameters,
         }))
 
-        const response = await runCtx.llm.complete(messages, { tools: toolSpecs })
+        const response = await runCtx.llm.complete(messages, { tools: toolSpecs, signal: input.signal })
+        assertNotCancelled(input)
         // Phase 8.5: tra ui hint NGAY LÚC PHÁT step — chỉ forward metadata đã
         // khai sẵn trên ToolDefinition, không tự quyết định cách hiển thị.
         const tool = response.toolCall ? runCtx.tools.get(response.toolCall.name) : undefined
@@ -84,8 +86,11 @@ export const apply = (ctx: Context) => {
           ? await runCtx.tools.invoke(response.toolCall.name, response.toolCall.args, {
               sessionId: session.id,
               source: 'default-loop',
+              runId: input.runId,
+              signal: input.signal,
             })
           : { error: `tool "${response.toolCall.name}" not found` }
+        assertNotCancelled(input)
 
         await runCtx.storage.appendEvent(session.id, {
           type: 'tool_result',

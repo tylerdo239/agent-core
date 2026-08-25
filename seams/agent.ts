@@ -11,6 +11,7 @@
 // tại thời điểm bắt đầu turn (coding rule B4).
 import { Context, Service } from '@deepseek-ai/cordis'
 import { LoopTurnResult, Session, TurnInput } from './loop.ts'
+import type { RunRecord } from './storage.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -24,4 +25,8 @@ export abstract class AgentRunnerService extends Service {
   }
 
   abstract runTurn(driverName: string, session: Session, input: string | TurnInput): Promise<LoopTurnResult>
+  abstract getRun(runId: string): Promise<RunRecord | undefined>
+  abstract listRuns(sessionId: string): Promise<RunRecord[]>
+  abstract cancelRun(runId: string): Promise<boolean>
+  abstract drain(deadlineMs?: number): Promise<void>
 }

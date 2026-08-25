@@ -1,4 +1,5 @@
 import { Context, Service } from '@deepseek-ai/cordis'
+import { createHash } from 'node:crypto'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -43,7 +44,27 @@ export abstract class WorkspaceService extends Service {
   abstract inspect(sessionId: string): Promise<WorkspaceSnapshot>
 
   /** Lưu file do user upload vào workspace. Tabular files được đăng ký vào index.json. */
-  abstract writeFile(sessionId: string, filename: string, content: Buffer): Promise<{ path: string; size: number }>
+  abstract writeFile(sessionId: string, filename: string, content: Buffer): Promise<{ path: string; size: number; sha256?: string }>
+
+  /** Providers may override this to avoid buffering (workspace-local does). */
+  async writeFileFromStream(
+    sessionId: string,
+    filename: string,
+    stream: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array | Buffer>,
+    options: { maxBytes?: number } = {},
+  ): Promise<{ path: string; size: number; sha256: string }> {
+    const chunks: Buffer[] = []
+    let size = 0
+    for await (const chunk of stream as AsyncIterable<Uint8Array | Buffer>) {
+      const buffer = Buffer.from(chunk)
+      size += buffer.byteLength
+      if (options.maxBytes !== undefined && size > options.maxBytes) throw new Error(`file exceeds ${options.maxBytes} bytes`)
+      chunks.push(buffer)
+    }
+    const content = Buffer.concat(chunks)
+    const written = await this.writeFile(sessionId, filename, content)
+    return { ...written, sha256: written.sha256 ?? createHash('sha256').update(content).digest('hex') }
+  }
 
   /** Đọc nội dung file trong workspace (kể cả generated artifacts). */
   abstract readFile(sessionId: string, filePath: string): Promise<Buffer>

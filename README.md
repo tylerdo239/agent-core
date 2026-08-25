@@ -168,10 +168,17 @@ npm run dev:web   # Vite dev server tại :5173, gọi thẳng REST/WS thật �
 
 ```bash
 cp .env.example .env   # điền OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL_ID, POSTGRES_PASSWORD thật
-docker compose up --build
+docker compose up -d --build   # lần đầu hoặc khi dependency/Dockerfile đổi
 ```
 
 `docker-compose.yml` khởi 3 container: `postgres` (tài khoản/token, healthcheck `pg_isready`), `memory-core` (ctx.memory, TÙY CHỌN — image có sẵn healthcheck riêng, không cần cấu hình gì thêm nếu không dùng) và `agent-core` (chờ Postgres healthy mới boot — KHÔNG chờ `memory-core`, memory-tencentdb tự resilient nên không cần đồng bộ khởi động).
+
+Repo chỉ dùng **một** file Compose. Source TypeScript/React/CSS được mount vào
+container: backend tự restart bằng `tsx watch`, UI cập nhật bằng Vite HMR ở
+`http://localhost:8790`. Sau khi sửa code bình thường không chạy `--build`.
+Nếu đổi Python runtime và cần nạp lại worker, chỉ chạy
+`docker compose restart agent-core`; chỉ rebuild khi đổi dependency hoặc
+Dockerfile.
 
 | Port | Giao thức |
 |---|---|

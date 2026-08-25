@@ -1,0 +1,38 @@
+# Pack: task-conditioned harness evolution (DSH #2454 style)
+# Declares what this harness claims to do and how to verify it reproducibly.
+
+pack: rlm-data-agent
+version: 0.2.0
+task_claims:
+  - data-understanding  # profile_dataset <Understand>
+  - data-analysis       # DABench correlation/feature/outlier
+  - data-modeling       # regression MSE / FLAML jobs
+  - open-ended-report   # analyst-grade mini-report (5 aspects)
+
+cases:
+  - suite: rlm-harness-smoke-v1
+    file: cases.json
+  - suite: ds-analysis-v1
+    file: cases-ds.json
+  - suite: ds-report-v1
+    file: cases-ds-report.json
+  - suite: ds-deepanalyze-synth-v1
+    file: cases-deepanalyze-synth.json
+
+grader:
+  numeric_tolerance: 0.01  # per-case overrides via cases/*.json checks
+  report_heuristics: [report_keywords, report_sections, min_words]
+  trajectory:
+    s_interaction: success_ratio*0.6 + unique_code_ratio*0.2 + (1-waste)*0.2
+    format_gate: ok|protocol_error|protocol_no_fence|capability_error
+    missing_understand: flag when dataset task skips profile_dataset
+
+compatibility:
+  model: hosted_vllm/Qwen/Qwen3.5-35B-A3B-FP8
+  runtime: local  # RLM_SANDBOX_PROVIDER=local
+  python: ">=3.11"
+
+artifacts:
+  prompt_sections: bundles/prompts/prompt-rlm-data-agent/sections/*.md
+  tools: python/rlm_agent/tools.py
+  worker: bundles/loop-drivers/loop-rlm/python/worker.py

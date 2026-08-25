@@ -37,7 +37,7 @@ import { AppFrame } from '@agent-core/ui-layout'
 import { AdminUsersPanel, clearAuthState, loadAuthState, LoginForm, saveAuthState, SignupForm, type AuthState } from '@agent-core/ui-auth'
 import { PluginInventoryPanel } from '@agent-core/ui-plugin-inventory'
 import { cacheSessionTitle, fetchSessionHistory, Sidebar, type SessionSummary } from '@agent-core/ui-sidebar'
-import { Composer, EmptyState, GenericToolCard, MessageBubble, StreamingRow, ToolRow } from '@agent-core/ui-conversation'
+import { Composer, EmptyState, GenericToolCard, HumanDecision, MessageBubble, StreamingRow, ToolRow } from '@agent-core/ui-conversation'
 import { defaultSettings, loadSettings, saveSettings, SettingsForm, type Settings } from '@agent-core/ui-settings-general'
 import type { WorkspaceHeaderPanelProps, SkillComposerExtraProps } from '@agent-core/ui-rlm-workspace'
 import styles from './App.module.css'
@@ -76,6 +76,10 @@ interface LoopStep {
     | 'subcall_result'
     | 'context_usage'
     | 'memory_updated'
+    | 'skill_loaded'
+    | 'skill_resource'
+    | 'workspace_read'
+    | 'workspace_write'
   content?: string
   toolCall?: { name: string; args: Record<string, unknown> }
   toolUi?: ToolUiHint
@@ -83,10 +87,21 @@ interface LoopStep {
   args?: Record<string, unknown>
   result?: unknown
   message?: string
-  control?: { question?: string; reason?: string; action?: string }
+  control?: {
+    kind?: string
+    question?: string
+    options?: unknown
+    reason?: string
+    action?: string
+    request_id?: string
+  }
   question?: string
   reason?: string
   code?: string
+  action?: string
+  path?: string
+  skill?: string
+  encoding?: string
 }
 
 // docs/agent-core-rlm-web-ui-plugin-plan.md mục 3: mặc định quay về
@@ -101,7 +116,7 @@ export function createSessionCommand(driver: 'default' | 'rlm' = 'default') {
 }
 
 type ChatItem =
-  | { kind: 'user' | 'assistant' | 'system' | 'error' | 'critic'; id: string; text: string; ts?: number }
+  | { kind: 'user' | 'assistant' | 'system' | 'error' | 'critic'; id: string; text: string; description?: string; ts?: number }
   | {
       kind: 'tool'
       id: string
@@ -111,6 +126,30 @@ type ChatItem =
       result?: unknown
       errorText?: string
     }
+  | {
+      kind: 'control'
+      id: string
+      question: string
+      options: string[]
+      reason?: string
+      requestId?: string
+      answered?: string
+    }
+
+function humanControlItem(step: LoopStep): Extract<ChatItem, { kind: 'control' }> {
+  const control = step.control
+  const options = Array.isArray(control?.options)
+    ? control.options.filter((option): option is string => typeof option === 'string' && Boolean(option.trim())).map((option) => option.trim())
+    : []
+  return {
+    kind: 'control',
+    id: genId(),
+    question: control?.question || step.question || control?.action || step.action || 'RLM đang chờ quyết định của bạn.',
+    options,
+    reason: control?.reason || step.reason || undefined,
+    requestId: control?.request_id || undefined,
+  }
+}
 
 let nextId = 0
 function genId(): string {
@@ -129,6 +168,25 @@ type UploadState = {
   message?: string
 }
 
+const ACTIVE_SESSION_KEY_PREFIX = 'agent-core-ui-active-session:'
+
+function activeSessionId(userId: string): string | null {
+  return localStorage.getItem(`${ACTIVE_SESSION_KEY_PREFIX}${userId}`)
+}
+
+function rememberActiveSession(userId: string, sessionId: string): void {
+  localStorage.setItem(`${ACTIVE_SESSION_KEY_PREFIX}${userId}`, sessionId)
+}
+
+async function fetchSessionEvents(restUrl: string, token: string, sessionId: string): Promise<LoopStep[]> {
+  const response = await fetch(`${restUrl}/sessions/${sessionId}/events`, {
+    headers: { authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  const payload = (await response.json()) as { events?: LoopStep[] }
+  return payload.events ?? []
+}
+
 function toolRowSummary(item: Extract<ChatItem, { kind: 'tool' }>): string {
   if (item.state === 'error') return item.errorText ?? 'lỗi'
   if (item.state === 'ok' && item.toolUi?.render === 'citations') {
@@ -144,6 +202,28 @@ function toolRowSummary(item: Extract<ChatItem, { kind: 'tool' }>): string {
     if (typeof value === 'string' && value) return `"${value}"`
   }
   return JSON.stringify(item.toolCall.args ?? {})
+}
+
+function workspaceReadActivity(step: Pick<LoopStep, 'action' | 'path'>) {
+  const action = step.action ?? 'đọc'
+  const normalized = action.toLowerCase()
+  let description = 'Đọc dữ liệu từ workspace để phục vụ lượt phân tích hiện tại.'
+  if (normalized === 'list datasets') description = 'Kiểm tra các dataset hiện có trong workspace.'
+  else if (normalized === 'profile dataset') description = 'Đọc cấu trúc, kiểu dữ liệu và thống kê cơ bản của dataset.'
+  else if (normalized === 'load dataset') description = `Nạp ${step.path || 'dataset'} vào môi trường Python để xử lý.`
+  else if (normalized === 'list files') description = 'Kiểm tra các file hiện có trong workspace.'
+  else if (normalized === 'read file') description = `Đọc ${step.path || 'file'} từ workspace.`
+  return { text: `📄 ${action}`, description }
+}
+
+function workspaceWriteActivity(path = '') {
+  const lower = path.toLowerCase()
+  let description = 'Lưu kết quả vào workspace để tải xuống hoặc sử dụng ở lượt sau.'
+  if (lower.endsWith('.json')) description = 'Lưu kết quả dạng JSON vào workspace để tải xuống hoặc dùng lại.'
+  else if (/\.(md|html|pdf)$/.test(lower)) description = 'Lưu báo cáo hoàn chỉnh vào workspace.'
+  else if (/\.(csv|parquet|xlsx)$/.test(lower)) description = 'Lưu dataset kết quả vào workspace.'
+  if (path) description = `${description.replace(/\.$/, '')}: ${path}`
+  return { text: '💾 ghi output', description }
 }
 
 export function App() {
@@ -301,6 +381,22 @@ export function App() {
   }, [])
 
   useEffect(() => {
+    const last = items[items.length - 1]
+    if (last?.kind === 'assistant') {
+      let lastUserIndex = -1
+      for (let index = items.length - 2; index >= 0; index -= 1) {
+        if (items[index].kind === 'user') {
+          lastUserIndex = index
+          break
+        }
+      }
+      const turnHasActivity = items
+        .slice(lastUserIndex + 1, -1)
+        .some((item) => item.kind === 'critic' || item.kind === 'tool')
+      // Khi RLM vừa trả final, giữ viewport ở các activity cuối thay vì kéo
+      // thẳng xuống cuối một answer dài làm timeline trông như biến mất.
+      if (turnHasActivity) return
+    }
     messagesEndRef.current?.scrollIntoView({ block: 'end' })
   }, [items])
 
@@ -328,6 +424,7 @@ export function App() {
       .then((payload) => setSkills(payload.skills))
       .catch(() => setSkills([]))
     setSessionId(resumeSessionId ?? null)
+    sessionIdRef.current = resumeSessionId ?? null
     activeToolItemIdRef.current = null
 
     const url = `${current.wsUrl}/?token=${encodeURIComponent(token)}`
@@ -335,6 +432,7 @@ export function App() {
     wsRef.current = ws
 
     ws.addEventListener('open', () => {
+      if (wsRef.current !== ws) return
       if (resumeSessionId) {
         setStatus('connected')
         return
@@ -343,10 +441,13 @@ export function App() {
     })
 
     ws.addEventListener('message', (event) => {
+      if (wsRef.current !== ws) return
       const msg = JSON.parse(event.data)
 
       if (msg.type === 'session_created') {
         setSessionId(msg.id)
+        sessionIdRef.current = msg.id
+        if (auth) rememberActiveSession(auth.user.id, msg.id)
         setSessionDriver(msg.driver)
         setStatus('connected')
         setItems((prev) => [...prev, { kind: 'system', id: genId(), text: `Session mới: ${msg.id} (driver: ${msg.driver})`, ts: Date.now() }])
@@ -367,7 +468,10 @@ export function App() {
       if (msg.type === 'done') {
         setTurnInFlight(false)
         const sid = sessionIdRef.current ?? (msg as { sessionId?: string }).sessionId
-        if (sid) refreshWorkspaceFiles(String(sid))
+        if (sid) {
+          const completedSessionId = String(sid)
+          refreshWorkspaceFiles(completedSessionId)
+        }
         return
       }
 
@@ -390,6 +494,7 @@ export function App() {
     })
 
     ws.addEventListener('close', (event) => {
+      if (wsRef.current !== ws) return
       setStatus('disconnected')
       // Module auth: 401 giờ nghĩa là TOKEN hết hạn/bị thu hồi (không còn
       // "sai API key" — token đã được xác thực lúc mở kết nối, hết hạn/bị
@@ -404,6 +509,7 @@ export function App() {
     })
 
     ws.addEventListener('error', () => {
+      if (wsRef.current !== ws) return
       setStatus('disconnected')
     })
   }
@@ -456,7 +562,7 @@ export function App() {
       return
     }
     if (step.type === 'critic_message') {
-      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `🔍 đang rà soát: ${step.content}`, ts: Date.now() }])
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '🔍 Rà soát', description: step.content, ts: Date.now() }])
       return
     }
     if (step.type === 'final') {
@@ -464,12 +570,27 @@ export function App() {
       return
     }
     if (step.type === 'analysis' && step.content) {
-      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `🔍 ${step.content}` }])
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '🧠 Think', description: step.content }])
+      return
+    }
+    if (step.type === 'skill_loaded') {
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '📚 Skill', description: `Đọc ${step.skill ?? 'unknown'} để áp dụng hướng dẫn chuyên môn.` }])
+      return
+    }
+    if (step.type === 'skill_resource') {
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '📚 Skill resource', description: `Đọc ${step.skill ?? 'unknown'}${step.path ? `/${step.path}` : ''}.` }])
+      return
+    }
+    if (step.type === 'workspace_read') {
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), ...workspaceReadActivity(step) }])
+      return
+    }
+    if (step.type === 'workspace_write') {
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), ...workspaceWriteActivity(step.path) }])
       return
     }
     if (step.type === 'human_decision') {
-      const text = step.control?.question || step.control?.reason || step.control?.action || 'RLM đang chờ quyết định của bạn.'
-      setItems((prev) => [...prev, { kind: 'system', id: genId(), text }])
+      setItems((prev) => [...prev, humanControlItem(step)])
       return
     }
     if (step.type === 'error') {
@@ -481,6 +602,7 @@ export function App() {
     wsRef.current?.close()
     wsRef.current = null
     activeToolItemIdRef.current = null
+    sessionIdRef.current = null
     setItems([])
     connect(current, token, undefined, driver)
   }
@@ -499,6 +621,18 @@ export function App() {
     for (const raw of events) {
       const step = raw as LoopStep & { type: string }
       if (step.type === 'user_message') {
+        let pendingControl = -1
+        for (let index = result.length - 1; index >= 0; index -= 1) {
+          const item = result[index]
+          if (item.kind === 'control' && !item.answered) {
+            pendingControl = index
+            break
+          }
+        }
+        if (pendingControl !== -1) {
+          const item = result[pendingControl] as Extract<ChatItem, { kind: 'control' }>
+          result[pendingControl] = { ...item, answered: step.content ?? '' }
+        }
         result.push({ kind: 'user', id: genId(), text: step.content ?? '' })
         continue
       }
@@ -538,7 +672,27 @@ export function App() {
         continue
       }
       if (step.type === 'critic_message') {
-        result.push({ kind: 'critic', id: genId(), text: `🔍 đang rà soát: ${step.content}` })
+        result.push({ kind: 'critic', id: genId(), text: '🔍 Rà soát', description: step.content })
+        continue
+      }
+      if (step.type === 'analysis' && step.content) {
+        result.push({ kind: 'critic', id: genId(), text: '🧠 Think', description: step.content })
+        continue
+      }
+      if (step.type === 'skill_loaded') {
+        result.push({ kind: 'critic', id: genId(), text: '📚 Skill', description: `Đọc ${step.skill ?? 'unknown'} để áp dụng hướng dẫn chuyên môn.` })
+        continue
+      }
+      if (step.type === 'skill_resource') {
+        result.push({ kind: 'critic', id: genId(), text: '📚 Skill resource', description: `Đọc ${step.skill ?? 'unknown'}${step.path ? `/${step.path}` : ''}.` })
+        continue
+      }
+      if (step.type === 'workspace_read') {
+        result.push({ kind: 'critic', id: genId(), ...workspaceReadActivity(step) })
+        continue
+      }
+      if (step.type === 'workspace_write') {
+        result.push({ kind: 'critic', id: genId(), ...workspaceWriteActivity(step.path) })
         continue
       }
       if (step.type === 'final_answer') {
@@ -546,11 +700,7 @@ export function App() {
         continue
       }
       if (step.type === 'human_decision') {
-        result.push({
-          kind: 'system',
-          id: genId(),
-          text: step.control?.question || step.question || step.control?.reason || step.reason || 'RLM đang chờ quyết định của bạn.',
-        })
+        result.push(humanControlItem(step))
         continue
       }
       if (step.type === 'error') {
@@ -572,21 +722,22 @@ export function App() {
     setSessionDriver(driver)
     if (driver === 'rlm') refreshWorkspaceFiles(id)
     try {
-      const res = await fetch(`${settings.restUrl}/sessions/${id}/events`, {
-        headers: { authorization: `Bearer ${auth.token}` },
-      })
-      if (!res.ok) {
+      let events: LoopStep[]
+      try {
+        events = await fetchSessionEvents(settings.restUrl, auth.token, id)
+      } catch (error) {
+        const status = error instanceof Error ? error.message : ''
         pushToast(
-          res.status === 404 ? 'Cuộc trò chuyện này đã hết hạn hoặc không còn tồn tại.' : `Không tải được lịch sử (lỗi ${res.status}).`,
+          status === 'HTTP 404' ? 'Cuộc trò chuyện này đã hết hạn hoặc không còn tồn tại.' : `Không tải được lịch sử (${status || 'lỗi không xác định'}).`,
           'error',
         )
         return
       }
-      const { events } = (await res.json()) as { events: LoopStep[] }
       wsRef.current?.close()
       wsRef.current = null
       activeToolItemIdRef.current = null
       setItems(reconstructItems(events))
+      rememberActiveSession(auth.user.id, id)
       titledSessionIdsRef.current.add(id) // đã có lịch sử thật -> không ghi đè title bằng tin nhắn tiếp theo
       connect(settings, auth.token, id)
     } catch {
@@ -609,23 +760,55 @@ export function App() {
       setStatus('connecting')
       return
     }
-    fetchSessionHistory(settings.restUrl, auth.token)
-      .then(setSessions)
-      .catch(() => pushToast('Không tải được danh sách cuộc trò chuyện.', 'error'))
-    connect(settings, auth.token)
+    let disposed = false
+    void fetchSessionHistory(settings.restUrl, auth.token)
+      .then(async (history) => {
+        if (disposed) return
+        setSessions(history)
+        const rememberedId = activeSessionId(auth.user.id)
+        const target = history.find((session) => session.id === rememberedId) ?? history[0]
+        if (!target) {
+          connect(settings, auth.token)
+          return
+        }
+        try {
+          const events = await fetchSessionEvents(settings.restUrl, auth.token, target.id)
+          if (disposed) return
+          setSessionDriver(target.driver)
+          setItems(reconstructItems(events))
+          titledSessionIdsRef.current.add(target.id)
+          rememberActiveSession(auth.user.id, target.id)
+          if (target.driver === 'rlm') refreshWorkspaceFiles(target.id)
+          connect(settings, auth.token, target.id)
+        } catch {
+          if (!disposed) connect(settings, auth.token)
+        }
+      })
+      .catch(() => {
+        if (disposed) return
+        pushToast('Không tải được danh sách cuộc trò chuyện.', 'error')
+        connect(settings, auth.token)
+      })
     return () => {
-      wsRef.current?.close()
+      disposed = true
+      const socket = wsRef.current
+      wsRef.current = null
+      socket?.close()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth])
 
-  function handleSubmit(event: React.FormEvent) {
-    event.preventDefault()
-    const text = composerText.trim()
+  function sendUserMessage(rawText: string, controlItemId?: string) {
+    const text = rawText.trim()
     const ws = wsRef.current
-    if (!text || !sessionId || turnInFlight || !ws || ws.readyState !== WebSocket.OPEN) return
+    if (!text || !sessionId || turnInFlight || !ws || ws.readyState !== WebSocket.OPEN) return false
 
-    setItems((prev) => [...prev, { kind: 'user', id: genId(), text, ts: Date.now() }])
+    setItems((prev) => [
+      ...prev.map((item) =>
+        controlItemId && item.kind === 'control' && item.id === controlItemId ? { ...item, answered: text } : item,
+      ),
+      { kind: 'user' as const, id: genId(), text, ts: Date.now() },
+    ])
     setComposerText('')
     setTurnInFlight(true)
     // Chỉ đặt title 1 LẦN cho câu hỏi ĐẦU TIÊN của session (Set tránh ghi đè
@@ -641,6 +824,12 @@ export function App() {
       message: text,
       selectedSkill: selectedSkill || undefined,
     }))
+    return true
+  }
+
+  function handleSubmit(event: React.FormEvent) {
+    event.preventDefault()
+    sendUserMessage(composerText)
   }
 
   function handleSettingsSubmit(event: React.FormEvent) {
@@ -793,6 +982,19 @@ export function App() {
       >
         {items.length === 0 && <EmptyState />}
         {items.map((item) => {
+          if (item.kind === 'control') {
+            return (
+              <HumanDecision
+                key={item.id}
+                question={item.question}
+                options={item.options}
+                reason={item.reason}
+                answered={item.answered}
+                disabled={!composerEnabled}
+                onAnswer={(answer) => sendUserMessage(answer, item.id)}
+              />
+            )
+          }
           if (item.kind === 'tool') {
             const owner: ToolViewOwnerProps = { toolCall: item.toolCall, result: item.result, state: item.state, toolUi: item.toolUi }
             return (
@@ -820,6 +1022,7 @@ export function App() {
               key={item.id}
               kind={item.kind}
               text={item.text}
+              description={item.description}
               ts={item.ts}
               onCopied={() => pushToast('Đã sao chép')}
             />

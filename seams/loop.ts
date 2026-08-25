@@ -41,6 +41,27 @@ export interface TurnInput {
   message: string
   selectedSkill?: string
   metadata?: Record<string, unknown>
+  /** Idempotency key supplied by an adapter/client. */
+  requestId?: string
+  /** Cooperative cancellation signal owned by AgentRunner. */
+  signal?: AbortSignal
+  /** Correlation id assigned by AgentRunner; callers normally omit it. */
+  runId?: string
+}
+
+export class RunCancelledError extends Error {
+  constructor(message = 'run cancelled') {
+    super(message)
+    this.name = 'RunCancelledError'
+  }
+}
+
+export function assertNotCancelled(input: TurnInput): void {
+  if (input.signal?.aborted) throw new RunCancelledError()
+}
+
+export function isCancellation(error: unknown): boolean {
+  return error instanceof RunCancelledError || (error instanceof Error && error.name === 'AbortError')
 }
 
 export function normalizeTurnInput(input: string | TurnInput): TurnInput {
@@ -60,6 +81,12 @@ export type LoopStep =
   | { type: 'turn_started'; runId: string; contextIndex?: number }
   | { type: 'iteration_started' | 'iteration_completed'; iteration: number; depth?: number; duration?: number }
   | { type: 'analysis'; content: string; iteration?: number; decisionSummary?: string }
+  /** RLM accessed a selected skill or one of its lazy resources. */
+  | { type: 'skill_loaded' | 'skill_resource'; skill: string; path?: string; encoding?: string }
+  /** A workspace helper is about to read/list a file or dataset. */
+  | { type: 'workspace_read'; action: string; path?: string }
+  /** A REPL helper wrote an output artifact. */
+  | { type: 'workspace_write'; path: string }
   | { type: 'code'; code: string; iteration?: number; block?: number }
   | { type: 'observation'; stdout: string; stderr: string; success: boolean; iteration?: number; block?: number }
   | { type: 'subcall_result'; data: Record<string, unknown> }

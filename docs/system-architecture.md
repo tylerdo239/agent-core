@@ -135,12 +135,12 @@ Trình tự mount chính:
 7.  prompt-registry + RLM prompt sections
 8.  memory-rolling
 9.  workspace-local hoặc workspace-docker
-10. loop-registry + loop-default + loop-rlm
-11. agent-runner
-12. session-registry
+10. artifact-service + job-runner + pipeline-registry
+11. loop-registry + loop-default + loop-rlm
+12. agent-runner + session-registry
 13. sandbox-ipython hoặc sandbox-docker
-14. auth-apikey
-15. tool plugins
+14. pipeline stages + pipeline-runner
+15. auth-apikey + tool plugins
 16. REST + WebSocket + gRPC + Web UI adapters
 ```
 
@@ -315,7 +315,10 @@ control; turn sau được đóng gói thành `human_response`.
 
 | State | Owner | Nơi lưu | Sống qua restart? |
 |---|---|---|---|
-| Session object + loop extension | `session-registry` | RAM | Không |
+| Session metadata + history | `session-registry` + `state-sqlite` | SQLite; cache RAM khi chạy | Có, được restore lúc boot |
+| Run lifecycle | `agent-runner` | SQLite nếu storage persistent | Có; run đang chạy lúc restart thành `interrupted` |
+| Job/pipeline lifecycle | `job-runner` | SQLite | Có record; job chưa xong lúc restart thành `interrupted` |
+| Artifact catalog | `artifact-service` | SQLite, trỏ tới file workspace | Có nếu volume workspace còn |
 | Event/audit history | `state-sqlite` | `data/sessions.db` | Có nếu volume còn |
 | Semantic rolling memory | `memory-rolling` | `data/rlm-memory/*.json` | Có nếu volume còn |
 | Dataset/output | workspace provider | `data/rlm-workspaces/<sessionId>` hoặc Docker volume | Tuỳ provider/volume |
@@ -337,15 +340,12 @@ là summary bền hơn dành cho multi-turn RLM.
 | `.env.example` | Contract cấu hình, không chứa secret thật | Thêm/đổi env var |
 | `Dockerfile` | Build image runtime, UI và copy Python dependencies | Đổi production image/runtime |
 | `Dockerfile.dev` | Image development có source mount + watch | Đổi môi trường dev |
-| `docker-compose.yml` | Service/port/volume/env nền | Đổi deployment mặc định |
-| `docker-compose.dev.yml` | Override live mount/hot reload | Đổi workflow dev |
-| `docker-compose.prod.yml` | Override production dùng source đã COPY trong image | Đổi policy deploy/restart |
+| `docker-compose.yml` | Compose duy nhất: service, port, volume, source mount và hot reload | Đổi cách chạy hệ thống |
 | `README.md` | Quick start và giới hạn tổng quát | Thay đổi cách chạy chính |
 | `tsconfig.json` | Luật typecheck TypeScript | Đổi compiler/module settings |
 
-Compose base chỉ mount named volume `agent-core-data`. Dev override mount source
-thuộc chính repo để hot reload; production image chứa cả TypeScript, frontend
-build và Python RLM runtime nên có thể chạy từ một checkout độc lập.
+Compose mount source thuộc chính repo vào container. Backend dùng `tsx watch`,
+UI dùng Vite HMR; sửa TypeScript/React/CSS không cần rebuild image.
 
 ### 6.2 `src/`
 
@@ -374,6 +374,10 @@ Nếu cần biết “`ctx.X` được load ở đâu”, tìm `root.plugin(...)
 | `sessions.ts` | `ctx.sessions`: registry session dùng chung transport |
 | `skill.ts` | `ctx.skills`: catalog và lazy resource reader |
 | `storage.ts` | `ctx.storage`: append/read event |
+| `events.ts` | event envelope có sequence/cursor, dùng cho timeline/polling |
+| `jobs.ts` | `ctx.jobs`: queue, progress, cancel và event của background job |
+| `artifacts.ts` | `ctx.artifacts`: catalog output có producer/hash/path |
+| `pipeline.ts` | `ctx.pipelines`, `ctx.pipelineRuns`: stage registry + chạy pipeline |
 | `subagents.ts` | `ctx.subagents`: registry task delegation |
 | `tools.ts` | `ctx.tools`: catalog và execution gateway duy nhất (`invoke()` truyền `ToolInvocationContext{sessionId,source}` xuống handler — xem `docs/agent-core-rate-limit-and-security-audit.md` Finding A1) |
 | `workspace.ts` | `ctx.workspace`: dataset/artifact/file operations |
@@ -384,7 +388,10 @@ Quy tắc: seam không import provider và không chứa logic deployment.
 
 | Folder | Vai trò |
 |---|---|
-| `agent-runner` | Chống concurrent turn, lưu user event, pin loop driver |
+| `agent-runner` | Queue theo session, idempotency theo requestId, run lifecycle, cancel cooperative |
+| `artifact-service` | Đăng ký/list output do RLM hoặc pipeline tạo |
+| `job-runner` | Queue background có progress/event/cancel; không chạy song song quá `JOB_MAX_CONCURRENT` |
+| `pipeline-registry`, `pipeline-runner` | Registry stage/pipeline và điều phối một pipeline qua một job |
 | `auth-apikey` | So token với danh sách `API_KEYS` |
 | `llm-qwen` | OpenAI-compatible Qwen client, timeout/retry/usage |
 | `llm-deepseek` | Provider LLM thay thế |
@@ -397,7 +404,7 @@ Quy tắc: seam không import provider và không chứa logic deployment.
 | `session-registry` | Session RAM, sliding TTL và lifecycle events |
 | `skill-filesystem` | Parse `SKILL.md`, discover/read package resources |
 | `skill-registry` | Catalog skill trong RAM |
-| `state-sqlite` | Event store SQLite và retention sweep |
+| `state-sqlite` | Event store envelope, sessions/runs/jobs/artifacts SQLite và retention sweep |
 | `subagent-manager` | Catalog subagent |
 | `tool-registry` | Catalog + execution gateway cho tool |
 | `workspace-local` | Workspace bằng filesystem local |
@@ -459,7 +466,23 @@ scikit-learn, cohort/funnel/segmentation/time-series và data-quality audit.
 Adapter chỉ chuyển transport ↔ domain call. Business logic phải nằm sau seam,
 không được fork riêng theo REST/WS/gRPC.
 
-### 6.9 Frontend và UI packages
+### 6.9 Pipeline ML thay thế được stage
+
+Pipeline là một capability riêng, không phải prompt hoặc tool giả. Pipeline
+`tabular-classification` hiện ghép theo thứ tự:
+
+```text
+data-load → feature-basic → train-majority hoặc train-flaml
+          → validate-split → report-markdown
+```
+
+Mỗi stage nhận artifact đầu vào và tạo artifact đầu ra trong workspace. Ví dụ
+muốn thay FLAML bằng LightGBM: viết stage `train-lightgbm`, đăng ký nó, rồi
+gọi pipeline với `override: { train: 'train-lightgbm' }`. Data/feature/validate
+và UI không cần biết train implementation đã đổi. `validate-split` luôn đánh
+giá holdout tách trước train để tránh leakage.
+
+### 6.10 Frontend và UI packages
 
 | File/folder | Vai trò |
 |---|---|
@@ -479,7 +502,7 @@ không được fork riêng theo REST/WS/gRPC.
 Frontend mới có thể bỏ reference UI và viết lại hoàn toàn, miễn giữ contract
 trong `frontend-backend-handoff.md`.
 
-### 6.10 Test và benchmark
+### 6.11 Test và benchmark
 
 | Folder | Vai trò |
 |---|---|
@@ -612,6 +635,18 @@ npm run build:web
 npm test
 ```
 
+`npm test` tự đặt `NODE_ENV=test`, nên chạy được cả từ Docker runtime vốn đặt
+`NODE_ENV=production`. Native dependency `better-sqlite3` phải được chạy bằng
+Node 22 như image; không chạy full test bằng Node 20 trên host.
+
+Để kiểm tra pipeline ML chậm hơn (không nằm trong default suite):
+
+```bash
+docker run --rm -e RUN_ML_E2E=1 \
+  -v "$PWD:/work" -w /work agent-core:latest \
+  npx vitest run tests/pipeline-ml-e2e.test.ts
+```
+
 ## 11. Thứ tự đọc khuyến nghị
 
 Nếu chỉ có 30 phút:
@@ -659,7 +694,7 @@ So sánh commit khởi tạo `2bb50b2` với branch migration tại `30f4120`:
 | REST/WS/gRPC nhận `selectedSkill`, metadata, stream event; REST quản lý file workspace | `bundles/adapters/api-{rest,ws,grpc}/` |
 | UI có upload progress, danh sách workspace và artifact đầu ra | `apps/web/src/App.tsx`, `apps/web/src/style.css` |
 | Runtime Python RLM và scientific stack nằm trọn trong bundle sở hữu nó | `bundles/loop-drivers/loop-rlm/python/{rlm_agent/,vendor/rlm/,requirements.txt,worker.py}` |
-| Image/Compose độc lập, có cấu hình dev hot-reload và production | `Dockerfile`, `Dockerfile.dev`, `docker-compose*.yml` |
+| Một Compose duy nhất có source mount và hot reload | `Dockerfile.dev`, `docker-compose.yml` |
 | Benchmark core, skill, tool, memory, REPL, DABench và multi-turn | `benchmarks/rlm/` |
 | Test migration, worker protocol, REST và UI smoke | `tests/rlm-migration.test.ts`, `tests/rlm-worker-protocol.test.ts`, `tests/api-rest.test.ts`, `apps/web/tests/App.smoke.test.tsx` |
 

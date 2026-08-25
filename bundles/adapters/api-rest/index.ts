@@ -42,6 +42,9 @@ import { AuthIdentity } from '../../../seams/auth.ts'
 import { Session } from '../../../seams/loop.ts'
 import '../../../seams/skill.ts'
 import '../../../seams/workspace.ts'
+import '../../../seams/jobs.ts'
+import '../../../seams/artifacts.ts'
+import '../../../seams/pipeline.ts'
 
 export namespace ApiRest {
   export interface Config {
@@ -51,6 +54,7 @@ export namespace ApiRest {
     maxBodyBytes?: number
     /** Access-Control-Allow-Origin — mặc định "*" (xem ghi chú CORS ở đầu file). */
     corsOrigin?: string
+    onListening?: (port: number) => void
   }
 }
 
@@ -130,7 +134,10 @@ export const apply = async (ctx: Context, config: ApiRest.Config = {}) => {
 
   await new Promise<void>((resolve) => server.listen(config.port ?? 8787, resolve))
   const address = server.address()
-  if (address && typeof address === 'object') config.port = address.port
+  if (address && typeof address === 'object') {
+    config.port = address.port
+    config.onListening?.(address.port)
+  }
   ctx.logger('api-rest').info('listening on :%d', config.port)
 
   return () =>
@@ -263,8 +270,24 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse, m
       metadata: body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
         ? body.metadata as Record<string, unknown>
         : undefined,
+      requestId: typeof body.requestId === 'string' ? body.requestId : undefined,
     })
     return sendJson(res, 200, result)
+  }
+
+  const sessionRunsMatch = pathname.match(/^\/sessions\/([^/]+)\/runs$/)
+  if (req.method === 'GET' && sessionRunsMatch) {
+    return sendJson(res, 200, { runs: await ctx.agent.listRuns(sessionRunsMatch[1]) })
+  }
+  const runCancelMatch = pathname.match(/^\/runs\/([^/]+)\/cancel$/)
+  if (req.method === 'POST' && runCancelMatch) {
+    const cancelled = await ctx.agent.cancelRun(runCancelMatch[1])
+    return cancelled ? sendJson(res, 202, { cancelled: true }) : sendJson(res, 409, { error: 'run is not active' })
+  }
+  const runMatch = pathname.match(/^\/runs\/([^/]+)$/)
+  if (req.method === 'GET' && runMatch) {
+    const run = await ctx.agent.getRun(runMatch[1])
+    return run ? sendJson(res, 200, run) : sendJson(res, 404, { error: 'run not found' })
   }
 
   const filesMatch = pathname.match(/^\/sessions\/([^/]+)\/files(?:\/(.+))?$/)
@@ -302,11 +325,17 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse, m
 
     if (req.method === 'POST' && !subPath) {
       let filename = ''
-      let buf: Buffer
       if ((req.headers['content-type'] ?? '').split(';', 1)[0].trim().toLowerCase() === 'application/octet-stream') {
         const rawName = Array.isArray(req.headers['x-file-name']) ? req.headers['x-file-name'][0] : req.headers['x-file-name']
         try { filename = decodeURIComponent(String(rawName ?? '')) } catch { filename = '' }
-        buf = await readBody(req, FILE_MAX_BODY_BYTES)
+        if (!filename) return sendJson(res, 400, { error: 'filename is required' })
+        try {
+          const result = await ctx.workspace.writeFileFromStream(filesMatch[1], filename, req, { maxBytes: FILE_MAX_BODY_BYTES })
+          return sendJson(res, 201, { path: result.path, size: result.size })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          return sendJson(res, /exceeds/.test(message) ? 413 : 500, { error: message })
+        }
       } else {
         // Backward-compatible JSON path for non-browser clients. Base64 adds
         // roughly 4/3 overhead, so the request limit must be larger than the
@@ -315,12 +344,12 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse, m
         filename = typeof body.filename === 'string' ? body.filename : ''
         const content = typeof body.content === 'string' ? body.content : ''
         if (!content) return sendJson(res, 400, { error: 'filename and content are required' })
-        buf = body.encoding === 'utf8' ? Buffer.from(content, 'utf8') : Buffer.from(content, 'base64')
+        const buf = body.encoding === 'utf8' ? Buffer.from(content, 'utf8') : Buffer.from(content, 'base64')
+        if (!filename) return sendJson(res, 400, { error: 'filename is required' })
+        if (buf.byteLength > FILE_MAX_BODY_BYTES) return sendJson(res, 413, { error: 'file too large' })
+        const result = await ctx.workspace.writeFile(filesMatch[1], filename, buf)
+        return sendJson(res, 201, { path: result.path, size: result.size })
       }
-      if (!filename) return sendJson(res, 400, { error: 'filename is required' })
-      if (buf.byteLength > FILE_MAX_BODY_BYTES) return sendJson(res, 413, { error: 'file too large' })
-      const result = await ctx.workspace.writeFile(filesMatch[1], filename, buf)
-      return sendJson(res, 201, result)
     }
   }
 
@@ -331,6 +360,93 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse, m
     if (!canAccessSession(identity!, session)) return sendJson(res, 403, { error: 'forbidden' })
     const events = await ctx.storage.readEvents(eventsMatch[1])
     return sendJson(res, 200, { events })
+  }
+
+  const eventsV2Match = pathname.match(/^\/v2\/sessions\/([^/]+)\/events$/)
+  if (req.method === 'GET' && eventsV2Match) {
+    const afterSeq = Math.max(Number(url.searchParams.get('afterSeq') ?? 0) || 0, 0)
+    const limit = Number(url.searchParams.get('limit') ?? 200) || 200
+    return sendJson(res, 200, await ctx.storage.readEventPage(eventsV2Match[1], { afterSeq, limit }))
+  }
+
+  const jobs = ctx.get('jobs')
+  const jobEventsMatch = pathname.match(/^\/jobs\/([^/]+)\/events$/)
+  if (req.method === 'GET' && jobEventsMatch) {
+    if (!jobs) return sendJson(res, 503, { error: 'job service is not enabled' })
+    const job = await jobs.get(jobEventsMatch[1])
+    if (!job) return sendJson(res, 404, { error: 'job not found' })
+    const page = await ctx.storage.readEventPage(job.sessionId ?? `job:${job.id}`, {
+      afterSeq: Number(url.searchParams.get('afterSeq') ?? 0) || 0,
+      limit: 100,
+    })
+    return sendJson(res, 200, { ...page, events: page.events.filter((event) => event.jobId === job.id) })
+  }
+  const jobCancelMatch = pathname.match(/^\/jobs\/([^/]+)\/cancel$/)
+  if (req.method === 'POST' && jobCancelMatch) {
+    if (!jobs) return sendJson(res, 503, { error: 'job service is not enabled' })
+    return await jobs.cancel(jobCancelMatch[1])
+      ? sendJson(res, 202, await jobs.get(jobCancelMatch[1]))
+      : sendJson(res, 409, { error: 'job is not cancellable' })
+  }
+  const jobRetryMatch = pathname.match(/^\/jobs\/([^/]+)\/retry$/)
+  if (req.method === 'POST' && jobRetryMatch) {
+    if (!jobs) return sendJson(res, 503, { error: 'job service is not enabled' })
+    const job = await jobs.retry(jobRetryMatch[1])
+    return job ? sendJson(res, 202, job) : sendJson(res, 409, { error: 'job cannot be retried in this process' })
+  }
+  const jobMatch = pathname.match(/^\/jobs\/([^/]+)$/)
+  if (req.method === 'GET' && jobMatch) {
+    if (!jobs) return sendJson(res, 503, { error: 'job service is not enabled' })
+    const job = await jobs.get(jobMatch[1])
+    return job ? sendJson(res, 200, job) : sendJson(res, 404, { error: 'job not found' })
+  }
+  const sessionJobsMatch = pathname.match(/^\/sessions\/([^/]+)\/jobs$/)
+  if (req.method === 'GET' && sessionJobsMatch) {
+    if (!jobs) return sendJson(res, 503, { error: 'job service is not enabled' })
+    return sendJson(res, 200, { jobs: await jobs.list({ sessionId: sessionJobsMatch[1] }) })
+  }
+
+  const artifacts = ctx.get('artifacts')
+  const sessionArtifactsMatch = pathname.match(/^\/sessions\/([^/]+)\/artifacts$/)
+  if (req.method === 'GET' && sessionArtifactsMatch) {
+    if (!artifacts) return sendJson(res, 503, { error: 'artifact service is not enabled' })
+    return sendJson(res, 200, { artifacts: await artifacts.list({
+      sessionId: sessionArtifactsMatch[1], kind: url.searchParams.get('kind') ?? undefined,
+    }) })
+  }
+  const artifactMatch = pathname.match(/^\/artifacts\/([^/]+)$/)
+  if (req.method === 'GET' && artifactMatch) {
+    if (!artifacts) return sendJson(res, 503, { error: 'artifact service is not enabled' })
+    const artifact = await artifacts.get(artifactMatch[1])
+    return artifact ? sendJson(res, 200, artifact) : sendJson(res, 404, { error: 'artifact not found' })
+  }
+
+  if (req.method === 'GET' && pathname === '/pipelines') {
+    const registry = ctx.get('pipelines')
+    if (!registry) return sendJson(res, 503, { error: 'pipeline service is not enabled' })
+    return sendJson(res, 200, {
+      pipelines: registry.listPipelines(),
+      stages: registry.listStages().map(({ kind, name, description }) => ({ kind, name, description })),
+    })
+  }
+  const pipelineRunMatch = pathname.match(/^\/pipelines\/([^/]+)\/run$/)
+  if (req.method === 'POST' && pipelineRunMatch) {
+    const runner = ctx.get('pipelineRuns')
+    if (!runner) return sendJson(res, 503, { error: 'pipeline service is not enabled' })
+    const body = await readJsonBody(req, maxBodyBytes)
+    if (typeof body.sessionId !== 'string' || !ctx.sessions.get(body.sessionId)) {
+      return sendJson(res, 404, { error: 'session not found' })
+    }
+    const job = await runner.run(pipelineRunMatch[1], body.sessionId, {
+      override: body.override && typeof body.override === 'object' ? body.override as never : undefined,
+      config: body.config && typeof body.config === 'object' ? body.config as never : undefined,
+    })
+    return sendJson(res, 202, job)
+  }
+
+  if (req.method === 'POST' && pathname === '/admin/drain') {
+    await ctx.agent.drain(Number(url.searchParams.get('timeoutMs') ?? 10_000) || 10_000)
+    return sendJson(res, 200, { drained: true })
   }
 
   sendJson(res, 404, { error: 'not found' })
