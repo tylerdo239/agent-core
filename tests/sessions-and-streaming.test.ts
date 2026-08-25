@@ -10,6 +10,9 @@ import * as stateSqlite from '../bundles/providers/state-sqlite/index.ts'
 import * as loopRegistry from '../bundles/providers/loop-registry/index.ts'
 import * as loopDefault from '../bundles/loop-drivers/loop-default/index.ts'
 import * as agentRunner from '../bundles/providers/agent-runner/index.ts'
+import * as promptRegistry from '../bundles/providers/prompt-registry/index.ts'
+import * as promptDefaultAgent from '../bundles/prompts/prompt-default-agent/index.ts'
+import * as contextCompactorLlm from '../bundles/providers/context-compactor-llm/index.ts'
 import { LlmCompleteOptions, LlmCompletion, LlmMessage, LlmService } from '../seams/llm.ts'
 import { LoopStep } from '../seams/loop.ts'
 
@@ -64,6 +67,9 @@ describe('Phase 6.0 — agent/step event', () => {
     const root = new Context()
     root.plugin(toolRegistry)
     root.plugin(skillRegistry)
+    root.plugin(promptRegistry)
+    root.plugin(promptDefaultAgent)
+    root.plugin(contextCompactorLlm)
     root.plugin(stateSqlite, { path: ':memory:' })
     root.plugin(echoTool)
     root.plugin(fakeLlm)
@@ -91,6 +97,9 @@ describe('Phase 6.0 — agent/step event', () => {
     // storage riêng, nó trùng với model_message cuối cùng). 'user_message'
     // ghi ở agent-runner (trước cả 'agent/step' đầu tiên) nên không có step
     // 'agent/step' tương ứng — client đã biết sẵn tin nhắn mình gửi.
-    expect(events.map((e) => e.type)).toEqual(['user_message', 'model_message', 'tool_audit', 'tool_result', 'model_message'])
+    expect(events.map((e) => e.type)).toEqual([
+      'user_message', 'prompt_assembled', 'model_message', 'tool_audit',
+      'tool_result', 'prompt_assembled', 'model_message',
+    ])
   })
 })

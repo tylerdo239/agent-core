@@ -82,7 +82,7 @@ export type LoopStep =
   | { type: 'iteration_started' | 'iteration_completed'; iteration: number; depth?: number; duration?: number }
   | { type: 'analysis'; content: string; iteration?: number; decisionSummary?: string }
   /** RLM accessed a selected skill or one of its lazy resources. */
-  | { type: 'skill_loaded' | 'skill_resource'; skill: string; path?: string; encoding?: string }
+  | { type: 'skill_loaded' | 'skill_resource'; skill: string; path?: string; encoding?: string; activation?: 'selected' | 'trigger' | 'semantic' | 'agent' }
   /** A workspace helper is about to read/list a file or dataset. */
   | { type: 'workspace_read'; action: string; path?: string }
   /** A REPL helper wrote an output artifact. */
@@ -139,6 +139,8 @@ export class Session {
   createdAt = Date.now()
   /** State có scope theo session của loop-rlm (contextIndex/historyIndex/pendingControl). */
   private extensions = new Map<string, unknown>()
+  /** Default loop bật cờ này khi ctx.contextCompactor đã nhận ownership theo token. */
+  private tokenCompactionManaged = false
 
   constructor(
     public id: string,
@@ -168,11 +170,17 @@ export class Session {
   }
 
   private trimHistory() {
+    if (this.tokenCompactionManaged) return
     if (this.history.length <= this.maxHistoryMessages) return
     const hasLeadingSystem = this.history[0]?.role === 'system'
     const budget = this.maxHistoryMessages - (hasLeadingSystem ? 1 : 0)
     const tail = this.history.slice(-Math.max(budget, 0))
     this.history = hasLeadingSystem ? [this.history[0], ...tail] : tail
+  }
+
+  /** Token compactor thay hard-trim theo số message cho driver hỗ trợ nó. */
+  manageHistoryByTokenCompaction() {
+    this.tokenCompactionManaged = true
   }
 
   /**
@@ -194,13 +202,23 @@ export class Session {
    * sinh message 'system' thứ 2 nữa, bất kể bao nhiêu skill/memory note khớp
    * cùng lúc.
    */
-  buildPrompt(userMessage: string, extraSystemNotes: string[] = []): LlmMessage[] {
+  buildPrompt(
+    userMessage: string,
+    extraSystemNotes: string[] = [],
+    frameworkSystemPrompt?: string,
+  ): LlmMessage[] {
     this.history.push({ role: 'user', content: userMessage })
     this.trimHistory()
-    if (extraSystemNotes.length === 0) return [...this.history]
+    return this.currentPrompt(extraSystemNotes, frameworkSystemPrompt)
+  }
+
+  /** Rebuild the model view after a tool result without appending the user message twice. */
+  currentPrompt(extraSystemNotes: string[] = [], frameworkSystemPrompt?: string): LlmMessage[] {
     const hasLeadingSystem = this.history[0]?.role === 'system'
     const leadingContent = hasLeadingSystem ? [this.history[0].content] : []
-    const merged: LlmMessage = { role: 'system', content: [...leadingContent, ...extraSystemNotes].join('\n\n') }
+    const systemParts = [frameworkSystemPrompt, ...leadingContent, ...extraSystemNotes].filter(Boolean) as string[]
+    if (systemParts.length === 0) return [...this.history]
+    const merged: LlmMessage = { role: 'system', content: systemParts.join('\n\n') }
     const rest = hasLeadingSystem ? this.history.slice(1) : this.history
     return [merged, ...rest]
   }
@@ -213,6 +231,12 @@ export class Session {
 
   recordToolResult(name: string, result: unknown) {
     this.history.push({ role: 'tool', content: `[${name}] ${JSON.stringify(result)}` })
+    this.trimHistory()
+  }
+
+  /** Commit một history đã compact; compactor không được sở hữu/mutate Session. */
+  replaceHistory(messages: LlmMessage[]) {
+    this.history = [...messages]
     this.trimHistory()
   }
 

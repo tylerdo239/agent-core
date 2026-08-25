@@ -14,8 +14,17 @@ export namespace SessionRegistry { export interface Config { ttlMs?: number; swe
 interface Entry { session: Session; createdAt: number; lastActiveAt: number; lastPersistedAt: number }
 
 function replay(events: StoredEvent[], maximum: number): LlmMessage[] {
-  const messages: LlmMessage[] = []
+  let messages: LlmMessage[] = []
   for (const event of events) {
+    if (event.type === 'context_compacted' && Array.isArray(event.history)) {
+      messages = event.history.flatMap((item): LlmMessage[] => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return []
+        const value = item as Record<string, unknown>
+        if (!['user', 'assistant', 'tool'].includes(String(value.role))) return []
+        return [{ role: value.role as LlmMessage['role'], content: String(value.content ?? '') }]
+      })
+      continue
+    }
     if (event.type === 'user_message') messages.push({ role: 'user', content: String(event.content ?? '') })
     if (event.type === 'model_message') {
       const call = event.toolCall as { name?: string; args?: unknown } | undefined

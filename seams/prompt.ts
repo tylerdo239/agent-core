@@ -16,6 +16,8 @@ export interface PromptAssembleContext {
 export interface PromptSection {
   name: string
   order: number
+  /** Bỏ trống = dùng chung; có giá trị = chỉ ráp cho các loop driver này. */
+  drivers?: string[]
   text: string | ((context: PromptAssembleContext) => string)
 }
 

@@ -64,10 +64,11 @@ export async function prepareRlmTurn(options: {
   memory: TurnMemoryService
   workspace: WorkspaceSnapshot
   skill?: SkillDefinition
+  skillCatalog?: SkillDefinition[]
   tools: ToolDefinition[]
   prompts: PromptRegistryService
 }): Promise<PreparedRlmTurn> {
-  const { session, input, memory, workspace, skill, tools, prompts } = options
+  const { session, input, memory, workspace, skill, skillCatalog = [], tools, prompts } = options
   const state = session.extension<RlmSessionState>('loop:rlm', () => ({
     contextIndex: 0,
     historyIndex: 0,
@@ -101,6 +102,9 @@ export async function prepareRlmTurn(options: {
       }
   const selectedSkill = state.pendingControl ? undefined : skillPayload(skill)
   if (selectedSkill) context.selected_skill = selectedSkill
+  if (skillCatalog.length) {
+    context.skill_catalog = skillCatalog.map(({ name, description }) => ({ name, description }))
+  }
   const availableTools = tools.map(({ name, description, parameters }) => ({
     name,
     description,

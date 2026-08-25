@@ -6,9 +6,11 @@ import '../../../seams/skill.ts'
 import '../../../seams/prompt.ts'
 import '../../../seams/workspace.ts'
 import '../../../seams/turn-memory.ts'
+import '../../../seams/skill-selection.ts'
 import { assertNotCancelled, LoopStep, LoopTurnResult, Session, TurnInput } from '../../../seams/loop.ts'
 import { SandboxEvent } from '../../../seams/sandbox.ts'
 import { prepareRlmTurn, RlmSessionState } from './protocol.ts'
+import { resolveActiveSkills } from '../../../src/skill-runtime.ts'
 
 function number(value: unknown): number | undefined {
   return typeof value === 'number' ? value : undefined
@@ -168,13 +170,25 @@ export const apply = (ctx: Context) => {
       if (!sandbox || !workspace || !memoryService || !prompts) {
         throw new Error('loop-rlm requires sandbox, workspace, turnMemory and prompt providers')
       }
-      const selected = input.selectedSkill ? runCtx.skills.get(input.selectedSkill) : undefined
-      if (input.selectedSkill) {
-        if (!selected || !selected.userInvocable) {
-          const available = runCtx.skills
-            .list({ userInvocableOnly: true, topLevelOnly: true })
-            .map((skill) => skill.name)
-          throw new Error(`skill "${input.selectedSkill}" is not user-invocable; available: ${available.join(', ')}`)
+      // Explicit user selection wins. Without one, a precise trigger is the
+      // deterministic fast path; semantic discovery remains available through
+      // the model-facing `skill` tool and catalog in the prepared context.
+      const activeSkills = resolveActiveSkills(runCtx.skills, input.message, input.selectedSkill)
+      const skillCatalog = runCtx.skills.list({ topLevelOnly: true })
+      let active = activeSkills[0]
+      if (!active) {
+        const selector = runCtx.get('skillSelection')
+        const semantic = await selector?.select(input.message, skillCatalog, input.signal)
+        if (selector) {
+          await runCtx.storage.appendEvent(session.id, {
+            type: 'skill_selection', source: 'rlm', strategy: 'semantic',
+            outcome: semantic?.skill ? 'selected' : 'none',
+            skill: semantic?.skill?.name, model: semantic?.model, usage: semantic?.usage,
+            decision: semantic?.decision,
+          })
+        }
+        if (semantic?.skill) {
+          active = { skill: semantic.skill, source: 'semantic' }
         }
       }
 
@@ -184,14 +198,18 @@ export const apply = (ctx: Context) => {
         input,
         memory: memoryService,
         workspace: await workspace.inspect(session.id),
-        skill: selected,
+        skill: active?.skill,
+        skillCatalog,
         tools: runCtx.tools.list(),
         prompts,
       })
-      if (selected) {
-        const event = { type: 'skill_loaded', source: 'rlm', skill: selected.name }
+      if (prepared.context.selected_skill && active) {
+        const event = { type: 'skill_loaded', source: 'rlm', activation: active.source, skill: active.skill.name }
         await runCtx.storage.appendEvent(session.id, event)
-        runCtx.emit('agent/step', { sessionId: session.id, step: { type: 'skill_loaded', skill: selected.name } })
+        runCtx.emit('agent/step', {
+          sessionId: session.id,
+          step: { type: 'skill_loaded', skill: active.skill.name, activation: active.source },
+        })
       }
       // H2: model-visible = logged — prompt hash for audit/replay (DSH invariant)
       const promptHash = createHash('sha256').update(prepared.prompt).digest('hex').slice(0, 12)

@@ -3,12 +3,9 @@
 //
 // Khác `ctx.tools` (hàm model TỰ GỌI qua tool-calling giữa turn) và
 // `ctx.subagents` (uỷ thác 1 task cho 1 lượt chạy TÁCH BIỆT): "skill" là 1
-// gói HƯỚNG DẪN TĨNH (không phải hàm gọi được) được nạp CÓ ĐIỀU KIỆN vào
-// system prompt của đúng lượt hội thoại khớp trigger — mô hình tương tự
-// Skill trong chính Claude Code, không phải RAG ngữ nghĩa: match bằng
-// keyword đơn giản (case-insensitive substring), đủ dùng ở quy mô hiện tại
-// và không cần thêm hạ tầng embedding/vector store (seams/memory.ts vẫn
-// chưa có provider — xem README "Ngoài phạm vi").
+// gói HƯỚNG DẪN TĨNH. Registry quản lý catalog/resource; plugin
+// tool-skill quảng bá catalog để model tự chọn theo ngữ nghĩa và nạp full
+// instructions. `match()` chỉ là fast path tất định cho trigger rõ ràng.
 import { Context, Service } from '@deepseek-ai/cordis'
 
 declare module '@deepseek-ai/cordis' {
@@ -63,7 +60,7 @@ export abstract class SkillRegistryService extends Service {
   abstract get(name: string): SkillDefinition | undefined
   abstract has(name: string): boolean
   abstract list(options?: SkillListOptions): SkillDefinition[]
-  /** Trả về các skill có ≥1 trigger khớp userMessage (substring, không phân biệt hoa/thường). */
+  /** Trả về các skill có ≥1 trigger khớp userMessage; semantic discovery do model + tool `skill` thực hiện. */
   abstract match(userMessage: string): SkillDefinition[]
   abstract readResource(skillName: string, resourcePath: string): Promise<SkillResourceContent>
 }

@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
+import '../../../seams/context-compactor.ts'
 import {
   CompleteTurnInput,
   CompleteTurnResult,
@@ -192,11 +193,15 @@ export class MemoryRolling extends TurnMemoryService {
       },
     }).slice(0, 28_000)
     try {
-      const response = await this.ctx.llm.complete([
-        { role: 'system', content: MEMORY_SYSTEM_PROMPT },
-        { role: 'user', content: payload },
-      ], { purpose: 'memory', maxTokens: 1_200, temperature: 0 })
-      const value = parseMemoryJson(response.content)
+      const value = await this.ctx.contextCompactor.structuredSummary({
+        systemPrompt: MEMORY_SYSTEM_PROMPT,
+        payload,
+        requiredFields: ['summary', 'turn_summary'],
+        maxTokens: 1_200,
+      })
+      if (!value.summary || !value.turn_summary) {
+        throw new Error('memory summarizer returned empty fields')
+      }
       return {
         summary: clip(value.summary, 8_000),
         turnSummary: clip(value.turn_summary, 2_000),
@@ -222,19 +227,7 @@ function compactTrajectory(value: unknown) {
   }
 }
 
-function parseMemoryJson(raw: string): { summary: string; turn_summary: string } {
-  let text = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-  const start = text.indexOf('{')
-  const end = text.lastIndexOf('}')
-  if (start >= 0 && end > start) text = text.slice(start, end + 1)
-  const value = JSON.parse(text) as Record<string, unknown>
-  const summary = String(value.summary ?? '').trim()
-  const turnSummary = String(value.turn_summary ?? '').trim()
-  if (!summary || !turnSummary) throw new Error('memory summarizer returned empty fields')
-  return { summary, turn_summary: turnSummary }
-}
-
-export const inject = ['llm']
+export const inject = ['contextCompactor']
 
 export const apply = async (ctx: Context, config: MemoryRolling.Config = {}) => {
   await ctx.plugin(MemoryRolling, config)

@@ -12,6 +12,9 @@ import * as loopRegistry from '../bundles/providers/loop-registry/index.ts'
 import * as loopDefault from '../bundles/loop-drivers/loop-default/index.ts'
 import * as loopPlannerCritic from '../bundles/loop-drivers/loop-planner-critic/index.ts'
 import * as agentRunner from '../bundles/providers/agent-runner/index.ts'
+import * as promptRegistry from '../bundles/providers/prompt-registry/index.ts'
+import * as promptDefaultAgent from '../bundles/prompts/prompt-default-agent/index.ts'
+import * as contextCompactorLlm from '../bundles/providers/context-compactor-llm/index.ts'
 import { LlmCompleteOptions, LlmCompletion, LlmMessage, LlmService } from '../seams/llm.ts'
 import { Session } from '../seams/loop.ts'
 
@@ -62,6 +65,9 @@ describe('Phase 5 — chaos hot-swap', () => {
     const root = new Context()
     root.plugin(toolRegistry)
     root.plugin(skillRegistry)
+    root.plugin(promptRegistry)
+    root.plugin(promptDefaultAgent)
+    root.plugin(contextCompactorLlm)
     root.plugin(stateSqlite, { path: ':memory:' })
     root.plugin(slowResearchTool)
     root.plugin(chaosFakeLlm)
@@ -97,7 +103,10 @@ describe('Phase 5 — chaos hot-swap', () => {
     expect(result1.steps).toBe(1) // 1 vòng tool-call đã hoàn tất trước bước trả lời cuối
 
     const events1 = await root.storage.readEvents('session-1')
-    expect(events1.map((e) => e.type)).toEqual(['user_message', 'model_message', 'tool_audit', 'tool_result', 'model_message'])
+    expect(events1.map((e) => e.type)).toEqual([
+      'user_message', 'prompt_assembled', 'model_message', 'tool_audit',
+      'tool_result', 'prompt_assembled', 'model_message',
+    ])
     expect(events1.some((e) => e.type === 'critic_message')).toBe(false)
 
     // session-2 tạo SAU khi swap — dùng driver MỚI (loop-planner-critic).
@@ -113,6 +122,9 @@ describe('Phase 5 — chaos hot-swap', () => {
     const root = new Context()
     root.plugin(toolRegistry)
     root.plugin(skillRegistry)
+    root.plugin(promptRegistry)
+    root.plugin(promptDefaultAgent)
+    root.plugin(contextCompactorLlm)
     root.plugin(stateSqlite, { path: ':memory:' })
     root.plugin(chaosFakeLlm)
     root.plugin(loopRegistry)

@@ -16,5 +16,10 @@ export const apply = (ctx: Context) => {
   // order 15 sits between repl-protocol (0) and turn-policy (20):
   // the phase discipline must be known before turn picking, but after the
   // strict fence rules.
-  ctx.prompts.section({ name: 'data:deepanalyze-phases', order: 15, text: section('deepanalyze-phases') })
+  ctx.prompts.section({
+    name: 'data:deepanalyze-phases',
+    order: 15,
+    drivers: ['rlm'],
+    text: section('deepanalyze-phases'),
+  })
 }

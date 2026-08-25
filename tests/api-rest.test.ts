@@ -21,6 +21,9 @@ import * as sessionRegistry from '../bundles/providers/session-registry/index.ts
 import * as authUsers from '../bundles/providers/auth-users/index.ts'
 import * as pluginInventory from '../bundles/providers/plugin-inventory/index.ts'
 import * as apiRest from '../bundles/adapters/api-rest/index.ts'
+import * as promptRegistry from '../bundles/providers/prompt-registry/index.ts'
+import * as promptDefaultAgent from '../bundles/prompts/prompt-default-agent/index.ts'
+import * as contextCompactorLlm from '../bundles/providers/context-compactor-llm/index.ts'
 import { LlmCompleteOptions, LlmCompletion, LlmMessage, LlmService } from '../seams/llm.ts'
 import { WorkspaceService, type WorkspaceSnapshot } from '../seams/workspace.ts'
 
@@ -142,6 +145,9 @@ async function bootApp(databaseUrl: string, port = 0, extraConfig: Partial<apiRe
   const root = new Context()
   root.plugin(toolRegistry)
   root.plugin(skillRegistry)
+  root.plugin(promptRegistry)
+  root.plugin(promptDefaultAgent)
+  root.plugin(contextCompactorLlm)
   root.plugin(fakeSkills)
   root.plugin(stateSqlite, { path: ':memory:' })
   root.plugin(fakeLlm)
@@ -240,7 +246,7 @@ describe('Phase 6.1 — REST API', () => {
       const eventsRes = await fetch(`${base}/sessions/rest-1/events`, { headers: AUTH_HEADER })
       expect(eventsRes.status).toBe(200)
       const { events } = await eventsRes.json()
-      expect(events.map((e: any) => e.type)).toEqual(['user_message', 'model_message'])
+      expect(events.map((e: any) => e.type)).toEqual(['user_message', 'prompt_assembled', 'model_message'])
     })
   })
 

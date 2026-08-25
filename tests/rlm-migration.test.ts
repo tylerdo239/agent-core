@@ -14,6 +14,8 @@ import * as skillFilesystem from '../bundles/providers/skill-filesystem/index.ts
 import * as skillRegistry from '../bundles/providers/skill-registry/index.ts'
 import * as promptRegistry from '../bundles/providers/prompt-registry/index.ts'
 import * as promptRlmDataAgent from '../bundles/prompts/prompt-rlm-data-agent/index.ts'
+import * as promptDefaultAgent from '../bundles/prompts/prompt-default-agent/index.ts'
+import * as contextCompactorLlm from '../bundles/providers/context-compactor-llm/index.ts'
 import * as stateSqlite from '../bundles/providers/state-sqlite/index.ts'
 import * as toolRegistry from '../bundles/providers/tool-registry/index.ts'
 import * as toolDatabaseQuery from '../bundles/tools/tool-database-query/index.ts'
@@ -59,6 +61,22 @@ describe('section-based system prompt', () => {
     expect(rendered.version).toMatch(/^[a-f0-9]{12}$/)
     expect(() => root.prompts.section({ name: 'later', order: 30, text: 'duplicate' }))
       .toThrow('already registered')
+    await root.fiber.dispose()
+  })
+
+  it('isolates default and RLM instructions by driver', async () => {
+    const root = new Context()
+    root.plugin(promptRegistry)
+    root.plugin(promptDefaultAgent)
+    root.plugin(promptRlmDataAgent)
+    await settle()
+
+    const normal = root.prompts.render({ driver: 'default' }).content
+    const rlm = root.prompts.render({ driver: 'rlm' }).content
+    expect(normal).toContain('default conversational agent in agent-core')
+    expect(normal).not.toContain('Python REPL')
+    expect(rlm).toContain('Python REPL')
+    expect(rlm).not.toContain('default conversational agent in agent-core')
     await root.fiber.dispose()
   })
 })
@@ -137,6 +155,18 @@ class FakeRlmSandbox extends SandboxService {
   async closeSession() {}
 }
 
+class SkillCapturingSandbox extends SandboxService {
+  payload?: Record<string, unknown>
+  async run(): Promise<SandboxRunResult> { return { stdout: '', stderr: '', exitCode: 0 } }
+  async openSession() {}
+  async *request(_sessionId: string, _operation: string, payload: Record<string, unknown>) {
+    this.payload = payload
+    yield { type: 'final_answer', content: 'skill prepared' }
+    yield { type: '__result__', status: 'completed', answer: 'skill prepared' }
+  }
+  async closeSession() {}
+}
+
 describe('RLM backend migration', () => {
   it('loop-rlm dùng đúng seams và bridge event vào storage/live stream', async () => {
     const root = new Context()
@@ -148,6 +178,7 @@ describe('RLM backend migration', () => {
     root.plugin(stateSqlite, { path: ':memory:' })
     root.plugin(toolDatabaseQuery)
     root.plugin(FakeLlm)
+    root.plugin(contextCompactorLlm)
     root.plugin(memoryRolling, { basePath: path.join(workspace, 'memory') })
     root.plugin(workspaceLocal, { basePath: workspace })
     root.plugin(FakeRlmSandbox)
@@ -176,9 +207,51 @@ describe('RLM backend migration', () => {
     await root.fiber.dispose()
   })
 
+  it('RLM preloads a precise trigger match and still exposes the semantic catalog', async () => {
+    const root = new Context()
+    const workspace = temp()
+    root.plugin(toolRegistry)
+    root.plugin(skillRegistry)
+    root.plugin(promptRegistry)
+    root.plugin(promptRlmDataAgent)
+    root.plugin(stateSqlite, { path: ':memory:' })
+    root.plugin(FakeLlm)
+    root.plugin(contextCompactorLlm)
+    root.plugin(memoryRolling, { basePath: path.join(workspace, 'memory') })
+    root.plugin(workspaceLocal, { basePath: workspace })
+    root.plugin(SkillCapturingSandbox)
+    root.plugin(loopRegistry)
+    root.plugin(loopRlm)
+    root.plugin(agentRunner)
+    await settle()
+    root.skills.register({
+      name: 'retention-workflow',
+      description: 'Analyze cohort retention over time.',
+      instructions: 'Always construct a cohort matrix.',
+      triggers: ['cohort retention'],
+      userInvocable: true,
+    })
+
+    await root.agent.runTurn('rlm', new Session('rlm-trigger', 8, undefined, 'rlm'), {
+      message: 'Please run a cohort retention review.',
+    })
+
+    const context = (root.sandbox as SkillCapturingSandbox).payload?.context as Record<string, unknown>
+    expect(context.selected_skill).toMatchObject({
+      name: 'retention-workflow', content: 'Always construct a cohort matrix.',
+    })
+    expect(context.skill_catalog).toEqual([
+      { name: 'retention-workflow', description: 'Analyze cohort retention over time.' },
+    ])
+    const loaded = (await root.storage.readEvents('rlm-trigger')).find((event) => event.type === 'skill_loaded')
+    expect(loaded).toMatchObject({ skill: 'retention-workflow', activation: 'trigger' })
+    await root.fiber.dispose()
+  })
+
   it('memory-rolling giữ summary/provenance theo session qua seam', async () => {
     const root = new Context()
     root.plugin(FakeLlm)
+    root.plugin(contextCompactorLlm)
     root.plugin(memoryRolling, { basePath: temp() })
     await settle()
 

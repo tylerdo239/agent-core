@@ -48,4 +48,33 @@ describe('session persistence', () => {
     expect(root.sessions.create({ id: 'memory-only' }).id).toBe('memory-only')
     await root.fiber.dispose()
   })
+
+  it('replays from the latest context-compaction checkpoint instead of restoring discarded raw history', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'agent-core-session-compact-'))
+    temporary.push(directory)
+    const database = path.join(directory, 'state.db')
+    const first = await boot(database)
+    const session = first.sessions.create({ id: 'compacted', driver: 'default', systemPrompt: 'system rule' })
+    await first.storage.appendEvent(session.id, { type: 'user_message', content: 'old raw request' })
+    await first.storage.appendEvent(session.id, { type: 'model_message', content: 'old raw response' })
+    await first.storage.appendEvent(session.id, {
+      type: 'context_compacted',
+      history: [
+        { role: 'assistant', content: '[conversation_summary]\nold work summarized' },
+        { role: 'user', content: 'current request' },
+      ],
+    })
+    await first.storage.appendEvent(session.id, { type: 'model_message', content: 'current answer' })
+    await first.fiber.dispose()
+
+    const second = await boot(database)
+    try {
+      expect(second.sessions.get('compacted')?.history).toEqual([
+        { role: 'system', content: 'system rule' },
+        { role: 'assistant', content: '[conversation_summary]\nold work summarized' },
+        { role: 'user', content: 'current request' },
+        { role: 'assistant', content: 'current answer' },
+      ])
+    } finally { await second.fiber.dispose() }
+  })
 })

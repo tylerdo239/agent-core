@@ -46,10 +46,13 @@ import * as toolRegistry from '../bundles/providers/tool-registry/index.ts'
 import * as stateSqlite from '../bundles/providers/state-sqlite/index.ts'
 import * as permissionRbac from '../bundles/providers/permission-rbac/index.ts'
 import * as llmQwen from '../bundles/providers/llm-qwen/index.ts'
+import * as contextCompactorLlm from '../bundles/providers/context-compactor-llm/index.ts'
 import * as subagentManager from '../bundles/providers/subagent-manager/index.ts'
 import * as skillRegistry from '../bundles/providers/skill-registry/index.ts'
+import * as skillSelectionLlm from '../bundles/providers/skill-selection-llm/index.ts'
 import * as skillFilesystem from '../bundles/providers/skill-filesystem/index.ts'
 import * as promptRegistry from '../bundles/providers/prompt-registry/index.ts'
+import * as promptDefaultAgent from '../bundles/prompts/prompt-default-agent/index.ts'
 import * as promptRlmDataAgent from '../bundles/prompts/prompt-rlm-data-agent/index.ts'
 import * as promptDeepanalyzePhases from '../bundles/prompts/prompt-deepanalyze-phases/index.ts'
 import * as memoryRolling from '../bundles/providers/memory-rolling/index.ts'
@@ -74,6 +77,7 @@ import * as toolDatabaseQuery from '../bundles/tools/tool-database-query/index.t
 // key), trả về title/url/snippet thật — xem bundles/tools/tool-web-search
 // cho chi tiết parser + rủi ro markup DuckDuckGo có thể đổi.
 import * as toolWebSearch from '../bundles/tools/tool-web-search/index.ts'
+import * as toolSkill from '../bundles/tools/tool-skill/index.ts'
 import * as sessionRegistry from '../bundles/providers/session-registry/index.ts'
 import * as authUsers from '../bundles/providers/auth-users/index.ts'
 import * as memoryTencentdb from '../bundles/providers/memory-tencentdb/index.ts'
@@ -314,13 +318,23 @@ async function main() {
     maxRetries: optionalNumber('OPENAI_MAX_RETRIES'),
     retryBaseDelayMs: optionalNumber('OPENAI_RETRY_BASE_DELAY_MS'),
   })
+  mount('context-compactor-llm', 'provider', contextCompactorLlm, {
+    contextLimitTokens: optionalNumber('DEFAULT_MODEL_CONTEXT_TOKENS')
+      ?? optionalNumber('RLM_MODEL_CONTEXT_TOKENS')
+      ?? 30_000,
+    thresholdPct: optionalNumber('DEFAULT_COMPACTION_THRESHOLD_PCT')
+      ?? optionalNumber('RLM_COMPACTION_THRESHOLD_PCT')
+      ?? 0.8,
+  })
   mount('subagent-manager', 'provider', subagentManager)
   mount('skill-registry', 'provider', skillRegistry)
+  mount('skill-selection-llm', 'provider', skillSelectionLlm)
   mount('skill-support-tone', 'skill', skillSupportTone)
   mount('skill-filesystem', 'provider', skillFilesystem, {
     root: process.env.RLM_SKILLS_ROOT ?? path.join(agentCoreRoot, 'bundles', 'skills'),
   })
   mount('prompt-registry', 'provider', promptRegistry)
+  mount('prompt-default-agent', 'prompt', promptDefaultAgent)
   mount('prompt-rlm-data-agent', 'prompt', promptRlmDataAgent)
   // Fixed wording still degraded DS (3 FAIL in ds suite, timeout). Keep disabled;
   // the phase discipline is already covered by G1's evidence-policy <Understand>
@@ -440,6 +454,7 @@ async function main() {
     // thời hạn nếu DuckDuckGo không phản hồi — xem bundles/tools/tool-web-search.
     timeoutMs: optionalNumber('WEB_SEARCH_TIMEOUT_MS'),
   })
+  mount('tool-skill', 'tool', toolSkill)
 
   // EXTRA_PLUGINS (docs/agent-core-adding-plugins.md) — plugin bên thứ ba,
   // KHÔNG cần sửa file này. Nạp SAU mọi seam nội bộ (author có thể `inject`

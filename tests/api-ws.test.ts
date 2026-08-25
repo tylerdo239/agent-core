@@ -20,6 +20,9 @@ import * as agentRunner from '../bundles/providers/agent-runner/index.ts'
 import * as sessionRegistry from '../bundles/providers/session-registry/index.ts'
 import * as authUsers from '../bundles/providers/auth-users/index.ts'
 import * as apiWs from '../bundles/adapters/api-ws/index.ts'
+import * as promptRegistry from '../bundles/providers/prompt-registry/index.ts'
+import * as promptDefaultAgent from '../bundles/prompts/prompt-default-agent/index.ts'
+import * as contextCompactorLlm from '../bundles/providers/context-compactor-llm/index.ts'
 import { LlmCompleteOptions, LlmCompletion, LlmMessage, LlmService } from '../seams/llm.ts'
 
 const DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://postgres:test@127.0.0.1:5433/agent_core_test'
@@ -73,6 +76,9 @@ async function bootApp(databaseUrl: string) {
   const root = new Context()
   root.plugin(toolRegistry)
   root.plugin(skillRegistry)
+  root.plugin(promptRegistry)
+  root.plugin(promptDefaultAgent)
+  root.plugin(contextCompactorLlm)
   root.plugin(stateSqlite, { path: ':memory:' })
   root.plugin(echoTool)
   root.plugin(fakeLlm)

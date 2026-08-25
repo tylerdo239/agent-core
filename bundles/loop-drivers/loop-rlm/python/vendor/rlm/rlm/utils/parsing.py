@@ -7,6 +7,26 @@ import re
 from rlm.core.types import REPLResult, RLMIteration
 
 
+def _repair_answer_wrapper_tail(code: str) -> str:
+    """Repair a common model mistake: JSON-style tail after answer assignments.
+
+    Some chat models correctly start with ``answer["content"] = ...`` but then
+    finish as if they were still inside ``{"answer": {...}}``. Executing the
+    orphan ``}, "ready": True`` lines creates an error loop. This narrow repair
+    only applies when the valid answer assignment is already present.
+    """
+    if not re.search(r"\banswer\s*\[\s*['\"]content['\"]\s*\]\s*=", code):
+        return code
+    tail = re.compile(
+        r"\n[ \t]*},[ \t]*\n[ \t]*['\"]ready['\"][ \t]*:[ \t]*(True|False)[ \t]*,?[ \t]*\Z",
+        re.MULTILINE,
+    )
+    match = tail.search(code)
+    if not match:
+        return code
+    return code[: match.start()].rstrip() + f'\nanswer["ready"] = {match.group(1)}'
+
+
 def find_code_blocks(text: str) -> list[str]:
     """
     Find REPL code blocks in text wrapped in triple backticks and return List of content(s).
@@ -33,7 +53,7 @@ def find_code_blocks(text: str) -> list[str]:
         while lines and lines[-1].strip().casefold().strip("<>") in {"/repl", "/python"}:
             lines = lines[:-1]
             code_content = "\n".join(lines).strip()
-        results.append(code_content)
+        results.append(_repair_answer_wrapper_tail(code_content))
 
     return results
 

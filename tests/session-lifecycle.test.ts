@@ -146,4 +146,14 @@ describe('Phase 25 — buildPrompt() gộp mọi extraSystemNotes thành ĐÚNG 
     expect(prompt.filter((m) => m.role === 'system').length).toBe(1)
     expect(prompt[0]).toEqual({ role: 'system', content: 'sys' })
   })
+
+  it('prompt nền framework luôn đứng trước prompt bổ sung của session và note động', () => {
+    const session = new Session('s', 8, 'application note')
+    const prompt = session.buildPrompt('câu hỏi', ['skill note'], 'framework policy')
+
+    expect(prompt[0]).toEqual({
+      role: 'system',
+      content: 'framework policy\n\napplication note\n\nskill note',
+    })
+  })
 })

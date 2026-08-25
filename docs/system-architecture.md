@@ -23,9 +23,9 @@ Adapters ── auth ── sessions
   ▼
 AgentRunner ── chọn LoopDriver
   │
-  ├─ default loop ── LLM + tools + skills
+  ├─ default loop ── LLM + tools + skills + context compactor
   │
-  └─ RLM loop ── prompt + memory + workspace + sandbox
+  └─ RLM loop ── skill gate + prompt + memory + workspace + sandbox
                                    │
                                    ▼
                             Python worker
@@ -132,7 +132,7 @@ Trình tự mount chính:
 4.  llm-qwen
 5.  subagent-manager
 6.  skill-registry + skill plugins/filesystem
-7.  prompt-registry + RLM prompt sections
+7.  prompt-registry + default/RLM prompt sections
 8.  memory-rolling
 9.  workspace-local hoặc workspace-docker
 10. artifact-service + job-runner + pipeline-registry
@@ -212,7 +212,8 @@ gọi RLM trực tiếp và không tự quản lý memory.
 ```text
 ctx.turnMemory.snapshot(sessionId)
 ctx.workspace.inspect(sessionId)
-ctx.skills.get(selectedSkill)
+ctx.skills.get(selectedSkill) / ctx.skills.match(request)
+ctx.skillSelection.select(...) khi RLM không có selected/trigger match
 ctx.tools.list()
 ctx.prompts.render({ driver: "rlm" })
             │
@@ -226,7 +227,8 @@ Payload gồm:
 - context index/history index;
 - memory summary và resource manifest;
 - dataset content ở context đầu tiên;
-- selected skill nếu có;
+- selected/triggered/semantic-selected skill nếu có;
+- catalog skill nhẹ chỉ gồm `name + description`;
 - metadata của tools;
 - đúng **một** system prompt đã render và prompt version hash.
 
@@ -281,10 +283,15 @@ Python gọi web_search({...})
 Nhờ vậy không copy implementation tool vào REPL. Default loop, RLM loop và
 subagent đều dùng cùng registry, permission và lifecycle.
 
-### 4.8 Skill bridge
+### 4.8 Skill discovery và resource bridge
 
-Selected skill được đưa vào prepared context. `SKILL.md` là hướng dẫn chính;
-asset/reference/script chỉ được đọc lazy khi RLM gọi `skill_resource(...)`:
+User chọn skill luôn ưu tiên. Trigger rõ là fast path. Khi không có hai
+trường hợp trên, default loop để model chính chọn từ catalog và gọi
+`skill(name)`; RLM dùng `ctx.skillSelection` làm semantic gate nhỏ trước khi
+chuẩn bị turn. Full `SKILL.md` chỉ được nạp sau khi skill được chọn.
+
+Resource được đọc lazy qua tool chung `read_skill_resource(name, path)`;
+skill đã preload trong RLM vẫn có convenience function `skill_resource(path)`:
 
 ```text
 worker __host_skill__
@@ -292,8 +299,8 @@ worker __host_skill__
   → skill-filesystem đọc resource trong đúng package
 ```
 
-Skill không phải tool và không tự chạy. Nó thay đổi cách model giải quyết task;
-tool là một action có handler thực thi.
+Skill vẫn là gói hướng dẫn, không phải code tự chạy. Tool `skill`
+chỉ là cửa nạp có quan sát được; action thật vẫn qua tool handler/REPL.
 
 ### 4.9 Kết thúc turn và memory
 
@@ -364,6 +371,7 @@ Nếu cần biết “`ctx.X` được load ở đâu”, tìm `root.plugin(...)
 |---|---|
 | `agent.ts` | `ctx.agent`: entrypoint chạy một turn |
 | `auth.ts` | `ctx.auth`: tài khoản Postgres nhiều người dùng thật — signup/login/token/role, không chỉ xác thực token đơn thuần (xem `docs/agent-core-cordis-build-plan.md` Phase 24) |
+| `context-compactor.ts` | `ctx.contextCompactor`: đo payload model và compact history trong một request |
 | `llm.ts` | `ctx.llm`: model completion |
 | `loop.ts` | `ctx.loop`, `Session`, `TurnInput`, `LoopStep`, `LoopTurnResult` |
 | `memory.ts` | `ctx.memory`: remember/recall xuyên session/user qua TencentDB Agent Memory (Phase 25) — KHÁC `turn-memory.ts` |
@@ -373,6 +381,7 @@ Nếu cần biết “`ctx.X` được load ở đâu”, tìm `root.plugin(...)
 | `sandbox.ts` | `ctx.sandbox`: runtime persistent + event protocol |
 | `sessions.ts` | `ctx.sessions`: registry session dùng chung transport |
 | `skill.ts` | `ctx.skills`: catalog và lazy resource reader |
+| `skill-selection.ts` | `ctx.skillSelection`: semantic router tùy chọn cho runtime không tool-call trực tiếp |
 | `storage.ts` | `ctx.storage`: append/read event |
 | `events.ts` | event envelope có sequence/cursor, dùng cho timeline/polling |
 | `jobs.ts` | `ctx.jobs`: queue, progress, cancel và event của background job |
@@ -390,6 +399,7 @@ Quy tắc: seam không import provider và không chứa logic deployment.
 |---|---|
 | `agent-runner` | Queue theo session, idempotency theo requestId, run lifecycle, cancel cooperative |
 | `artifact-service` | Đăng ký/list output do RLM hoặc pipeline tạo |
+| `context-compactor-llm` | Ước lượng token, structured summary và compact history bằng `ctx.llm` |
 | `job-runner` | Queue background có progress/event/cancel; không chạy song song quá `JOB_MAX_CONCURRENT` |
 | `pipeline-registry`, `pipeline-runner` | Registry stage/pipeline và điều phối một pipeline qua một job |
 | `auth-apikey` | So token với danh sách `API_KEYS` |
@@ -404,6 +414,7 @@ Quy tắc: seam không import provider và không chứa logic deployment.
 | `session-registry` | Session RAM, sliding TTL và lifecycle events |
 | `skill-filesystem` | Parse `SKILL.md`, discover/read package resources |
 | `skill-registry` | Catalog skill trong RAM |
+| `skill-selection-llm` | Chọn semantic skill cho RLM khi selected/trigger không có |
 | `state-sqlite` | Event store envelope, sessions/runs/jobs/artifacts SQLite và retention sweep |
 | `subagent-manager` | Catalog subagent |
 | `tool-registry` | Catalog + execution gateway cho tool |
@@ -414,7 +425,7 @@ Quy tắc: seam không import provider và không chứa logic deployment.
 
 | File/folder | Vai trò |
 |---|---|
-| `loop-default/index.ts` | Loop tool-calling đơn giản dùng LLM trực tiếp |
+| `loop-default/index.ts` | Loop tool-calling; skill/memory; compact trước mỗi model call; prompt/tool hash mỗi step |
 | `loop-planner-critic/index.ts` | Driver thay thế minh hoạ hot-swap |
 | `loop-rlm/index.ts` | Orchestrate một RLM turn qua framework seams |
 | `loop-rlm/protocol.ts` | Nơi duy nhất dựng `PreparedRlmTurn` contract |
@@ -427,23 +438,54 @@ catalog của TypeScript.
 
 | File | Vai trò |
 |---|---|
-| `bundles/prompts/prompt-rlm-data-agent/index.ts` | Đăng ký các Markdown section |
-| `sections/identity.md` | Agent là ai/phạm vi gì |
-| `sections/repl-protocol.md` | Cách phát code và dùng REPL |
-| `sections/turn-policy.md` | Cách xử lý từng loại turn/context |
-| `sections/evidence-policy.md` | Luật dữ liệu/evidence, tránh kết luận không kiểm chứng |
-| `sections/human-control.md` | Khi nào hỏi user/chờ approval |
-| `sections/completion.md` | Điều kiện hoàn thành và final output |
+| `bundles/prompts/prompt-default-agent/` | Prompt nền chat thường: identity, operating policy, completion |
+| `bundles/prompts/prompt-rlm-data-agent/` | Prompt RLM: REPL protocol, data/evidence/human-control policy, completion |
+| `bundles/providers/prompt-registry/` | Lọc section theo `drivers`, sort theo `order`, ráp và hash prompt |
 
 Tool plugin tự đăng ký hướng dẫn tool vào prompt registry. Không hardcode danh
 sách tool/skill/memory động vào Markdown system prompt.
 
-### 6.7 Tools, skills và subagents
+`drivers` bỏ trống nghĩa là section dùng chung; `drivers: ['default']` hoặc
+`['rlm']` cô lập luật riêng. Default loop luôn render prompt framework với
+`driver: 'default'`; UI không cần truyền `systemPrompt`. Nếu application có
+thêm prompt riêng vào `Session`, thứ tự cuối cùng là:
+
+```text
+framework prompt → application/session prompt → skill/catalog/memory notes
+```
+
+Mọi phần vẫn được gộp thành đúng một message role `system` ở đầu request.
+
+### 6.7 Context compaction
+
+Default loop gọi `ctx.contextCompactor.inspect()` trước mỗi root model call.
+Payload đo gồm đúng messages đã ráp và tool schemas. Khi đạt ngưỡng (mặc định
+80% của 30.000 token ước lượng), provider tóm tắt history cũ, giữ nguyên
+system prompt và current request, rồi commit history ngắn lại vào `Session`.
+Khi default driver đã nhận compactor, hard-trim 40 messages được tắt; checkpoint
+compact được lưu trong event để `session-registry` phục hồi đúng summary sau
+restart thay vì replay lại raw history đã loại.
+
+```text
+messages + tool schemas
+  → inspect
+  → dưới threshold: complete()
+  → trên threshold: compact → replaceHistory → inspect lại → complete()
+```
+
+`context_usage` và `context_compacted` được ghi vào storage; lỗi model tóm tắt
+có deterministic bounded fallback. Nếu system prompt/current request/tool
+schemas tự chúng đã vượt threshold sau compact, turn fail rõ thay vì compact
+lặp vô hạn. Đây là compact **trong một request**, khác `ctx.turnMemory` là
+rolling summary **giữa các request** của RLM.
+
+### 6.8 Tools, skills và subagents
 
 | Folder | Vai trò |
 |---|---|
 | `bundles/tools/tool-web-search` | `web_search`, permission + timeout + UI metadata |
 | `bundles/tools/tool-database-query` | Query event database qua storage abstraction |
+| `bundles/tools/tool-skill` | `skill` nạp instructions và `read_skill_resource` đọc resource cho mọi loop |
 | `bundles/skills/<name>/SKILL.md` | Hướng dẫn top-level của skill |
 | `bundles/skills/<name>/{assets,references,scripts,...}` | Resource đọc lazy, không phải skill con |
 | `bundles/skills/skill-support-tone` | Ví dụ skill plugin viết trực tiếp bằng TS |
@@ -453,7 +495,7 @@ Nhóm skill dữ liệu hiện có: explore/validate data, data scientist, panda
 statistics, visualization, SQL insights, feature engineering, model evaluation,
 scikit-learn, cohort/funnel/segmentation/time-series và data-quality audit.
 
-### 6.8 Adapters
+### 6.9 Adapters
 
 | Folder | Vai trò |
 |---|---|
@@ -466,7 +508,7 @@ scikit-learn, cohort/funnel/segmentation/time-series và data-quality audit.
 Adapter chỉ chuyển transport ↔ domain call. Business logic phải nằm sau seam,
 không được fork riêng theo REST/WS/gRPC.
 
-### 6.9 Pipeline ML thay thế được stage
+### 6.10 Pipeline ML thay thế được stage
 
 Pipeline là một capability riêng, không phải prompt hoặc tool giả. Pipeline
 `tabular-classification` hiện ghép theo thứ tự:
@@ -482,7 +524,7 @@ gọi pipeline với `override: { train: 'train-lightgbm' }`. Data/feature/valid
 và UI không cần biết train implementation đã đổi. `validate-split` luôn đánh
 giá holdout tách trước train để tránh leakage.
 
-### 6.10 Frontend và UI packages
+### 6.11 Frontend và UI packages
 
 | File/folder | Vai trò |
 |---|---|
@@ -502,7 +544,7 @@ giá holdout tách trước train để tránh leakage.
 Frontend mới có thể bỏ reference UI và viết lại hoàn toàn, miễn giữ contract
 trong `frontend-backend-handoff.md`.
 
-### 6.11 Test và benchmark
+### 6.12 Test và benchmark
 
 | Folder | Vai trò |
 |---|---|
@@ -561,12 +603,16 @@ tool mới.
 2. Thêm resource trong `references/`, `scripts/`, `assets/` nếu cần.
 3. `skill-filesystem` tự discover package lúc boot.
 
-Không thêm registry Python thứ hai và không biến resource thành tool giả.
+Viết `description` rõ điều kiện sử dụng vì semantic selector/catalog dựa
+vào nó; `triggers` chỉ dùng cho fast path chắc chắn. Không thêm registry
+Python thứ hai và không biến resource thành skill con.
 
 ### Đổi system prompt
 
-Sửa/thêm section Markdown và đăng ký section với `name/order`. Không sửa UI,
-không gửi system prompt từ request, không dựng prompt trong `worker.py`.
+Sửa/thêm section Markdown và đăng ký section với `name/order/drivers`. Prompt
+chat thường nằm ở `prompt-default-agent`; prompt REPL nằm ở
+`prompt-rlm-data-agent`. Không sửa UI, không gửi prompt nền từ request và
+không dựng prompt trong `worker.py`.
 
 ### Thêm loop mới
 
@@ -688,7 +734,7 @@ So sánh commit khởi tạo `2bb50b2` với branch migration tại `30f4120`:
 | RLM trở thành một loop driver của harness | `bundles/loop-drivers/loop-rlm/` |
 | Contract TypeScript ↔ Python và worker JSON-lines persistent | `loop-rlm/protocol.ts`, `loop-rlm/python/worker.py` |
 | Memory multi-turn, workspace và sandbox có seam/provider riêng | `seams/{memory,workspace,sandbox}.ts`, `bundles/providers/{memory-rolling,workspace-local,workspace-docker,sandbox-ipython,sandbox-docker}/` |
-| System prompt được ghép từ các section plugin có thứ tự/version | `seams/prompt.ts`, `bundles/providers/prompt-registry/`, `bundles/prompts/prompt-rlm-data-agent/` |
+| System prompt default/RLM được ghép từ section plugin có driver/order/version | `seams/prompt.ts`, `bundles/providers/prompt-registry/`, `bundles/prompts/{prompt-default-agent,prompt-rlm-data-agent}/` |
 | Skill package và lazy resource bridge từ Python về TypeScript | `bundles/providers/{skill-registry,skill-filesystem}/`, `bundles/skills/`, `bundles/loop-drivers/loop-rlm/python/vendor/rlm/rlm/environments/ipython_repl.py` |
 | Tool RLM gọi ngược về host, giữ permission/lifecycle ở TypeScript | `seams/tools.ts`, `bundles/providers/tool-registry/`, `bundles/tools/`, `sandbox-ipython/index.ts` |
 | REST/WS/gRPC nhận `selectedSkill`, metadata, stream event; REST quản lý file workspace | `bundles/adapters/api-{rest,ws,grpc}/` |

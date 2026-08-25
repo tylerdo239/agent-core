@@ -6,6 +6,9 @@ import * as loopRegistry from '../bundles/providers/loop-registry/index.ts'
 import * as skillRegistry from '../bundles/providers/skill-registry/index.ts'
 import * as stateSqlite from '../bundles/providers/state-sqlite/index.ts'
 import * as toolRegistry from '../bundles/providers/tool-registry/index.ts'
+import * as promptRegistry from '../bundles/providers/prompt-registry/index.ts'
+import * as promptDefaultAgent from '../bundles/prompts/prompt-default-agent/index.ts'
+import * as contextCompactorLlm from '../bundles/providers/context-compactor-llm/index.ts'
 import { LlmService, type LlmMessage } from '../seams/llm.ts'
 import { Session } from '../seams/loop.ts'
 
@@ -21,6 +24,9 @@ async function boot(llm: new (ctx: Context) => LlmService) {
   const root = new Context()
   root.plugin(toolRegistry)
   root.plugin(skillRegistry)
+  root.plugin(promptRegistry)
+  root.plugin(promptDefaultAgent)
+  root.plugin(contextCompactorLlm)
   root.plugin(stateSqlite, { path: ':memory:' })
   root.plugin(llm)
   root.plugin(loopRegistry)
