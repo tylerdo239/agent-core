@@ -498,6 +498,18 @@ export function App() {
   // của 1 lượt generate tới, reset về null lúc model_message (có toolCall,
   // tool card mới sắp tạo) hoặc lúc 'final' đóng lại bubble đang stream.
   const streamingAssistantIdRef = useRef<string | null>(null)
+  // Bug thật user báo (2026-08): "đôi khi vẫn gặp lỗi markdown table" —
+  // AssistantMarkdown render lại qua react-markdown ở MỖI token; nếu turn
+  // kết thúc/lỗi/bị cắt đúng lúc dòng phân cách bảng (`| --- | --- |`) đang
+  // gõ dở thì bảng đứng yên mãi ở dạng cú pháp thô (xem chú thích đầy đủ ở
+  // AssistantMarkdown.tsx). streamingAssistantIdRef ở trên PHẢI là ref (đọc
+  // đồng bộ trong applyStep, closure của openStream() không được tạo lại
+  // mỗi render — dùng state ở đó sẽ đọc phải giá trị cũ/stale). Nhưng quyết
+  // định RENDER (bubble nào hiện text thô, bubble nào hiện markdown thật)
+  // cần trigger re-render đúng lúc — ref không tự re-render được, nên thêm
+  // state riêng, set ĐỒNG THỜI ở đúng 3 điểm ref đổi giá trị (không thay ref
+  // bằng state — hai việc khác nhau, cần cả hai).
+  const [streamingItemId, setStreamingItemId] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
@@ -706,6 +718,7 @@ export function App() {
       } else {
         const id = genId()
         streamingAssistantIdRef.current = id
+        setStreamingItemId(id)
         setItems((prev) => [...prev, { kind: 'assistant', id, text: delta, ts: Date.now() }])
       }
       return
@@ -715,6 +728,7 @@ export function App() {
         // Đóng bubble đang stream (nếu có — model có thể "nói" 1 đoạn ngắn
         // trước khi gọi tool) trước khi thêm tool card ngay bên dưới nó.
         streamingAssistantIdRef.current = null
+        setStreamingItemId(null)
         const id = genId()
         activeToolItemIdRef.current = id
         setItems((prev) => [...prev, { kind: 'tool', id, toolCall: step.toolCall!, toolUi: step.toolUi, state: 'running' }])
@@ -771,6 +785,7 @@ export function App() {
       // chỉ cần đóng lại, KHÔNG tạo bubble mới (tránh lặp nguyên câu trả lời).
       if (streamingAssistantIdRef.current) {
         streamingAssistantIdRef.current = null
+        setStreamingItemId(null)
         return
       }
       // Provider không hỗ trợ streaming (hoặc fake LLM trong test) — hành vi
@@ -1414,6 +1429,7 @@ export function App() {
               text={item.text}
               description={item.description}
               ts={item.ts}
+              streaming={item.kind === 'assistant' && item.id === streamingItemId}
               onCopied={() => pushToast('Đã sao chép')}
             />
           )
