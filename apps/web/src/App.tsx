@@ -48,7 +48,7 @@ import { Composer, EmptyState, GenericToolCard, HumanDecision, MessageBubble, St
 import { loadSettings, type Settings } from '@agent-core/ui-settings-general'
 import { PluginSettingsPanel } from '@agent-core/ui-plugin-settings'
 import { ProjectHub, type ProjectOutputFile, type ProjectSummary } from '@agent-core/ui-projects'
-import type { WorkspaceHeaderPanelProps, SkillComposerExtraProps } from '@agent-core/ui-rlm-workspace'
+import type { WorkspaceHeaderPanelProps } from '@agent-core/ui-rlm-workspace'
 import { createClientContext } from './client-context.ts'
 import { OutputPreviewModal, type OutputPreviewTarget } from './OutputPreviewModal.tsx'
 
@@ -1328,24 +1328,22 @@ export function App() {
             />
           )
         }
+        // Follow-up (2026-08): chọn skill kiểu slash-command ("/" mở popup lọc
+        // tên/mô tả) giờ nằm THẲNG trong Composer, dùng CHUNG cho mọi driver —
+        // thay cho RenderSlot 'session.chrome.composer' (SkillComposerExtra,
+        // dropdown riêng chỉ hiện cho entryKey='rlm' cũ) vốn khiến chat thường
+        // (driver 'default') không có cách nào chọn skill dù backend đã hỗ trợ
+        // sẵn (loop-default gọi resolveActiveSkills(..., input.selectedSkill)).
         footer={projectView ? null : (
-          <>
-            {clientCtx && (
-              <RenderSlot<SkillComposerExtraProps>
-                ctx={clientCtx}
-                name="session.chrome.composer"
-                entryKey={sessionDriver}
-                owner={{
-                  skills,
-                  selectedSkill,
-                  disabled: !composerEnabled,
-                  onSelectSkill: setSelectedSkill,
-                }}
-                fallback={() => null}
-              />
-            )}
-            <Composer value={composerText} onChange={setComposerText} onSubmit={handleSubmit} disabled={!composerEnabled} />
-          </>
+          <Composer
+            value={composerText}
+            onChange={setComposerText}
+            onSubmit={handleSubmit}
+            disabled={!composerEnabled}
+            skills={skills}
+            selectedSkill={selectedSkill}
+            onSelectSkill={setSelectedSkill}
+          />
         )}
       >
         {projectView ? (
