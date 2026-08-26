@@ -17,7 +17,8 @@
 //   OPENAI_EXTRA_BODY (JSON object, merge thẳng vào body request — vd.
 //   '{"cache":{"no-cache":true},"timeout":240}', xem lưu ý về thứ tự merge
 //   với OPENAI_ENABLE_THINKING ngay tại chỗ dùng bên dưới),
-//   STORAGE_PATH, PORT_REST, PORT_WS, PORT_GRPC, PORT_WEB_UI.
+//   STORAGE_PATH, PORT_REST (dùng chung cho cả REST và WS upgrade từ Phase
+//   6.3 — xem bundles/adapters/api-rest), PORT_GRPC, PORT_WEB_UI.
 // Phase 8 (production hardening round 2, tất cả tuỳ chọn, có default hợp lý):
 //   SESSION_TTL_MS, SESSION_SWEEP_INTERVAL_MS (session-registry TTL trượt),
 //   OPENAI_MAX_RETRIES, OPENAI_RETRY_BASE_DELAY_MS (llm-qwen retry transient),
@@ -87,7 +88,6 @@ import * as authUsers from '../bundles/providers/auth-users/index.ts'
 import * as pluginConfigPostgres from '../bundles/providers/plugin-config-postgres/index.ts'
 import * as memoryTencentdb from '../bundles/providers/memory-tencentdb/index.ts'
 import * as apiRest from '../bundles/adapters/api-rest/index.ts'
-import * as apiWs from '../bundles/adapters/api-ws/index.ts'
 import * as apiGrpc from '../bundles/adapters/api-grpc/index.ts'
 import * as webUi from '../bundles/adapters/web-ui/index.ts'
 import * as stageDataLoad from '../bundles/pipelines/stages/data-load/index.ts'
@@ -220,8 +220,9 @@ async function main() {
   const openaiApiKey = requireEnv('OPENAI_API_KEY')
   // llm-qwen tự validate 3 field này trong [Service.init]() nếu ai mount nó
   // trực tiếp (không qua serve.ts) — nhưng lỗi đó throw SÂU bên trong 1
-  // Cordis fiber, KHÔNG làm process.exit(): agent-runner/api-rest/api-ws/
-  // api-grpc chỉ đứng yên ở PENDING mãi mãi (đã verify: fiber.await() không
+  // Cordis fiber, KHÔNG làm process.exit(): agent-runner/api-rest/api-grpc
+  // (api-rest giờ gánh cả WS upgrade từ Phase 6.3, không còn bundle api-ws
+  // riêng) chỉ đứng yên ở PENDING mãi mãi (đã verify: fiber.await() không
   // đợi fiber còn PENDING), trong khi log dưới đây vẫn in ra như đã chạy
   // thành công — silent failure thật, không phải giả thuyết. Bắt buộc ở
   // đây để fail nhanh, ồn ào, đúng lúc boot — không dựa một mình vào
@@ -394,10 +395,24 @@ async function main() {
   mount('plugin-config-postgres', 'provider', pluginConfigPostgres, { connectionString: databaseUrl })
 
   // Module memory (ctx.memory, TÙY CHỌN) — xem chú thích tại
-  // tryBootstrapMemoryCoreAdmin ở trên. Không set MEMORY_CORE_URL = bỏ qua
-  // hoàn toàn, ctx.memory không mount, hệ thống chạy y hệt trước đây.
-  const memoryCoreUrl = process.env.MEMORY_CORE_URL
+  // tryBootstrapMemoryCoreAdmin ở trên. Không set MEMORY_CORE_API_KEY = bỏ
+  // qua hoàn toàn, ctx.memory không mount, hệ thống chạy y hệt trước đây.
+  //
+  // Bug thật phát hiện lúc deploy VPS (2026-08): trước đây feature-detect
+  // dựa trên `MEMORY_CORE_URL` — nhưng docker-compose.yml's `environment:`
+  // luôn TỰ ĐIỀN default `http://memory-core:8420` cho biến này (kể cả khi
+  // `.env` không set gì), nên `memoryCoreUrl` LUÔN truthy trong container
+  // Docker, khiến FATAL check ngay dưới đây bắn sai cho MỌI deploy fresh
+  // không cấu hình memory (không phải lỗi riêng của 1 user). Sửa: dùng
+  // `MEMORY_CORE_API_KEY` làm tín hiệu BẬT/TẮT chính — biến này KHÔNG có
+  // default nào ở compose (`${MEMORY_CORE_API_KEY:-}`, rỗng nếu không set),
+  // nên "không set" luôn đúng nghĩa "không set" thật. `memoryCoreUrl` tự
+  // default về địa chỉ container `memory-core` trong compose CHỈ KHI đã có
+  // API key (đúng tinh thần "chỉ cần set 1 biến cho Docker" mà .env.example
+  // hứa, không còn đụng docker-compose.yml nữa vì Compose không hỗ trợ
+  // default có điều kiện theo biến khác).
   const memoryCoreApiKey = process.env.MEMORY_CORE_API_KEY
+  const memoryCoreUrl = process.env.MEMORY_CORE_URL || (memoryCoreApiKey ? 'http://memory-core:8420' : undefined)
   if (memoryCoreUrl && !memoryCoreApiKey) {
     console.error('FATAL: MEMORY_CORE_URL được set nhưng thiếu MEMORY_CORE_API_KEY — set cả 2 hoặc bỏ trống cả 2.')
     process.exit(1)
@@ -518,18 +533,18 @@ async function main() {
     console.log(`[extra-plugin] mounted "${name}" từ "${specifier}"`)
   }
 
+  // Phase 6.3: WS dùng CHUNG port với REST (bundle api-ws cũ đã gộp vào
+  // api-rest — xem bundles/adapters/api-rest) — không còn PORT_WS riêng.
   const restConfig = { port: Number(process.env.PORT_REST ?? 8787) }
-  const wsConfig = { port: Number(process.env.PORT_WS ?? 8788) }
   const grpcConfig = { port: Number(process.env.PORT_GRPC ?? 50051) }
   const webUiConfig = { port: Number(process.env.PORT_WEB_UI ?? 8790) }
   await mount('api-rest', 'adapter', apiRest, restConfig)
-  await mount('api-ws', 'adapter', apiWs, wsConfig)
   await mount('api-grpc', 'adapter', apiGrpc, grpcConfig)
   await mount('web-ui', 'adapter', webUi, webUiConfig)
 
   console.log(`\nWeb UI  http://localhost:${webUiConfig.port}  (đăng nhập/đăng ký ngay lần mở đầu tiên)`)
   console.log(`REST    http://localhost:${restConfig.port}  (Authorization: Bearer <token> từ POST /auth/login hoặc /auth/signup, trừ /health /ready /auth/signup /auth/login)`)
-  console.log(`WS      ws://localhost:${wsConfig.port}  (Authorization header hoặc ?token=<token>)`)
+  console.log(`WS      ws://localhost:${restConfig.port}/sessions/:id/events/stream  (?token=<token>, downlink-only: step/done/error)`)
   console.log(`gRPC    localhost:${grpcConfig.port}  (metadata "authorization")\n`)
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {

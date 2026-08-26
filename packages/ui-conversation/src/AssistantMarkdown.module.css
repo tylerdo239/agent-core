@@ -76,3 +76,27 @@
   font-size: var(--alias-font-size-heading-sm);
   font-weight: var(--alias-font-weight-medium);
 }
+
+.tableWrap {
+  overflow-x: auto;
+  margin: 0.6em 0;
+}
+
+.markdown table {
+  border-collapse: collapse;
+  font-size: var(--alias-font-size-body-sm);
+  min-width: 100%;
+}
+
+.markdown th,
+.markdown td {
+  border: 1px solid var(--alias-border-default);
+  padding: 0.4em 0.7em;
+  text-align: left;
+}
+
+.markdown th {
+  background: var(--alias-bg-subtle);
+  font-weight: var(--alias-font-weight-emphasis);
+  white-space: nowrap;
+}

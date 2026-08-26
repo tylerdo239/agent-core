@@ -2812,6 +2812,189 @@ thật, gắn đúng auth middleware); grep trực tiếp bundle đã build
 
 ---
 
+## Phase 35 — Filter thời gian mặc định cho `web_search` khi câu hỏi không nêu mốc thời gian — ĐÃ IMPLEMENT, ĐÃ VERIFY
+
+User: các business skill (business-case-builder) khi phân tích/nghiên cứu/
+báo cáo mà câu hỏi KHÔNG nêu rõ mốc thời gian cụ thể thì cần tự hiểu là hỏi
+về HIỆN TẠI, và filter `web_search` theo đúng thời điểm đó.
+
+**Root cause đào ra lúc điều tra**: model không có cách nào biết "hôm nay là
+ngày nào" — không seam/prompt nào trong hệ thống từng tiêm ngày thật vào
+context (grep toàn repo xác nhận). Không có mốc thời gian thật, model tự
+chọn năm bất kỳ (thường lệch theo dữ liệu huấn luyện) khi soạn truy vấn
+search, hoặc tệ hơn — bỏ qua search luôn, viết thẳng theo "kiến thức nền".
+
+**Thiết kế**: `currentDateNote()` (seams/loop.ts, hàm mới, export) tính
+`new Date()` + format `vi-VN` MỖI LẦN GỌI (không cache — session sống lâu
+vẫn luôn đúng ngày thật). Tiêm vào 2 chỗ, khớp đúng 2 kiến trúc prompt khác
+nhau đã có sẵn trong repo (không tạo cơ chế mới):
+- `loop-default`: `Session.buildPrompt()` (coding rule B6 — nơi DUY NHẤT ráp
+  prompt) LUÔN prepend note này vào `extraSystemNotes`, bất kể có skill/
+  memory note nào khác hay không.
+- `loop-rlm`: thêm 1 `ctx.prompts.section()` mới (`context:current-date`,
+  `prompt-rlm-data-agent/index.ts`) với `text` là 1 HÀM (không phải string
+  tĩnh) — RLM gọi `prompts.render()` MỚI MỖI LƯỢT (protocol.ts), nên hàm
+  này cũng luôn tính lại, không đông cứng theo lúc session RLM tạo.
+
+`bundles/skills/business-case-builder/SKILL.md` thêm rule #7: câu hỏi không
+nêu mốc thời gian → mặc định hiểu là hỏi hiện tại, chủ động thêm năm/tháng
+hiện tại vào truy vấn `web_search` hoặc ưu tiên kết quả mới nhất.
+
+**Deliverable: ĐÃ VERIFY THẬT** — `npm run typecheck` sạch, `npm test`
+260/260 pass (2 test cũ ở `tests/session-lifecycle.test.ts` sửa lại vì giờ
+assert đúng nội dung MỚI có note ngày, không phải bug). Docker rebuild +
+**E2E thật qua REST** (Phase 6.3: `POST /sessions` → `POST /sessions/:id/
+messages` → `GET /sessions/:id/events`), câu hỏi **không nêu mốc thời
+gian nào**: "Phân tích tình hình kinh doanh ngành cà phê rang xay tại Việt
+Nam" → `tool_call web_search` với `query: "quy mô thị trường cà phê rang
+xay Việt Nam 2024 2025 2026 CAGR"` — model tự thêm đúng năm hiện tại (2026)
++ các năm liền kề vào truy vấn dù user không hề nhắc tới. Lượt test đầu
+(câu hỏi không match trigger nào — "Phân tích tình hình ngành cà phê..."
+thiếu "kinh doanh"/"doanh nghiệp"/"thị trường") vẫn cho thấy note ngày hoạt
+động đúng (model tự nói "Dựa trên bối cảnh thị trường hiện tại (2026)"
+trong câu trả lời) dù skill không trigger — xác nhận note ngày là core
+context LUÔN có, độc lập với skill nào match.
+
+**Gap khác phát hiện lúc verify (chưa fix, ngoài phạm vi yêu cầu này)**:
+câu "Phân tích tình hình ngành cà phê rang xay tại Việt Nam" không match
+trigger nào của `business-case-builder` (thiếu từ "kinh doanh"/"doanh
+nghiệp"/"thị trường" — chỉ có "ngành"), nên KHÔNG bắt buộc `web_search`,
+model viết thẳng 1 báo cáo dài với số liệu bịa (8-12%/năm, 50-90k VNĐ/cốc...)
+không có nguồn — đúng loại lỗi rule #1 của skill này cố ngăn, nhưng skill
+chưa được kích hoạt vì lệch trigger. Cùng dạng gap đã sửa ở Phase 33
+("tình hình kinh doanh" thiếu trước đó) — nếu muốn sửa tiếp cần thêm các
+trigger dạng "phân tích ngành", "tình hình ngành X" vào frontmatter.
+
+---
+
+## Phase 36 — Bảng markdown (GFM) render đúng + streaming "gõ từng chữ" thật — ĐÃ IMPLEMENT, ĐÃ VERIFY
+
+User báo 2 lỗi UI: (1) bảng markdown trong câu trả lời không vẽ ra bảng; (2)
+chưa thấy trả lời stream "gõ từng chữ" như Claude/ChatGPT (đợi cả câu xong
+mới hiện 1 lần).
+
+### 1. Bảng markdown (GFM) không render
+
+`packages/ui-conversation/src/AssistantMarkdown.tsx` dùng `react-markdown`
+KHÔNG kèm plugin — thư viện mặc định chỉ parse CommonMark thuần, KHÔNG hỗ
+trợ bảng/strikethrough/task-list (phần mở rộng GFM, cần `remark-gfm` riêng).
+Thêm dependency + `remarkPlugins={[remarkGfm]}`, bọc `<table>` trong div
+`overflow-x: auto` riêng (bảng nhiều cột trong báo cáo business-case-builder
+thường rộng hơn khung chat) + CSS border/padding cho `table/th/td` (trước đó
+chưa có style nào). Verify: test mới render 1 bảng markdown thật, xác nhận
+ra đúng `<table>/<th>/<td>`, không còn cú pháp `| a | b |` thô.
+
+### 2. Streaming token thật (không phải giả lập)
+
+**Root cause**: `LlmService.complete()` (seams/llm.ts) chỉ có 1 method
+non-streaming — đợi HTTP response đầy đủ rồi mới trả về 1 lần, y hệt suốt
+từ Phase 2. Trước khi viết code, PROBE TRỰC TIẾP `proxy.onebot.meobeo.ai`
+với `stream: true` (không đoán theo docs OpenAI chung chung) — xác nhận
+đúng shape SSE thật, gồm 2 chi tiết dễ làm sai nếu chỉ đoán: (a) chunk
+tool_call ĐẦU mang cả `name` lẫn `arguments` rỗng, các chunk sau chỉ còn
+mảnh `arguments` (phải tích luỹ dần); (b) `usage` chỉ xuất hiện ở chunk CUỐI
+và CHỈ khi request có `stream_options: {include_usage: true}`.
+
+**Thiết kế**: `LlmService.completeStream?(...)` — method TUỲ CHỌN trên seam
+(không bắt buộc mọi provider/fake LLM test phải implement, coding rule A6).
+`llm-qwen` implement thật (SSE parser tự viết, không thêm thư viện — parse
+`data: {...}` bằng tay đơn giản, không cần thư viện SSE client riêng), tách
+chung `buildRequestBody()` cho cả `complete()`/`completeStream()` tránh 2 nơi
+định nghĩa request lệch nhau. `loop-default` feature-detect
+`runCtx.llm.completeStream` — có thì dùng, mỗi delta phát ngay 1 step
+`'token'` MỚI (`seams/loop.ts`, LoopStep) qua `agent/step` ("live tap" thuần,
+KHÔNG bao giờ ghi storage — coding rule B3 vẫn chỉ lưu đúng 1
+`model_message` hoàn chỉnh mỗi bước, y hệt trước đây); không có thì rơi về
+`complete()` y hệt cũ. Vì `api-rest`'s WS `/sessions/:id/events/stream`
+forward MỌI `agent/step` không phân biệt loại (xem code), step `'token'` tự
+động chảy tới client — KHÔNG cần sửa gì ở tầng WS/adapter.
+
+Frontend (`App.tsx`): thêm `'token'` vào `LoopStep`, `applyStep()` ghép dần
+vào 1 bubble assistant DUY NHẤT (tạo mới ở token đầu, nối tiếp ở token sau);
+`'final'`/`model_message` không toolCall giờ kiểm tra có bubble đang stream
+hay không trước khi tạo — có thì chỉ đóng lại (tránh lặp nguyên câu), không
+thì tạo mới như hành vi cũ (provider không hỗ trợ streaming). `reconstruct
+Items()` (đọc lại lịch sử qua REST) KHÔNG cần đổi gì — `'token'` không bao
+giờ lưu storage nên không bao giờ xuất hiện ở đó.
+
+**Deliverable: ĐÃ VERIFY THẬT** — `npm run typecheck` sạch, `npm test`
+271/271 pass (10 test mới: 5 ở `tests/llm-qwen-stream.test.ts` — SSE thật
+kèm ca "1 chunk bị cắt giữa 2 lần đọc TCP" và "response lỗi HTTP", encode
+đúng 2 phát hiện từ probe thật; 2 ở `tests/agent-loop.test.ts` — provider có/
+không có `completeStream()`; 3 ở `App.smoke.test.tsx` — ghép nhiều token
+thành 1 bubble, không lặp khi có `final`, fallback không streaming vẫn hoạt
+động). Docker rebuild + **E2E thật xuyên suốt qua WS thật** (script Node
+dùng `ws`, `POST /sessions` → mở `GET /sessions/:id/events/stream` → `POST
+/sessions/:id/messages`): 50 chunk `'token'` đến LIÊN TỤC qua đúng 1 WS
+connection, ghép lại khớp 100% với `model_message` cuối cùng, tổng thời gian
+tới token đầu tiên (~1050ms) gần bằng thời gian tới lúc xong hẳn (~1063ms)
+với câu trả lời NGẮN (3 câu) — lợi ích cảm nhận sẽ rõ hơn nhiều với câu trả
+lời dài (báo cáo business-case-builder nhiều đoạn), đúng đúng bản chất của
+progressive rendering.
+
+---
+
+## Phase 37 — Animation UI + kết quả search không tự ẩn + ưu tiên nguồn theo domain + fix 1 bug thật nghiêm trọng ở streaming — ĐÃ IMPLEMENT, ĐÃ VERIFY
+
+User yêu cầu 3 việc: (1) CSS animation cho tin nhắn mới + cuộn mượt hơn,
+tham khảo Claude/dsh; (2) kết quả search KHÔNG được tự ẩn sau khi trả lời
+xong; (3) skill business-case-builder phải ưu tiên nguồn theo domain câu hỏi
+(vd. FPT Telecom là công ty VN → tìm nguồn VN trước).
+
+### 1+2. Animation + kết quả search không ẩn
+
+`MessageBubble`/`ToolRow` thêm `@keyframes` fade+trượt nhẹ lúc DOM node vừa
+tạo (không lặp lại khi bubble streaming chỉ update text, do React không
+remount). Cuộn: phân biệt item MỚI (smooth) vs bubble streaming lớn dần
+(auto/tức thời) — smooth lặp lại mỗi token (hàng chục lần/lượt) sẽ tự dẫm
+lên chính nó, xem chú thích tại App.tsx.
+
+`ToolRow` trước đây collapsed-by-default cho MỌI tool (kể cả citations kết
+quả search) — thêm prop `defaultExpanded`, `App.tsx` truyền
+`item.toolUi?.render === 'citations'` — tự mở đúng 1 lần khi chuyển sang
+'ok', không ép mở lại nếu user tự đóng.
+
+### 3. Ưu tiên nguồn theo domain — 2 vòng lặp verify mới lộ ra bug thật nghiêm trọng
+
+Vòng 1: thêm rule #2 mới vào SKILL.md (ưu tiên tìm bằng tiếng Việt cho đối
+tượng VN). Verify thật bằng "Phân tích tình hình kinh doanh của FPT Telecom"
+— model VẪN search tiếng Anh ("FPT Telecom financial results..."). Rule ban
+đầu bị đặt cuối danh sách (rule #8), lời văn chưa đủ CỤ THỂ/hành động được.
+
+Sửa: chuyển lên rule #2 (ngay sau rule bắt buộc search), viết lại kèm VÍ DỤ
+CHUYỂN ĐỔI CÂU QUERY cụ thể ("FPT Telecom financial results" → "FPT Telecom
+kết quả kinh doanh"/"báo cáo tài chính"), cập nhật luôn ví dụ trong
+`references/web-research-guide.md` (mục 1 cũ tự làm mẫu xấu — ví dụ query
+tiếng Anh gắn "Vietnam"). Renumber toàn bộ rule + fix cross-reference ("rule
+#5"→"rule #6" trong SKILL.md, "rule #2"→"rule #3" trong
+`scripts/kpi_calculator.py`).
+
+Vòng 2 verify lại — phát hiện 1 BUG THẬT NGHIÊM TRỌNG không liên quan gì
+tới rule, mà ở chính `completeStream()` (Phase 36, streaming mới thêm): khi
+model tự quyết định phát NHIỀU tool_call trong 1 response (mỗi cái `index`
+riêng — hành vi model THỰC SỰ làm khi hưởng ứng rule #7 "2-3 lượt search
+khác góc độ"), parser đọc `delta.tool_calls[0]` theo VỊ TRÍ MẢNG thay vì
+theo field `.index`, nối lẫn `arguments` của 2 tool_call khác nhau thành 1
+chuỗi không phải JSON hợp lệ → `JSON.parse()` throw → tool cuối cùng nhận
+`args: {}` RỖNG dù model có ý định rõ ràng (xác nhận qua dump event log
+thật, không phải suy đoán). Đây là bug ẢNH HƯỞNG MỌI turn có ≥2 tool_call
+trong 1 response, không riêng gì rule domain — verify sớm nhờ đúng lúc test
+tính năng này mới lộ ra. Sửa: lọc đúng `tc.index === 0`, bỏ qua hoàn toàn
+fragment của index khác — test mới dựng LẠI ĐÚNG fixture thật (2 tool_call,
+2 index) đã probe trực tiếp proxy để lock lại.
+
+**Deliverable: ĐÃ VERIFY THẬT** — `npm run typecheck` sạch, `npm test`
+277/277 (4 test mới `ToolRow.test.tsx`, 1 test mới trong `App.smoke.test.tsx`
+cho auto-expand citations, 1 test regression mới trong
+`llm-qwen-stream.test.ts` cho bug đa tool_call). Docker rebuild + **3 lượt
+E2E thật** qua REST/events log — lượt cuối cùng xác nhận cả 2: `toolCall.
+args` không còn rỗng ("FPT Telecom báo cáo tài chính 2025 2026 doanh thu lợi
+nhuận" — tiếng Việt, có năm hiện tại đúng rule #8) VÀ kết quả trả về đúng 3
+nguồn Việt Nam thật (vnexpress.net, baodautu.vn, fpt.vn) — không phải suy
+đoán, đọc thẳng response thật từ Serper.
+
+---
+
 ## Timeline đề xuất (tham khảo, điều chỉnh theo tốc độ thật của bạn)
 
 | Phase | Nội dung                                                                 | Ưu tiên                                   |

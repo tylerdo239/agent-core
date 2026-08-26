@@ -128,15 +128,18 @@ export class AgentRunner extends AgentRunnerService {
         selectedSkill: entry.input.selectedSkill, ...correlated,
       })
       this.ctx.get('memory')?.remember(session.id, entry.input.message, { userId: session.ownerId }).catch(() => {})
-      const result = await driver.runTurn(this.ctx, session, {
-        ...entry.input, runId, signal: controller.signal,
-      })
+      const result = await driver.runTurn(this.ctx, session, { ...entry.input, runId, signal: controller.signal })
       if (controller.signal.aborted) throw new RunCancelledError()
+      this.ctx.emit('agent/turn-done', { sessionId: session.id, result })
       // Preserve the driver's public result shape. Older drivers omit
       // `status`; RunRecord still treats that as completed internally.
       await this.finish(runId, result)
       entry.resolve(result)
     } catch (error) {
+      this.ctx.emit('agent/turn-error', {
+        sessionId: session.id,
+        message: error instanceof Error ? error.message : String(error),
+      })
       if (controller.signal.aborted || isCancellation(error)) {
         await this.transition(runId, 'cancelled', error instanceof Error ? error.message : 'cancelled')
         entry.reject(new RunCancelledError())

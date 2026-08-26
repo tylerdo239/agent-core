@@ -4,11 +4,29 @@
    thấy: .error dùng token thay literal #fdeeee, .step bỏ dashed-border +
    monospace (chữ tự nhiên "🔍 đang rà soát: ...", không phải code — đọc như
    debug output trước đây, không đúng bản chất nội dung). */
+/* Follow-up (2026-08): tham khảo Claude/dsh — tin nhắn mới xuất hiện có
+   hiệu ứng vào nhẹ (fade + trượt lên), thay vì "nhảy" đột ngột vào khung
+   chat. `prefers-reduced-motion` đã có rule chung ở apps/web/src/style.css
+   (tắt animation-duration toàn cục), không cần lặp lại ở đây. Chỉ chạy 1
+   lần lúc DOM node được TẠO — bubble đang stream (text đổi qua re-render,
+   không remount) không bị chạy lại animation mỗi token. */
+@keyframes messageIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .msg {
   max-width: 78%;
   line-height: 1.45;
   font-size: var(--alias-font-size-body);
   word-break: break-word;
+  animation: messageIn var(--alias-motion-base) var(--alias-motion-ease);
 }
 
 .user {

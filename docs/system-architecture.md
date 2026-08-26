@@ -519,8 +519,7 @@ scikit-learn, cohort/funnel/segmentation/time-series và data-quality audit.
 
 | Folder | Vai trò |
 |---|---|
-| `api-rest` | REST health/project/session/message/events/skills/project workspace files |
-| `api-ws` | Create session, send message và live `LoopStep` stream |
+| `api-rest` | REST health/project/session/message/events/skills/project workspace files + WS upgrade `GET /sessions/:id/events/stream` (downlink-only `LoopStep`; không còn bundle `api-ws` riêng) |
 | `api-grpc` | Unary + server-streaming cho non-browser clients |
 | `api-grpc/agent.proto` | Schema gRPC |
 | `web-ui` | Serve static React build tại port UI |
@@ -581,7 +580,7 @@ Các test nên đọc đầu tiên:
 - `tests/spatial-composability.test.ts`: hiểu plugin dependency/lifecycle.
 - `tests/agent-loop.test.ts`: hiểu default request flow.
 - `tests/rlm-migration.test.ts`: hiểu boundary TS ↔ Python.
-- `tests/api-rest.test.ts`, `tests/api-ws.test.ts`: hiểu transport contract.
+- `tests/api-rest.test.ts` (gồm cả describe `WS downlink`): hiểu transport contract REST + WS chung server.
 
 ## 7. Python RLM được đóng gói thế nào?
 
@@ -691,7 +690,7 @@ Endpoints mặc định:
 | Service | Address |
 |---|---|
 | REST | `http://localhost:8787` |
-| WebSocket | `ws://localhost:8788` |
+| WebSocket | `ws://localhost:8787` (chung port với REST — Phase 6.3, không còn `PORT_WS` riêng) |
 | Web UI | `http://localhost:8790` |
 | gRPC | `localhost:50051` (đổi host port bằng `PORT_GRPC`) |
 

@@ -14,11 +14,12 @@ import { Context, Service } from "@deepseek-ai/cordis";
 import {
   LlmCompleteOptions,
   LlmCompletion,
+  LlmError,
   LlmMessage,
   LlmService,
   LlmToolCall,
 } from "../../../seams/llm.ts";
-import { postChatCompletion } from "../shared/llm-http.ts";
+import { postChatCompletion, statusError } from "../shared/llm-http.ts";
 
 export namespace LlmQwen {
   export interface Config {
@@ -105,6 +106,40 @@ interface OpenAIChatResponse {
   }>;
 }
 
+// Follow-up (2026-08) — streaming (SSE): shape của 1 chunk `data: {...}` khi
+// `stream: true`. Verify TRỰC TIẾP với proxy thật (không phải suy đoán từ
+// docs OpenAI) trước khi viết parser dưới đây — 3 phát hiện quan trọng khớp
+// đúng chunk thật: (1) chunk tool_call ĐẦU TIÊN mang cả `name` lẫn mảnh
+// `arguments` rỗng, các chunk SAU chỉ còn mảnh `arguments` (phải tích luỹ
+// dần, không thay thế); (2) `usage` CHỈ xuất hiện ở chunk CUỐI (sau
+// `[DONE]` không còn chunk nào), và CHỈ khi request có `stream_options:
+// {include_usage: true}` -- thiếu field này thì stream im lặng không có usage;
+// (3) model có thể phát NHIỀU tool_call trong 1 response (mỗi cái 1
+// `index` riêng, 0/1/2...) khi tự quyết định làm nhiều lượt search cùng lúc
+// -- bug thật đã gặp lúc verify E2E: nối lẫn `arguments` của index 1 vào
+// buffer của index 0 (đọc `tool_calls[0]` theo VỊ TRÍ MẢNG thay vì theo field
+// `.index`) tạo ra 2 JSON object dính liền nhau, JSON.parse() throw, args
+// cuối cùng RỖNG dù model có ý định rõ ràng. Phải lọc đúng `.index === 0`.
+interface OpenAIStreamChunk {
+  model?: string;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    cost?: number;
+  };
+  choices?: Array<{
+    finish_reason?: string;
+    delta?: {
+      content?: string | null;
+      tool_calls?: Array<{
+        index?: number;
+        function?: { name?: string; arguments?: string };
+      }>;
+    };
+  }>;
+}
+
 interface ResolvedConfig {
   apiKey: string;
   baseUrl: string;
@@ -145,13 +180,10 @@ export class LlmQwen extends LlmService {
     this.ctx.logger("llm-qwen").info("ready (model=%s, baseUrl=%s)", model, baseUrl);
   }
 
-  async complete(
-    messages: LlmMessage[],
-    options: LlmCompleteOptions = {},
-  ): Promise<LlmCompletion> {
-    const { apiKey, baseUrl, model: configuredModel } = this.resolveConfig();
-    const model = options.model ?? configuredModel;
-
+  // Tách chung cho complete()/completeStream() -- 2 chỗ phải build body GIỐNG
+  // HỆT nhau (trừ đúng field `stream`/`stream_options`), tránh 1 nơi quên cập
+  // nhật khi sau này thêm option mới.
+  private buildRequestBody(model: string, messages: LlmMessage[], options: LlmCompleteOptions): Record<string, unknown> {
     const body: Record<string, unknown> = {
       model,
       messages: messages.map(mapMessage),
@@ -176,6 +208,16 @@ export class LlmQwen extends LlmService {
       }));
       body.tool_choice = "auto";
     }
+    return body;
+  }
+
+  async complete(
+    messages: LlmMessage[],
+    options: LlmCompleteOptions = {},
+  ): Promise<LlmCompletion> {
+    const { apiKey, baseUrl, model: configuredModel } = this.resolveConfig();
+    const model = options.model ?? configuredModel;
+    const body = this.buildRequestBody(model, messages, options);
 
     const url = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
     const res = await postChatCompletion({
@@ -216,6 +258,113 @@ export class LlmQwen extends LlmService {
           }
         : undefined,
     };
+  }
+
+  // Follow-up (2026-08) — streaming: KHÔNG retry (khác complete()/
+  // fetchWithRetry) -- 1 request đã stream được VÀI đoạn rồi mới lỗi giữa
+  // chừng, retry lại từ đầu sẽ phát lại đoạn ĐÃ hiện cho user (đơn giản hoá
+  // có chủ đích, ghi rõ ra đây thay vì tự tin ẩn giấu: lỗi giữa chừng nổi lên
+  // như bất kỳ lỗi nào khác của turn, qua đúng đường xử lý lỗi đã có sẵn ở
+  // loop-default/agent-runner). `onDelta` gọi ngay khi có content mới, KHÔNG
+  // đợi tới lúc xong toàn bộ mới gọi 1 lần.
+  async completeStream(
+    messages: LlmMessage[],
+    options: LlmCompleteOptions = {},
+    onDelta: (contentDelta: string) => void,
+  ): Promise<LlmCompletion> {
+    const { apiKey, baseUrl, model: configuredModel } = this.resolveConfig();
+    const model = options.model ?? configuredModel;
+    const body = {
+      ...this.buildRequestBody(model, messages, options),
+      stream: true,
+      stream_options: { include_usage: true },
+    };
+
+    const url = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
+    const timeoutMs = this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const operationDeadline = Math.min(options.deadline ?? Number.POSITIVE_INFINITY, Date.now() + timeoutMs);
+    const remaining = operationDeadline - Date.now();
+    if (remaining <= 0) throw new LlmError("LLM_TIMEOUT", "llm-qwen: operation deadline exceeded");
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), remaining);
+    timeout.unref?.();
+    const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+    let res: Response | undefined;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal,
+      });
+      if (!res.ok) throw await statusError("llm-qwen", res);
+      if (!res.body) throw new LlmError("LLM_NETWORK", "llm-qwen: streaming response has no body");
+
+      reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let content = "";
+      let toolCallName: string | undefined;
+      let toolCallArgsRaw = "";
+      let responseModel: string | undefined;
+      let usage: LlmCompletion["usage"];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const payload = trimmed.slice(5).trim();
+          if (payload === "[DONE]") continue;
+          let chunk: OpenAIStreamChunk;
+          try {
+            chunk = JSON.parse(payload);
+          } catch {
+            continue;
+          }
+          responseModel ??= chunk.model;
+          if (chunk.usage) {
+            usage = {
+              inputTokens: chunk.usage.prompt_tokens,
+              outputTokens: chunk.usage.completion_tokens,
+              totalTokens: chunk.usage.total_tokens,
+              cost: chunk.usage.cost,
+            };
+          }
+          const delta = chunk.choices?.[0]?.delta;
+          if (delta?.content) {
+            content += delta.content;
+            onDelta(delta.content);
+          }
+          const toolCallDelta = delta?.tool_calls?.find((tc) => (tc.index ?? 0) === 0);
+          if (toolCallDelta?.function?.name) toolCallName = toolCallDelta.function.name;
+          if (toolCallDelta?.function?.arguments) toolCallArgsRaw += toolCallDelta.function.arguments;
+        }
+      }
+
+      const toolCall: LlmToolCall | undefined = toolCallName
+        ? { name: toolCallName, args: parseArgs(toolCallArgsRaw) }
+        : undefined;
+      return { content, toolCall, model: responseModel ?? model, usage };
+    } catch (error) {
+      if (error instanceof LlmError) throw error;
+      if (options.signal?.aborted) throw new LlmError("LLM_CANCELLED", "llm-qwen: cancelled");
+      if (controller.signal.aborted) throw new LlmError("LLM_TIMEOUT", `llm-qwen: timed out after ${timeoutMs}ms`);
+      throw new LlmError("LLM_NETWORK", `llm-qwen: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      clearTimeout(timeout);
+      if ((options.signal?.aborted || controller.signal.aborted) && reader) {
+        await reader.cancel().catch(() => undefined);
+      }
+    }
   }
 
   // Phase 8.3: retry chỉ cho lỗi TRANSIENT (throw trước khi có response --

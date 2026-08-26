@@ -5,7 +5,7 @@ Formulas match references/kpi-framework.md exactly — do not duplicate the
 logic elsewhere; if a formula changes, change it here and in that file
 together. Writes kpi-computed.md (paste into the report) and
 kpi-computed.json (read back instead of re-deriving numbers by hand — every
-number in the report must trace to executed code, SKILL.md rule #2).
+number in the report must trace to executed code, SKILL.md rule #3).
 
 Missing inputs are reported, not guessed: a metric whose required inputs are
 absent gets value=null and a note explaining what is missing, rather than a

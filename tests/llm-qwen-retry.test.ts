@@ -102,7 +102,10 @@ describe('Phase 8.3 — llm-qwen retry/backoff', () => {
     }) as unknown as typeof fetch
 
     const { root, fiber } = await mount(BASE_CONFIG)
-    const error = await root.llm.complete([{ role: 'user', content: 'hi' }]).catch((reason: unknown) => reason as Error)
+    const error = await root.llm.complete([{ role: 'user', content: 'hi' }]).then(
+      () => { throw new Error('expected completion to reject') },
+      (reason: unknown) => reason instanceof Error ? reason : new Error(String(reason)),
+    )
     expect(error.message).toMatch(/400.*maximum context length exceeded/)
     expect(error.message).not.toContain('private-token')
     expect(error.message).not.toContain('sk-supersecret')

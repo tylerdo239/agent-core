@@ -1,7 +1,14 @@
 // apps/web/src/App.tsx — Phase 9.4: cây component chính, thay renderStep()/
-// addMessage() thủ công trong app.js cũ (Phase 7/8.5) bằng state React. Giao
-// thức REST/WS giữ NGUYÊN (không đổi API backend) — chỉ đổi cách render phía
-// client. `clientCtx` (cây Cordis riêng chạy trong trình duyệt, Phase 9.4)
+// addMessage() thủ công trong app.js cũ (Phase 7/8.5) bằng state React.
+//
+// Phase 6.3 (gộp WS vào api-rest, WS thành downlink-only): giao thức đổi so
+// với Phase 9.4 gốc — WS KHÔNG còn nhận `create_session`/`send_message` từ
+// client nữa (bundles/adapters/api-ws đã gộp vào api-rest, xem header file
+// đó). Luồng mới: `POST /sessions` (REST) tạo session -> mở WS
+// `/sessions/:id/events/stream?token=...` (chỉ để NHẬN step/done/error) ->
+// `POST /sessions/:id/messages` (REST) mới thực sự gửi tin nhắn. WS không
+// còn message type `session_created` — sessionId lấy thẳng từ response JSON
+// của chính POST /sessions. `clientCtx` (cây Cordis riêng chạy trong trình duyệt, Phase 9.4)
 // dùng cho `RenderSlot(clientCtx, 'tool.call.toolview', ...)` tại đúng chỗ
 // turn có tool call — GenericToolCard (Phase 9.4) là fallback bắt buộc khi
 // tool không có UI-plugin riêng (Phase 9.5 chưa mount cái nào, nên mọi tool
@@ -55,6 +62,11 @@ interface LoopStep {
   // liệu gần giống nhau song song.
   type:
     | 'user_message'
+    // Follow-up (2026-08): 1 mảnh nội dung MỚI trong lúc model đang generate
+    // (xem seams/loop.ts) — chỉ đến qua WS LIVE, không bao giờ xuất hiện khi
+    // đọc lại event log THẬT (không lưu storage), reconstructItems() không
+    // cần biết type này.
+    | 'token'
     | 'model_message'
     // Gap thật (user báo lại: RLM chạy nhưng UI chờ không hiện đang làm gì):
     // loop-rlm phát 'tool_call' RIÊNG (name/args tách khỏi step, không lồng
@@ -104,17 +116,6 @@ interface LoopStep {
   path?: string
   skill?: string
   encoding?: string
-}
-
-// docs/agent-core-rlm-web-ui-plugin-plan.md mục 3: mặc định quay về
-// 'default' (chat thường) — RLM không còn là driver CỐ ĐỊNH cho MỌI
-// session nữa, chỉ tạo khi user chủ động bấm "Phân tích dữ liệu"
-// (Sidebar.onNewDataSession).
-export function createSessionCommand(driver: 'default' | 'rlm' = 'default') {
-  return {
-    type: 'create_session',
-    driver,
-  }
 }
 
 type ChatItem =
@@ -487,20 +488,28 @@ export function App() {
   }
 
   const wsRef = useRef<WebSocket | null>(null)
+  // sessionId mà wsRef.current ĐANG subscribe — khác sessionId (state, có thể
+  // đã đổi sang session khác trước khi WS cũ kịp đóng). Dùng để biết có cần
+  // mở lại stream hay tái dùng socket đang mở (Phase 6.3: 1 WS = 1 session).
+  const wsSessionIdRef = useRef<string | null>(null)
   const activeToolItemIdRef = useRef<string | null>(null)
+  // Follow-up (2026-08): id của ChatItem 'assistant' đang được ghép dần từ
+  // các step 'token' (null = chưa có/đã đóng lại) — set khi token ĐẦU TIÊN
+  // của 1 lượt generate tới, reset về null lúc model_message (có toolCall,
+  // tool card mới sắp tạo) hoặc lúc 'final' đóng lại bubble đang stream.
+  const streamingAssistantIdRef = useRef<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
   // Session hiện tại đã có tin nhắn user đầu tiên chưa — chỉ cập nhật title
   // lịch sử ĐÚNG 1 LẦN cho câu hỏi đầu tiên, không ghi đè bằng câu hỏi sau.
   const titledSessionIdsRef = useRef<Set<string>>(new Set())
-  // Follow-up (2026-08): bug thật user báo — mở app hoặc bấm "Chat mới" rồi
-  // KHÔNG gõ gì, F5 lại thấy 1 session rỗng tự lưu vào history. Nguyên nhân:
-  // create_session cũ gửi NGAY lúc WS mở (connect()), nên server đã có 1
-  // session thật (GET /sessions trả về) dù chưa hề có tin nhắn nào. Sửa:
-  // hoãn create_session tới đúng lúc handleSubmit() gửi tin nhắn ĐẦU TIÊN —
-  // 2 ref dưới đây giữ tạm dữ liệu cần trong lúc chờ session_created trả về.
-  const pendingFirstMessageRef = useRef<{ text: string; skill?: string } | null>(null)
+  // Follow-up (2026-08), vẫn đúng ở Phase 6.3: bug thật user báo — mở app
+  // hoặc bấm "Chat mới" rồi KHÔNG gõ gì, F5 lại thấy 1 session rỗng tự lưu
+  // vào history. Sửa bằng cách hoãn việc TẠO session (giờ là `POST
+  // /sessions`, trước đây là gửi `create_session` qua WS) tới đúng lúc
+  // handleSubmit() gửi tin nhắn ĐẦU TIÊN — ref dưới đây nhớ driver session
+  // MỚI sẽ tạo (mặc định 'default', đổi khi bấm "Phân tích dữ liệu").
   const pendingSessionDriverRef = useRef<'default' | 'rlm'>('default')
 
   // Phase 9.4: mount cây Cordis client 1 lần khi app khởi động — xem
@@ -516,6 +525,14 @@ export function App() {
     }
   }, [])
 
+  // Follow-up (2026-08): tham khảo Claude/dsh — cuộn "smooth" cho item MỚI
+  // (tin nhắn/tool card mới xuất hiện), nhưng KHÔNG smooth khi chỉ là
+  // bubble đang stream lớn dần (items.length không đổi, chỉ text bên trong
+  // đổi) — 1 lượt streaming gọi setItems() hàng chục lần (mỗi token, xem
+  // applyStep()), smooth-scroll lặp lại liên tục sẽ tự dẫm lên chính nó
+  // (animation trước bị ngắt bởi animation sau) gây giật thay vì mượt. Auto
+  // (tức thời) trong lúc stream vẫn giữ đúng vị trí cuối trang, không giật.
+  const prevItemsLengthRef = useRef(0)
   useEffect(() => {
     const last = items[items.length - 1]
     if (last?.kind === 'assistant') {
@@ -533,151 +550,163 @@ export function App() {
       // thẳng xuống cuối một answer dài làm timeline trông như biến mất.
       if (turnHasActivity) return
     }
-    messagesEndRef.current?.scrollIntoView({ block: 'end' })
+    const isNewItem = items.length !== prevItemsLengthRef.current
+    prevItemsLengthRef.current = items.length
+    messagesEndRef.current?.scrollIntoView({ block: 'end', behavior: isNewItem ? 'smooth' : 'auto' })
   }, [items])
 
-  // `resumeSessionId`: khi có, KHÔNG gửi 'create_session' — session đó ĐÃ
-  // tồn tại server-side (miễn còn trong TTL trượt của session-registry, xem
-  // Phase 8.1). WS protocol không có message riêng "resume" — `send_message`
-  // chấp nhận BẤT KỲ sessionId hợp lệ nào, không quan tâm nó được tạo qua
-  // kết nối WS nào, nên chỉ cần bỏ qua bước create_session là đủ.
-  // `newSessionDriver` (docs/agent-core-rlm-web-ui-plugin-plan.md mục 3):
-  // CHỈ dùng lúc tạo session MỚI (bỏ qua khi resume — driver của session cũ
-  // do server quyết định từ lúc tạo, không đổi được).
-  function connect(current: Settings, token: string, resumeSessionId?: string, newSessionDriver: 'default' | 'rlm' = 'default', initialMessage?: string) {
-    setStatus('connecting')
-    void fetch(`${current.restUrl}/skills`, {
-      headers: { authorization: `Bearer ${token}` },
+  // Mở downlink WS cho ĐÚNG 1 session đã tồn tại (Phase 6.3: WS không còn
+  // nhận create_session/send_message — chỉ subscribe step/done/error, xem
+  // GET /sessions/:id/events/stream ở bundles/adapters/api-rest). Resolve
+  // lúc socket 'open' — caller PHẢI await xong hàm này trước khi POST
+  // /sessions/:id/messages, để không lỡ mất step đầu tiên (server emit
+  // 'agent/step' đồng bộ ngay trong lúc xử lý message, xem seams/loop.ts).
+  function openStream(current: Settings, token: string, sid: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const url = `${current.wsUrl}/sessions/${sid}/events/stream?token=${encodeURIComponent(token)}`
+      const ws = new WebSocket(url)
+      let settled = false
+
+      ws.addEventListener('open', () => {
+        wsRef.current = ws
+        wsSessionIdRef.current = sid
+        setStatus('connected')
+        settled = true
+        resolve()
+      })
+
+      ws.addEventListener('message', (event) => {
+        const msg = JSON.parse(event.data)
+
+        if (msg.type === 'step') {
+          applyStep(msg.step as LoopStep)
+          return
+        }
+
+        if (msg.type === 'done') {
+          setTurnInFlight(false)
+          const sid = sessionIdRef.current ?? (msg as { sessionId?: string }).sessionId
+          if (sid) refreshWorkspaceFiles(String(sid), activeProjectId ?? undefined)
+          return
+        }
+
+        if (msg.type === 'error') {
+          setTurnInFlight(false)
+          // Tool throw (permission denied, lỗi network...) đi thẳng ra đây thay
+          // vì qua step 'tool_result' — nếu đang có 1 tool item "đang chạy" dở,
+          // chốt nó sang trạng thái lỗi luôn (đúng bug-fix đã có ở app.js cũ:
+          // không để pulsing/shimmer mãi mãi).
+          const activeId = activeToolItemIdRef.current
+          if (activeId) {
+            activeToolItemIdRef.current = null
+            setItems((prev) =>
+              prev.map((it) => (it.kind === 'tool' && it.id === activeId ? { ...it, state: 'error', errorText: msg.message } : it)),
+            )
+          }
+          setItems((prev) => [...prev, { kind: 'error', id: genId(), text: `Lỗi: ${msg.message}`, ts: Date.now() }])
+          return
+        }
+      })
+
+      ws.addEventListener('close', (event) => {
+        setStatus('disconnected')
+        if (wsSessionIdRef.current === sid) wsSessionIdRef.current = null
+        // Module auth: 401 giờ nghĩa là TOKEN hết hạn/bị thu hồi (không còn
+        // "sai API key" — token đã được xác thực lúc mở kết nối, hết hạn/bị
+        // logout ở tab khác giữa chừng là kịch bản khác) — đăng xuất NGAY,
+        // không để user tưởng vẫn còn phiên hợp lệ trong khi mọi request tiếp
+        // theo đều sẽ 401.
+        if (event.code === 401) {
+          clearAuthState()
+          setAuth(null)
+          pushToast('Phiên đăng nhập đã hết hạn — vui lòng đăng nhập lại.', 'error')
+        }
+        if (!settled) {
+          settled = true
+          reject(new Error(`WS đóng trước khi mở (code=${event.code})`))
+        }
+      })
+
+      ws.addEventListener('error', () => {
+        setStatus('disconnected')
+        if (!settled) {
+          settled = true
+          reject(new Error('WS connection error'))
+        }
+      })
     })
+  }
+
+  // Đảm bảo có đúng 1 WS đang mở, subscribe đúng `sid` — tái dùng socket cũ
+  // nếu đã đúng session và còn OPEN, ngược lại đóng cái cũ (nếu có) rồi mở
+  // mới. Không tự động retry nếu open thất bại — lỗi ném ngược cho caller
+  // (handleSubmit) xử lý, đúng tinh thần "không reconnect ngầm" đã có từ
+  // trước (app.js cũ, xem docs/frontend-backend-handoff.md).
+  async function ensureStream(current: Settings, token: string, sid: string) {
+    if (wsSessionIdRef.current === sid && wsRef.current?.readyState === WebSocket.OPEN) return
+    wsRef.current?.close()
+    wsRef.current = null
+    wsSessionIdRef.current = null
+    await openStream(current, token, sid)
+  }
+
+  // Khởi tạo lúc mount/đăng nhập — KHÔNG mở WS (chưa có session nào để
+  // subscribe, Phase 6.3), chỉ probe REST còn sống (đồng thời lấy /skills)
+  // để quyết định `status`. Session/WS thật chỉ xuất hiện lúc handleSubmit()
+  // gửi tin nhắn đầu tiên, hoặc lúc resumeSession() chọn 1 session cũ.
+  function initSession(current: Settings, token: string) {
+    setStatus('connecting')
+    fetch(`${current.restUrl}/skills`, { headers: { authorization: `Bearer ${token}` } })
       .then(async (res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         return res.json() as Promise<{ skills: SkillOption[] }>
       })
-      .then((payload) => setSkills(payload.skills))
-      .catch(() => setSkills([]))
-    setSessionId(resumeSessionId ?? null)
-    sessionIdRef.current = resumeSessionId ?? null
-    activeToolItemIdRef.current = null
-    pendingFirstMessageRef.current = null
-    pendingSessionDriverRef.current = newSessionDriver
-
-    const url = `${current.wsUrl}/?token=${encodeURIComponent(token)}`
-    const ws = new WebSocket(url)
-    wsRef.current = ws
-
-    // Follow-up (2026-08): KHÔNG còn gửi create_session ngay lúc mở WS cho
-    // chat MỚI nữa (xem ghi chú pendingFirstMessageRef ở khai báo ref) —
-    // session thật chỉ tạo lúc handleSubmit() gửi tin nhắn đầu tiên. Ở đây
-    // chỉ cần đánh dấu đã kết nối (đúng cho cả 2 trường hợp resume/mới).
-    ws.addEventListener('open', () => {
-      if (wsRef.current !== ws) return
-      setStatus('connected')
-      if (resumeSessionId && initialMessage) {
-        setItems([{ kind: 'user', id: genId(), text: initialMessage, ts: Date.now() }])
-        setTurnInFlight(true)
-        ws.send(JSON.stringify({
-          type: 'send_message', sessionId: resumeSessionId, message: initialMessage,
-          selectedSkill: selectedSkill || undefined,
-        }))
-      }
-    })
-
-    ws.addEventListener('message', (event) => {
-      if (wsRef.current !== ws) return
-      const msg = JSON.parse(event.data)
-
-      if (msg.type === 'session_created') {
-        setSessionId(msg.id)
-        sessionIdRef.current = msg.id
-        if (auth) rememberActiveSession(auth.user.id, msg.id)
-        setSessionDriver(msg.driver)
+      .then((payload) => {
+        setSkills(payload.skills)
         setStatus('connected')
-        // Follow-up (2026-08): create_session giờ CHỈ gửi từ handleSubmit()
-        // lúc có tin nhắn đầu tiên thật đang chờ (pendingFirstMessageRef) —
-        // session vừa tạo LUÔN sắp có nội dung thật ngay sau đây, không còn
-        // ca "tạo xong rồi bỏ đó" nữa (không còn cần bubble hệ thống báo
-        // "Session mới: <id>" — cũng đúng tinh thần bỏ số hiệu session khỏi
-        // UI, xem header bên dưới). Tính title thật ngay ở đây thay vì
-        // "Cuộc trò chuyện mới" tạm rồi ghi đè sau, chỉ setSessions() 1 lần.
-        const pending = pendingFirstMessageRef.current
-        const title = pending ? cacheSessionTitle(msg.id, pending.text) : 'Cuộc trò chuyện mới'
-        if (pending) titledSessionIdsRef.current.add(msg.id)
-        // Thêm optimistic lên ĐẦU list — server đã gắn ownerId thật lúc tạo
-        // (create_session qua WS truyền identity đã verify), lần fetch
-        // GET /sessions tiếp theo sẽ thấy đúng session này; thêm ngay ở đây
-        // để UI phản hồi tức thời, không đợi round-trip fetch lại.
-        setSessions((prev) => [{ id: msg.id, createdAt: Date.now(), title, driver: msg.driver }, ...prev])
-        if (msg.driver === 'rlm') refreshWorkspaceFiles(msg.id, activeProjectId ?? undefined)
-        if (pending) {
-          pendingFirstMessageRef.current = null
-          ws.send(JSON.stringify({ type: 'send_message', sessionId: msg.id, message: pending.text, selectedSkill: pending.skill }))
-        }
-        return
-      }
-
-      if (msg.type === 'step') {
-        applyStep(msg.step as LoopStep)
-        return
-      }
-
-      if (msg.type === 'done') {
-        setTurnInFlight(false)
-        const sid = sessionIdRef.current ?? (msg as { sessionId?: string }).sessionId
-        if (sid) {
-          const completedSessionId = String(sid)
-          refreshWorkspaceFiles(completedSessionId, activeProjectId ?? undefined)
-        }
-        return
-      }
-
-      if (msg.type === 'error') {
-        setTurnInFlight(false)
-        // Tool throw (permission denied, lỗi network...) đi thẳng ra đây thay
-        // vì qua step 'tool_result' — nếu đang có 1 tool item "đang chạy" dở,
-        // chốt nó sang trạng thái lỗi luôn (đúng bug-fix đã có ở app.js cũ:
-        // không để pulsing/shimmer mãi mãi).
-        const activeId = activeToolItemIdRef.current
-        if (activeId) {
-          activeToolItemIdRef.current = null
-          setItems((prev) =>
-            prev.map((it) => (it.kind === 'tool' && it.id === activeId ? { ...it, state: 'error', errorText: msg.message } : it)),
-          )
-        }
-        setItems((prev) => [...prev, { kind: 'error', id: genId(), text: `Lỗi: ${msg.message}`, ts: Date.now() }])
-        return
-      }
-    })
-
-    ws.addEventListener('close', (event) => {
-      if (wsRef.current !== ws) return
-      setStatus('disconnected')
-      // Module auth: 401 giờ nghĩa là TOKEN hết hạn/bị thu hồi (không còn
-      // "sai API key" — token đã được xác thực lúc mở kết nối, hết hạn/bị
-      // logout ở tab khác giữa chừng là kịch bản khác) — đăng xuất NGAY,
-      // không để user tưởng vẫn còn phiên hợp lệ trong khi mọi request tiếp
-      // theo đều sẽ 401.
-      if (event.code === 401) {
-        clearAuthState()
-        setAuth(null)
-        pushToast('Phiên đăng nhập đã hết hạn — vui lòng đăng nhập lại.', 'error')
-      }
-    })
-
-    ws.addEventListener('error', () => {
-      if (wsRef.current !== ws) return
-      setStatus('disconnected')
-    })
+      })
+      .catch(() => {
+        setSkills([])
+        setStatus('disconnected')
+      })
+    wsRef.current?.close()
+    wsRef.current = null
+    wsSessionIdRef.current = null
+    setSessionId(null)
+    activeToolItemIdRef.current = null
+    pendingSessionDriverRef.current = 'default'
   }
 
   function applyStep(step: LoopStep) {
+    // Follow-up (2026-08): stream nội dung "gõ từng chữ" — chưa có bubble
+    // đang stream thì tạo mới (bubble xuất hiện ngay ở token đầu tiên, không
+    // đợi cả câu xong), có rồi thì ghép nối tiếp vào ĐÚNG bubble đó.
+    if (step.type === 'token') {
+      const delta = step.content ?? ''
+      if (!delta) return
+      const streamingId = streamingAssistantIdRef.current
+      if (streamingId) {
+        setItems((prev) => prev.map((it) => (it.kind === 'assistant' && it.id === streamingId ? { ...it, text: it.text + delta } : it)))
+      } else {
+        const id = genId()
+        streamingAssistantIdRef.current = id
+        setItems((prev) => [...prev, { kind: 'assistant', id, text: delta, ts: Date.now() }])
+      }
+      return
+    }
     if (step.type === 'model_message') {
       if (step.toolCall) {
+        // Đóng bubble đang stream (nếu có — model có thể "nói" 1 đoạn ngắn
+        // trước khi gọi tool) trước khi thêm tool card ngay bên dưới nó.
+        streamingAssistantIdRef.current = null
         const id = genId()
         activeToolItemIdRef.current = id
         setItems((prev) => [...prev, { kind: 'tool', id, toolCall: step.toolCall!, toolUi: step.toolUi, state: 'running' }])
       }
       // model_message KHÔNG có toolCall = nội dung sẽ trùng với step 'final'
-      // ngay sau đó — không render lặp (đúng hành vi app.js cũ).
+      // ngay sau đó — không render lặp (đúng hành vi app.js cũ). Cố tình
+      // KHÔNG reset streamingAssistantIdRef ở nhánh này — 'final' ngay sau
+      // đây cần thấy ref còn set để biết bubble đã hiện đủ qua token rồi.
       return
     }
     // loop-rlm phát riêng 'tool_call' (name/args tách khỏi step, xem chú
@@ -721,6 +750,15 @@ export function App() {
       return
     }
     if (step.type === 'final') {
+      // Provider hỗ trợ streaming: nội dung đã hiện đủ qua các step 'token'
+      // rồi (ref còn set từ model_message không toolCall ngay trước đó) —
+      // chỉ cần đóng lại, KHÔNG tạo bubble mới (tránh lặp nguyên câu trả lời).
+      if (streamingAssistantIdRef.current) {
+        streamingAssistantIdRef.current = null
+        return
+      }
+      // Provider không hỗ trợ streaming (hoặc fake LLM trong test) — hành vi
+      // cũ: 'final' là nơi DUY NHẤT tạo bubble assistant.
       setItems((prev) => [...prev, { kind: 'assistant', id: genId(), text: step.content ?? '', ts: Date.now() }])
       return
     }
@@ -753,9 +791,10 @@ export function App() {
     }
   }
 
-  function startNewChat(current: Settings, token: string, driver: 'default' | 'rlm' = 'default') {
+  function startNewChat(driver: 'default' | 'rlm' = 'default') {
     wsRef.current?.close()
     wsRef.current = null
+    wsSessionIdRef.current = null
     activeToolItemIdRef.current = null
     sessionIdRef.current = null
     // Driver là lựa chọn UI đã biết ngay khi user bấm "Chat mới" hoặc
@@ -772,7 +811,9 @@ export function App() {
     setItems([])
     setProjectView(false)
     if (driver !== 'rlm') setActiveProjectId(null)
-    connect(current, token, undefined, driver)
+    setSessionId(null)
+    pendingSessionDriverRef.current = driver
+    setStatus('connected')
   }
 
   async function loadProjects() {
@@ -845,8 +886,24 @@ export function App() {
     titledSessionIdsRef.current.add(created.id)
     setProjectView(false)
     setSessionDriver('rlm')
-    setItems([])
-    connect(settings, auth.token, created.id, 'rlm', initialMessage)
+    setSessionId(created.id)
+    sessionIdRef.current = created.id
+    setItems(initialMessage ? [{ kind: 'user', id: genId(), text: initialMessage, ts: Date.now() }] : [])
+    await ensureStream(settings, auth.token, created.id)
+    if (initialMessage) {
+      setTurnInFlight(true)
+      try {
+        const messageResponse = await fetch(`${settings.restUrl}/sessions/${created.id}/messages`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${auth.token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ message: initialMessage, selectedSkill: selectedSkill || undefined }),
+        })
+        if (!messageResponse.ok) throw new Error(await messageResponse.text())
+      } catch (error) {
+        setTurnInFlight(false)
+        pushToast(`Gửi tin nhắn thất bại: ${error instanceof Error ? error.message : String(error)}`, 'error')
+      }
+    }
     await refreshWorkspaceFiles(created.id, created.projectId)
   }
 
@@ -954,8 +1011,8 @@ export function App() {
   }
 
   // Chuyển sang 1 session CŨ (click trong Sidebar) — tải lại lịch sử thật
-  // qua REST (KHÔNG phải WS, vốn không có message "resume"), rồi mở kết nối
-  // WS mới bỏ qua create_session (session đã tồn tại server-side).
+  // qua REST, rồi mở WS subscribe cho ĐÚNG session đó (Phase 6.3: session đã
+  // tồn tại server-side, không cần "tạo lại" — chỉ cần mở downlink).
   async function resumeSession(id: string) {
     if (id === sessionId || !auth) return
     // docs/agent-core-rlm-web-ui-plugin-plan.md mục 1: driver của session cũ
@@ -982,11 +1039,14 @@ export function App() {
       }
       wsRef.current?.close()
       wsRef.current = null
+      wsSessionIdRef.current = null
       activeToolItemIdRef.current = null
       setItems(reconstructItems(events))
       rememberActiveSession(auth.user.id, id)
       titledSessionIdsRef.current.add(id) // đã có lịch sử thật -> không ghi đè title bằng tin nhắn tiếp theo
-      connect(settings, auth.token, id)
+      setSessionId(id)
+      sessionIdRef.current = id
+      await ensureStream(settings, auth.token, id)
     } catch {
       pushToast('Không thể tải lại cuộc trò chuyện này — kiểm tra kết nối.', 'error')
     }
@@ -1001,6 +1061,7 @@ export function App() {
     if (!auth) {
       wsRef.current?.close()
       wsRef.current = null
+      wsSessionIdRef.current = null
       setSessions([])
       setProjects([])
       setItems([])
@@ -1009,6 +1070,7 @@ export function App() {
       return
     }
     let disposed = false
+    initSession(settings, auth.token)
     void fetchSessionHistory(settings.restUrl, auth.token)
       .then(async (history) => {
         if (disposed) return
@@ -1016,10 +1078,7 @@ export function App() {
         void loadProjects()
         const rememberedId = activeSessionId(auth.user.id)
         const target = history.find((session) => session.id === rememberedId) ?? history[0]
-        if (!target) {
-          connect(settings, auth.token)
-          return
-        }
+        if (!target) return
         try {
           const events = await fetchSessionEvents(settings.restUrl, auth.token, target.id)
           if (disposed) return
@@ -1029,15 +1088,17 @@ export function App() {
           titledSessionIdsRef.current.add(target.id)
           rememberActiveSession(auth.user.id, target.id)
           if (target.driver === 'rlm') refreshWorkspaceFiles(target.id, target.projectId)
-          connect(settings, auth.token, target.id)
+          setSessionId(target.id)
+          sessionIdRef.current = target.id
+          await ensureStream(settings, auth.token, target.id)
         } catch {
-          if (!disposed) connect(settings, auth.token)
+          if (!disposed) setStatus('connected')
         }
       })
       .catch(() => {
         if (disposed) return
         pushToast('Không tải được danh sách cuộc trò chuyện.', 'error')
-        connect(settings, auth.token)
+        setStatus('connected')
       })
     return () => {
       disposed = true
@@ -1048,10 +1109,9 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth])
 
-  function sendUserMessage(rawText: string, controlItemId?: string) {
+  async function sendUserMessage(rawText: string, controlItemId?: string): Promise<boolean> {
     const text = rawText.trim()
-    const ws = wsRef.current
-    if (!text || turnInFlight || !ws || ws.readyState !== WebSocket.OPEN) return false
+    if (!text || turnInFlight || !auth || status !== 'connected') return false
 
     setItems((prev) => [
       ...prev.map((item) =>
@@ -1062,51 +1122,88 @@ export function App() {
     setComposerText('')
     setTurnInFlight(true)
 
-    if (!sessionId) {
-      // Chưa từng gửi tin nào trong chat này -> chưa có session server-side
-      // nào cả (create_session bị hoãn tới đúng đây — xem connect() và
-      // session_created handler). Nhớ tạm tin nhắn, gửi create_session;
-      // session_created handler sẽ tự gửi tiếp send_message khi có id thật.
-      pendingFirstMessageRef.current = { text, skill: selectedSkill || undefined }
-      ws.send(JSON.stringify(createSessionCommand(pendingSessionDriverRef.current)))
-      return true
-    }
+    try {
+      let sid = sessionId
+      if (!sid) {
+        // Chưa từng gửi tin nào trong chat này -> chưa có session server-side
+        // nào cả (tạo session bị hoãn tới đúng đây, xem pendingSessionDriverRef).
+        const createRes = await fetch(`${settings.restUrl}/sessions`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${auth.token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ driver: pendingSessionDriverRef.current }),
+        })
+        if (!createRes.ok) throw new Error(await createRes.text())
+        const created = (await createRes.json()) as { id: string; driver: string }
+        sid = created.id
+        setSessionId(sid)
+        sessionIdRef.current = sid
+        setSessionDriver(created.driver)
+        const title = cacheSessionTitle(sid, text)
+        titledSessionIdsRef.current.add(sid)
+        // Thêm optimistic lên ĐẦU list — server đã gắn ownerId thật lúc tạo
+        // (identity từ chính token đã verify), lần fetch GET /sessions tiếp
+        // theo sẽ thấy đúng session này; thêm ngay ở đây để UI phản hồi tức
+        // thời, không đợi round-trip fetch lại.
+        setSessions((prev) => [{ id: sid as string, createdAt: Date.now(), title, driver: created.driver }, ...prev])
+        if (created.driver === 'rlm') refreshWorkspaceFiles(sid, activeProjectId ?? undefined)
+      } else if (!titledSessionIdsRef.current.has(sid)) {
+        // Chỉ đặt title 1 LẦN cho câu hỏi ĐẦU TIÊN của session (Set tránh ghi
+        // đè bằng câu hỏi sau, và tránh ghi đè session đã resume có title thật).
+        titledSessionIdsRef.current.add(sid)
+        const title = cacheSessionTitle(sid, text)
+        setSessions((prev) => prev.map((s) => (s.id === sid ? { ...s, title } : s)))
+      }
 
-    // Chỉ đặt title 1 LẦN cho câu hỏi ĐẦU TIÊN của session (Set tránh ghi đè
-    // bằng câu hỏi sau, và tránh ghi đè session đã resume có title thật).
-    if (!titledSessionIdsRef.current.has(sessionId)) {
-      titledSessionIdsRef.current.add(sessionId)
-      const title = cacheSessionTitle(sessionId, text)
-      setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, title } : s)))
+      // Mở stream TRƯỚC khi gửi message — server emit step ĐỒNG BỘ trong lúc
+      // xử lý runTurn, phải subscribe xong mới không lỡ step đầu tiên (xem
+      // openStream() và seams/loop.ts).
+      await ensureStream(settings, auth.token, sid)
+
+      const msgRes = await fetch(`${settings.restUrl}/sessions/${sid}/messages`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${auth.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ message: text, selectedSkill: selectedSkill || undefined }),
+      })
+      if (!msgRes.ok) throw new Error(await msgRes.text())
+      // Không xử lý lại nội dung response ở đây — WS 'done' đã/sẽ render kết
+      // quả (xem openStream). Chỉ dùng việc POST resolve xong làm lưới an
+      // toàn tắt turnInFlight nếu vì lý do gì đó WS bị rớt đúng lúc 'done'
+      // phát ra (idempotent với setTurnInFlight(false) trong handler 'done').
+      setTurnInFlight(false)
+      return true
+    } catch (e: unknown) {
+      setTurnInFlight(false)
+      pushToast(`Gửi tin nhắn thất bại: ${e instanceof Error ? e.message : String(e)}`, 'error')
+      return false
     }
-    ws.send(JSON.stringify({
-      type: 'send_message',
-      sessionId,
-      message: text,
-      selectedSkill: selectedSkill || undefined,
-    }))
-    return true
   }
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
-    sendUserMessage(composerText)
+    void sendUserMessage(composerText)
   }
 
   function handleLogout() {
     wsRef.current?.close()
     wsRef.current = null
+    wsSessionIdRef.current = null
     clearAuthState()
     setAuth(null)
     setAuthView('login')
   }
 
-  // Chỉ báo Ở CẤP LƯỢT (không phải gõ từng ký tự — WS không có protocol
-  // token-delta, xem seams/loop.ts). Không hiện nếu item cuối ĐANG LÀ 1 tool
-  // đang chạy — tool đó đã có shimmer riêng của chính nó (ToolRow), tránh 2
-  // shimmer chồng nhau cho cùng 1 lượt.
+  // Follow-up (2026-08): trước đây chỉ báo Ở CẤP LƯỢT (WS chưa có protocol
+  // token-delta) — giờ có streaming thật (xem applyStep(), step 'token'),
+  // nên thêm điều kiện loại trừ MỚI: item cuối đang là bubble assistant đang
+  // stream thì tự nó đã là chỉ báo "đang chạy" rồi (chữ đang gõ ra), không
+  // cần thêm 1 dòng "..." chồng lên dưới. Vẫn giữ điều kiện loại trừ cũ cho
+  // tool đang chạy (đã có shimmer riêng, ToolRow) và cho trường hợp provider
+  // không hỗ trợ streaming (rơi về đúng hành vi cũ).
   const lastItem = items[items.length - 1]
-  const showStreamingRow = turnInFlight && !(lastItem?.kind === 'tool' && lastItem.state === 'running')
+  const showStreamingRow =
+    turnInFlight &&
+    !(lastItem?.kind === 'tool' && lastItem.state === 'running') &&
+    !(lastItem?.kind === 'assistant' && lastItem.id === streamingAssistantIdRef.current)
 
   // Follow-up (2026-08): chat MỚI (chưa gõ gì) giờ hợp lệ để gõ/gửi dù
   // `sessionId` còn null (session thật chỉ tạo lúc gửi — xem handleSubmit),
@@ -1169,7 +1266,7 @@ export function App() {
           <Sidebar
             sessions={sessions.filter((session) => !session.projectId)}
             activeSessionId={sessionId}
-            onNewChat={() => startNewChat(settings, auth.token)}
+            onNewChat={() => startNewChat()}
             onNewDataSession={() => openProjects()}
             onSelectSession={resumeSession}
             isAdmin={auth.user.role === 'admin'}
@@ -1280,6 +1377,9 @@ export function App() {
                 title={item.toolUi?.label ?? item.toolCall.name}
                 summary={toolRowSummary(item)}
                 state={item.state}
+                // Follow-up (2026-08): kết quả search (citations) hiện NGAY
+                // khi xong, không cần bấm — user báo trước đây bị ẩn mất.
+                defaultExpanded={item.toolUi?.render === 'citations'}
               >
                 {item.state === 'ok' && clientCtx && (
                   <RenderSlot<ToolViewOwnerProps>

@@ -130,7 +130,7 @@ describe('Phase 25 — buildPrompt() gộp mọi extraSystemNotes thành ĐÚNG 
     expect(prompt.at(-1)).toEqual({ role: 'user', content: 'câu hỏi' })
   })
 
-  it('không có system prompt gốc -- vẫn chỉ 1 message system (từ các note), không lẫn message system rời', () => {
+  it('không có system prompt gốc -- vẫn chỉ 1 message system từ các note động, không lẫn message system rời', () => {
     const session = new Session('s', 8, undefined)
     const prompt = session.buildPrompt('câu hỏi', ['note A', 'note B', 'note C'])
 
@@ -139,7 +139,7 @@ describe('Phase 25 — buildPrompt() gộp mọi extraSystemNotes thành ĐÚNG 
     expect(prompt[0].content).toBe('note A\n\nnote B\n\nnote C')
   })
 
-  it('không có note nào -- không tự thêm message system thừa, giữ nguyên history', () => {
+  it('không có note động -- giữ nguyên system prompt gốc', () => {
     const session = new Session('s', 8, 'sys')
     const prompt = session.buildPrompt('câu hỏi', [])
 

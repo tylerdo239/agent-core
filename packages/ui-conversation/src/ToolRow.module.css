@@ -2,6 +2,19 @@
    migration (trước đây global trong style.css) + sweep padding/radius lên
    token, đổi màu sweep-shimmer từ literal rgba() sang var(--alias-accent)
    (giữ nguyên cơ chế shimmer — audit nói "refine, không reinvent"). */
+/* Follow-up (2026-08) — cùng hiệu ứng vào nhẹ với MessageBubble (tham khảo
+   Claude/dsh) — xem ghi chú đầy đủ tại MessageBubble.module.css. */
+@keyframes toolRowIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .toolRow {
   align-self: flex-start;
   max-width: 92%;
@@ -9,6 +22,7 @@
   background: transparent;
   border-radius: var(--alias-radius-panel);
   overflow: hidden;
+  animation: toolRowIn var(--alias-motion-base) var(--alias-motion-ease);
 }
 
 .header {

@@ -172,7 +172,18 @@ export const apply = (ctx: Context) => {
 
         const response = await (async () => {
           try {
-            return await runCtx.llm.complete(messages, { tools: toolSpecs, signal: input.signal })
+            return runCtx.llm.completeStream
+              ? await runCtx.llm.completeStream(
+                  messages,
+                  { tools: toolSpecs, signal: input.signal },
+                  (contentDelta) => {
+                    runCtx.emit('agent/step', {
+                      sessionId: session.id,
+                      step: { type: 'token', content: contentDelta },
+                    })
+                  },
+                )
+              : await runCtx.llm.complete(messages, { tools: toolSpecs, signal: input.signal })
           } catch (error) {
             // BUG-10: provider error phải mang taxonomy code — turn fail là
             // đúng, nhưng UI/event consumer cần biết LỚP lỗi để xử lý.

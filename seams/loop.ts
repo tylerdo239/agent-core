@@ -22,6 +22,17 @@ declare module '@deepseek-ai/cordis' {
      * adapter cần stream (WS, gRPC server-streaming). REST không cần nghe.
      */
     'agent/step'(event: { sessionId: string; step: LoopStep }): void
+    /**
+     * Phát tại entrypoint chung `bundles/providers/agent-runner` ngay sau khi
+     * `driver.runTurn()` resolve — "live tap" cho downlink subscriber (WS
+     * `/sessions/:id/events/stream`) cần biết turn đã xong để đóng vòng lặp
+     * step/done. KHÔNG phải nguồn sự thật: caller trực tiếp của `runTurn()`
+     * (REST `POST /sessions/:id/messages`) vẫn lấy `result` từ chính giá trị
+     * trả về của lệnh gọi đó, không nghe lại event này.
+     */
+    'agent/turn-done'(event: { sessionId: string; result: LoopTurnResult }): void
+    /** Cùng vị trí phát và lý do như 'agent/turn-done', cho nhánh lỗi (driver.runTurn() throw). */
+    'agent/turn-error'(event: { sessionId: string; message: string }): void
   }
 }
 
@@ -73,6 +84,13 @@ export type LoopStep =
   // xem seams/tools.ts), driver chỉ forward — KHÔNG phải state mới, KHÔNG
   // phải nơi loop driver tự quyết định cách hiển thị. UI (web-ui) đọc field
   // này thay vì hardcode theo tên tool.
+  // Follow-up (2026-08) — streaming: 1 mảnh nội dung MỚI (không tích luỹ sẵn)
+  // trong lúc model đang generate, phát NGAY khi provider hỗ trợ (xem
+  // seams/llm.ts, LlmService.completeStream) — "live tap" thuần cho UI hiện
+  // tiến trình, KHÔNG bao giờ ghi vào storage (coding rule B3 vẫn chỉ lưu
+  // đúng 1 `model_message` hoàn chỉnh mỗi bước — xem loop-default). Resume 1
+  // session cũ qua GET /sessions/:id/events sẽ KHÔNG bao giờ thấy type này.
+  | { type: 'token'; content: string }
   | { type: 'model_message'; content: string; toolCall?: LlmToolCall; toolUi?: ToolUiHint }
   | { type: 'tool_call'; name: string; args: Record<string, unknown>; toolUi?: ToolUiHint }
   | { type: 'tool_result'; name: string; result: unknown; toolUi?: ToolUiHint }

@@ -8,8 +8,10 @@ tự sở hữu prompt, memory, tool routing hoặc RLM loop.
 
 ```text
 Browser frontend
-  ├─ REST :8787  ─ projects, sessions, skills, sources/outputs, jobs
-  └─ WS   :8788  ─ create/resume turn và stream trạng thái live
+  └─ :8787 (REST + WS, CÙNG port)
+       ├─ REST  ─ projects, sessions, skills, sources/outputs, jobs
+       └─ WS    ─ GET /sessions/:id/events/stream — CHỈ nhận (downlink),
+                   không nhận create_session/send_message từ client nữa
                        │
                        ▼
                  AgentRunner
@@ -76,7 +78,7 @@ Các port mặc định trên host:
 | Chức năng | URL |
 |---|---|
 | REST | `http://localhost:8787` |
-| WebSocket | `ws://localhost:8788` |
+| WebSocket | `ws://localhost:8787` (CÙNG port với REST, xem mục 5) |
 | Reference UI | `http://localhost:8790` |
 | gRPC | `localhost:15052` |
 
@@ -101,8 +103,12 @@ Authorization: Bearer <TOKEN>
 Browser WebSocket không set được custom header, vì vậy dùng query string:
 
 ```text
-ws://localhost:8788/?token=<URL_ENCODED_TOKEN>
+ws://localhost:8787/sessions/<SESSION_UUID>/events/stream?token=<URL_ENCODED_TOKEN>
 ```
+
+Session phải đã tồn tại (tạo trước qua REST) — WS reject ngay lúc handshake
+(401/403/404, trước khi nâng cấp) nếu thiếu/sai token, không có quyền, hoặc
+session không tồn tại.
 
 Không đưa `.env`, password hoặc token thật vào Git/localStorage ngoài auth
 state cần thiết của UI.
@@ -113,57 +119,25 @@ state cần thiết của UI.
 1. `GET /projects` và render danh sách Dự án
 2. Tạo/chọn project; upload nguồn qua `/projects/:id/sources`
 3. `POST /projects/:id/sessions` để tạo một RLM chat trong project
-4. Mở WebSocket có auth và gửi `send_message` bằng sessionId vừa tạo
-5. Render 0..N message type="step"
-6. Nhận message type="done"
-7. Refresh `GET /projects/:id/sources` và `/projects/:id/outputs`
+4. Mở WS `/sessions/:id/events/stream?token=...` để nhận step/done/error
+5. `POST /sessions/:id/messages` để gửi turn thật
+5. Render 0..N message type="step" (qua WS)
+6. Nhận message type="done" (qua WS) — response của bước 4 cũng trả cùng
+   `result`, dùng làm lưới an toàn nếu WS rớt giữa chừng, không render lại
+   nội dung 2 lần
+7. Refresh `/projects/:id/sources` và `/projects/:id/outputs`
 ```
 
 Chỉ cho một turn in-flight trên cùng session. Disable nút Send cho tới khi
-nhận `done` hoặc `error`.
+nhận `done` hoặc `error`. **Quan trọng**: mở xong WS (đợi sự kiện `open`) rồi
+mới gọi bước 4 — server phát `step` ĐỒNG BỘ ngay trong lúc xử lý message,
+subscribe trễ sẽ lỡ mất các step đầu.
 
-## 5. WebSocket contract
+## 5. WebSocket contract (downlink-only)
 
-### Tạo session
-
-Client gửi:
-
-```json
-{
-  "type": "create_session",
-  "driver": "rlm",
-  "maxSteps": 8
-}
-```
-
-`maxSteps` là optional. Không gửi `systemPrompt` từ UI thông thường.
-
-Server trả:
-
-```json
-{
-  "type": "session_created",
-  "id": "SESSION_UUID",
-  "driver": "rlm"
-}
-```
-
-### Gửi một turn
-
-```json
-{
-  "type": "send_message",
-  "sessionId": "SESSION_UUID",
-  "message": "Phân tích dataset hiện tại",
-  "selectedSkill": "explore-data",
-  "metadata": {
-    "clientRequestId": "optional-ui-id"
-  }
-}
-```
-
-`selectedSkill` và `metadata` là optional. Skill name phải lấy từ `GET
-/skills`, không hardcode danh sách trong frontend.
+WS không nhận bất kỳ message nghiệp vụ nào từ client (không còn
+`create_session`/`send_message`) — chỉ mở để NHẬN 3 loại event bên dưới, tạo
+session và gửi turn đều đi qua REST (mục 6).
 
 ### Stream
 
@@ -293,12 +267,14 @@ Authorization: Bearer ...
 {"id":"SESSION_UUID","driver":"default","maxSteps":8}
 ```
 
-Frontend có thể tạo session bằng REST hoặc WebSocket. Không tạo cả hai cho
-cùng một thao tác.
+REST là cách DUY NHẤT tạo session (WS không còn nhận `create_session`, xem
+mục 5).
 
 ### Gửi message qua REST
 
-REST phù hợp với client không cần live stream:
+REST là cách DUY NHẤT gửi turn — mở thêm WS stream (mục 5) trước lệnh gọi
+này nếu cần render step live, nhưng response của chính lệnh gọi này vẫn luôn
+có, kể cả không mở WS:
 
 ```http
 POST /sessions/:sessionId/messages
@@ -382,7 +358,7 @@ nút **Đưa vào dự án** chỉ xuất hiện ở draft.
 
 Refresh danh sách tại bốn thời điểm:
 
-1. Sau khi mở project.
+1. Sau khi mở project hoặc tạo session RLM thành công.
 2. Sau upload thành công.
 3. Sau mỗi WebSocket `done`.
 4. Khi user bấm Refresh.
@@ -545,7 +521,8 @@ Composition root:
 ## 11. Checklist frontend trước khi bàn giao
 
 - [ ] API key không hardcode trong source/bundle.
-- [ ] WebSocket connect bằng URL-encoded key.
+- [ ] Session tạo qua `POST /sessions` (REST), KHÔNG qua WS.
+- [ ] WS chỉ mở SAU khi có sessionId thật, connect bằng URL-encoded key trong query string.
 - [ ] Session luôn tạo với `driver: "rlm"`.
 - [ ] Frontend không gửi system prompt mặc định.
 - [ ] Chỉ một turn chạy đồng thời trên một session.

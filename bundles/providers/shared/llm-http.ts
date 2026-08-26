@@ -33,7 +33,7 @@ function cleanErrorDetail(raw: string): string {
     .slice(0, MAX_ERROR_DETAIL_CHARS)
 }
 
-async function statusError(provider: string, response: Response) {
+export async function statusError(provider: string, response: Response) {
   const raw = await response.text().catch(() => '')
   const detail = cleanErrorDetail(raw)
   const suffix = detail ? `: ${detail}` : ''

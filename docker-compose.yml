@@ -73,9 +73,16 @@ services:
       - .env
     environment:
       DATABASE_URL: postgres://agent_core:${POSTGRES_PASSWORD}@postgres:5432/agent_core_users
-      # Tuỳ chọn — bỏ trống/không set 3 dòng dưới thì ctx.memory không mount,
-      # hệ thống chạy y hệt như không có module memory (xem src/serve.ts).
-      MEMORY_CORE_URL: ${MEMORY_CORE_URL:-http://memory-core:8420}
+      # Tuỳ chọn — bỏ trống/không set MEMORY_CORE_API_KEY thì ctx.memory
+      # không mount, hệ thống chạy y hệt như không có module memory (xem
+      # src/serve.ts). Bug thật đã gặp (2026-08): dòng MEMORY_CORE_URL ở đây
+      # TỪNG có default cứng `http://memory-core:8420` — khiến biến này LUÔN
+      # truthy trong container dù `.env` không set gì, làm FATAL check ở
+      # serve.ts bắn sai cho MỌI deploy fresh không cấu hình memory. Bỏ hẳn
+      # default ở đây — serve.ts giờ tự suy ra URL mặc định CHỈ KHI đã có
+      # API key (đọc đúng thứ tự ưu tiên tại đó), compose chỉ cần pass-through
+      # đúng những gì `.env` thật sự có.
+      MEMORY_CORE_URL: ${MEMORY_CORE_URL:-}
       MEMORY_CORE_API_KEY: ${MEMORY_CORE_API_KEY:-}
       MEMORY_CORE_SERVICE_ID: ${MEMORY_CORE_SERVICE_ID:-default}
       # RLM harness (merge, xem docs/agent-core-rlm-harness-merge-plan.md) —
@@ -90,8 +97,9 @@ services:
       PORT_WEB_UI: "8791"
       CHOKIDAR_USEPOLLING: "1"
     ports:
+      # Phase 6.3: WS đi chung port với REST (api-ws đã gộp vào api-rest) —
+      # không còn PORT_WS/8788 riêng.
       - "${PORT_REST:-8787}:8787"
-      - "${PORT_WS:-8788}:8788"
       - "${PORT_GRPC:-15052}:50051"
       - "${PORT_WEB_UI:-8790}:5173"
     volumes:

@@ -53,6 +53,19 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json tsconfig.json ./
 COPY packages ./packages
 COPY apps/web ./apps/web
+# Follow-up (2026-08) — deploy VPS domain riêng: khi app/API sống trên 2
+# subdomain khác nhau (vd. app-harness.onebot.meobeo.ai vs api-harness.
+# onebot.meobeo.ai), packages/ui-settings-general/src/settings.ts không còn
+# suy luận được domain API chỉ từ `location.hostname` — 2 ARG dưới đây (rỗng
+# = không set = giữ nguyên hành vi suy luận cũ) build-time inject vào
+# `import.meta.env.VITE_*` (Vite tự làm, không cần plugin gì thêm). Đặt
+# ENV NGAY TRƯỚC bước build để Vite đọc được lúc `npm run build:web` chạy —
+# đổi giá trị 2 ARG này bắt buộc BUILD LẠI (bake tại build time, không phải
+# runtime), khác mọi biến `process.env.*` khác trong dự án (đọc runtime).
+ARG VITE_REST_URL=""
+ARG VITE_WS_URL=""
+ENV VITE_REST_URL=${VITE_REST_URL}
+ENV VITE_WS_URL=${VITE_WS_URL}
 RUN npm run build:web
 
 FROM node:22-slim AS runtime
@@ -122,7 +135,7 @@ RUN groupadd --gid "${AGENT_GID}" agent \
   && chown -R agent:agent /app
 USER agent
 
-EXPOSE 8787 8788 8790 50051
+EXPOSE 8787 8790 50051
 VOLUME ["/app/data"]
 
 CMD ["npx", "tsx", "src/serve.ts"]
