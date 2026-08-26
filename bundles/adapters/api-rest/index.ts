@@ -54,6 +54,11 @@ import { AuthIdentity } from '../../../seams/auth.ts'
 import { LoopStep, LoopTurnResult, Session } from '../../../seams/loop.ts'
 import '../../../seams/skill.ts'
 import '../../../seams/workspace.ts'
+import '../../../seams/jobs.ts'
+import '../../../seams/artifacts.ts'
+import '../../../seams/pipeline.ts'
+import '../../../seams/projects.ts'
+import { Project } from '../../../seams/projects.ts'
 
 export namespace ApiRest {
   export interface Config {
@@ -65,10 +70,11 @@ export namespace ApiRest {
     corsOrigin?: string
     /** Giới hạn 1 message WS downlink (byte) — mặc định 1 MiB. Client không gửi message nghiệp vụ nên hiếm khi chạm; vẫn giữ giới hạn để chặn frame rác khổng lồ. */
     wsMaxPayloadBytes?: number
+    onListening?: (port: number) => void
   }
 }
 
-export const inject = ['sessions', 'agent', 'storage', 'auth', 'permission', 'skills', 'workspace', 'pluginInventory', 'pluginConfig', 'tools']
+export const inject = ['sessions', 'projects', 'agent', 'storage', 'auth', 'permission', 'skills', 'workspace', 'pluginInventory', 'pluginConfig', 'tools']
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024 // 1 MiB
 const FILE_MAX_BODY_BYTES = 70 * 1024 * 1024 // 70 MiB for uploads
@@ -113,6 +119,69 @@ function extractBearerToken(req: IncomingMessage): string | undefined {
 /** Đúng chủ sở hữu HOẶC admin — dùng cho mọi endpoint chạm 1 session cụ thể. */
 function canAccessSession(identity: AuthIdentity, session: Session): boolean {
   return identity.role === 'admin' || session.ownerId === identity.userId
+}
+
+function canAccessProject(identity: AuthIdentity, project: Project): boolean {
+  return identity.role === 'admin' || project.ownerId === identity.userId
+}
+
+function projectForSession(ctx: Context, session: Session): Project | undefined {
+  return session.projectId ? ctx.projects.get(session.projectId) : undefined
+}
+
+function sessionProjectIsValid(ctx: Context, identity: AuthIdentity, session: Session): boolean {
+  if (!session.projectId) return true
+  const project = projectForSession(ctx, session)
+  return Boolean(project && project.ownerId === session.ownerId && canAccessProject(identity, project))
+}
+
+async function handleWorkspaceFiles(
+  ctx: Context,
+  req: IncomingMessage,
+  res: ServerResponse,
+  workspaceId: string,
+  subPath: string | null,
+) {
+  if (req.method === 'GET' && !subPath) {
+    const files = await ctx.workspace.listFiles(workspaceId)
+    const snapshot = await ctx.workspace.inspect(workspaceId)
+    return sendJson(res, 200, { files, datasets: snapshot.resources?.datasets ?? [], artifacts: snapshot.resources?.artifacts ?? [] })
+  }
+  if (req.method === 'GET' && subPath) {
+    try {
+      const buf = await ctx.workspace.readFile(workspaceId, subPath)
+      const ext = subPath.split('.').pop()?.toLowerCase() ?? ''
+      const mime: Record<string, string> = { csv: 'text/csv', tsv: 'text/tab-separated-values', json: 'application/json', txt: 'text/plain', html: 'text/html', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', pdf: 'application/pdf' }
+      res.writeHead(200, { 'content-type': mime[ext] ?? 'application/octet-stream', 'content-disposition': `attachment; filename="${encodeURIComponent(subPath.split('/').pop()!)}"` })
+      return res.end(buf)
+    } catch (error) {
+      return sendJson(res, 404, { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+  if (req.method === 'POST' && !subPath) {
+    let filename = ''
+    if ((req.headers['content-type'] ?? '').split(';', 1)[0].trim().toLowerCase() === 'application/octet-stream') {
+      const rawName = Array.isArray(req.headers['x-file-name']) ? req.headers['x-file-name'][0] : req.headers['x-file-name']
+      try { filename = decodeURIComponent(String(rawName ?? '')) } catch { filename = '' }
+      if (!filename) return sendJson(res, 400, { error: 'filename is required' })
+      try {
+        const result = await ctx.workspace.writeFileFromStream(workspaceId, filename, req, { maxBytes: FILE_MAX_BODY_BYTES })
+        return sendJson(res, 201, { path: result.path, size: result.size })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        return sendJson(res, /exceeds/.test(message) ? 413 : 500, { error: message })
+      }
+    }
+    const body = await readJsonBody(req, Math.ceil(FILE_MAX_BODY_BYTES * 4 / 3) + 1024)
+    filename = typeof body.filename === 'string' ? body.filename : ''
+    const content = typeof body.content === 'string' ? body.content : ''
+    if (!filename || !content) return sendJson(res, 400, { error: 'filename and content are required' })
+    const buf = body.encoding === 'utf8' ? Buffer.from(content, 'utf8') : Buffer.from(content, 'base64')
+    if (buf.byteLength > FILE_MAX_BODY_BYTES) return sendJson(res, 413, { error: 'file too large' })
+    const result = await ctx.workspace.writeFile(workspaceId, filename, buf)
+    return sendJson(res, 201, { path: result.path, size: result.size })
+  }
+  return sendJson(res, 405, { error: 'method not allowed' })
 }
 
 const PUBLIC_PATHS = new Set(['/health', '/ready', '/auth/signup', '/auth/login'])
@@ -230,7 +299,10 @@ export const apply = async (ctx: Context, config: ApiRest.Config = {}) => {
 
   await new Promise<void>((resolve) => server.listen(config.port ?? 8787, resolve))
   const address = server.address()
-  if (address && typeof address === 'object') config.port = address.port
+  if (address && typeof address === 'object') {
+    config.port = address.port
+    config.onListening?.(address.port)
+  }
   ctx.logger('api-rest').info('listening on :%d (REST + WS /sessions/:id/events/stream)', config.port)
 
   return () =>
@@ -296,7 +368,147 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse, m
     // README "Giới hạn hiện tại").
     const all = ctx.sessions.list()
     const mine = identity!.role === 'admin' ? all : all.filter((s) => s.ownerId === identity!.userId)
-    return sendJson(res, 200, { sessions: mine.map((s) => ({ id: s.id, driver: s.driver, maxSteps: s.maxSteps, createdAt: s.createdAt })) })
+    return sendJson(res, 200, { sessions: mine.map((s) => ({ id: s.id, driver: s.driver, maxSteps: s.maxSteps, createdAt: s.createdAt, projectId: s.projectId })) })
+  }
+
+  if (req.method === 'GET' && pathname === '/projects') {
+    const projects = ctx.projects.list().filter((project) => canAccessProject(identity!, project))
+    return sendJson(res, 200, { projects })
+  }
+  if (req.method === 'POST' && pathname === '/projects') {
+    const body = await readJsonBody(req, maxBodyBytes)
+    if (typeof body.name !== 'string' || !body.name.trim()) return sendJson(res, 400, { error: 'project name is required' })
+    const project = ctx.projects.create({ name: body.name, ownerId: identity!.userId })
+    return sendJson(res, 201, { project })
+  }
+
+  const projectSessionsMatch = pathname.match(/^\/projects\/([^/]+)\/sessions$/)
+  if (projectSessionsMatch) {
+    const project = ctx.projects.get(projectSessionsMatch[1])
+    if (!project) return sendJson(res, 404, { error: 'project not found' })
+    if (!canAccessProject(identity!, project)) return sendJson(res, 403, { error: 'forbidden' })
+    if (req.method === 'GET') {
+      const sessions = ctx.sessions.list().filter((session) => session.projectId === project.id && canAccessSession(identity!, session))
+      return sendJson(res, 200, { sessions: sessions.map((session) => ({ id: session.id, driver: session.driver, maxSteps: session.maxSteps, createdAt: session.createdAt, projectId: session.projectId })) })
+    }
+    if (req.method === 'POST') {
+      const body = await readJsonBody(req, maxBodyBytes)
+      const session = ctx.sessions.create({
+        driver: 'rlm', projectId: project.id, ownerId: identity!.userId,
+        maxSteps: typeof body.maxSteps === 'number' ? body.maxSteps : undefined,
+      })
+      ctx.projects.touch(project.id)
+      return sendJson(res, 201, { id: session.id, driver: session.driver, projectId: session.projectId })
+    }
+  }
+
+  const projectOutputsMatch = pathname.match(/^\/projects\/([^/]+)\/outputs(?:\/(project|session)\/([^/]+)(?:\/(.+))?)?$/)
+  if (projectOutputsMatch) {
+    const project = ctx.projects.get(projectOutputsMatch[1])
+    if (!project) return sendJson(res, 404, { error: 'project not found' })
+    if (!canAccessProject(identity!, project)) return sendJson(res, 403, { error: 'forbidden' })
+    const workspaceId = `project:${project.id}`
+    const scope = projectOutputsMatch[2]
+    if (req.method === 'GET' && !scope) {
+      const projectOutputs = await ctx.workspace.listProjectOutputs(workspaceId)
+      const projectSessions = ctx.sessions.list().filter((session) => session.projectId === project.id && canAccessSession(identity!, session))
+      const sessionOutputs = await Promise.all(projectSessions.map(async (session) => ({
+        sessionId: session.id,
+        files: await ctx.workspace.listSessionOutputs(workspaceId, session.id),
+      })))
+      return sendJson(res, 200, { projectOutputs, sessionOutputs })
+    }
+    if (req.method === 'POST' && !scope) {
+      const body = await readJsonBody(req, maxBodyBytes)
+      const session = typeof body.sessionId === 'string' ? ctx.sessions.get(body.sessionId) : undefined
+      if (!session || session.projectId !== project.id || !canAccessSession(identity!, session)) {
+        return sendJson(res, 404, { error: 'project conversation not found' })
+      }
+      if (typeof body.path !== 'string' || !body.path.trim()) return sendJson(res, 400, { error: 'output path is required' })
+      try {
+        const output = await ctx.workspace.promoteSessionOutput(
+          workspaceId,
+          session.id,
+          body.path,
+          typeof body.name === 'string' ? body.name : undefined,
+        )
+        ctx.projects.touch(project.id)
+        return sendJson(res, 201, { output })
+      } catch (error) {
+        return sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    if (req.method === 'GET' && scope && projectOutputsMatch[3]) {
+      const owner = decodeURIComponent(projectOutputsMatch[3])
+      const rawPath = scope === 'project'
+        ? decodeURIComponent([projectOutputsMatch[3], projectOutputsMatch[4]].filter(Boolean).join('/'))
+        : projectOutputsMatch[4] ? decodeURIComponent(projectOutputsMatch[4]) : ''
+      if (!rawPath) return sendJson(res, 400, { error: 'output path is required' })
+      let storedPath: string
+      if (scope === 'project') {
+        storedPath = rawPath.startsWith('legacy/') ? `generated/${rawPath.slice('legacy/'.length)}` : `outputs/${rawPath}`
+      } else {
+        const session = ctx.sessions.get(owner)
+        if (!session || session.projectId !== project.id || !canAccessSession(identity!, session)) {
+          return sendJson(res, 404, { error: 'project conversation not found' })
+        }
+        storedPath = `.sessions/${session.id}/generated/${rawPath.replace(/^generated\//, '')}`
+      }
+      return handleWorkspaceFiles(ctx, req, res, workspaceId, storedPath)
+    }
+    return sendJson(res, 405, { error: 'method not allowed' })
+  }
+
+  const projectSourcesMatch = pathname.match(/^\/projects\/([^/]+)\/sources(?:\/(.+))?$/)
+  if (projectSourcesMatch) {
+    const project = ctx.projects.get(projectSourcesMatch[1])
+    if (!project) return sendJson(res, 404, { error: 'project not found' })
+    if (!canAccessProject(identity!, project)) return sendJson(res, 403, { error: 'forbidden' })
+    const workspaceId = `project:${project.id}`
+    if (req.method === 'GET' && !projectSourcesMatch[2]) {
+      const snapshot = await ctx.workspace.inspect(workspaceId)
+      return sendJson(res, 200, {
+        sources: await ctx.workspace.listSourceFiles(workspaceId),
+        datasets: snapshot.resources?.datasets ?? [],
+      })
+    }
+    const result = await handleWorkspaceFiles(
+      ctx,
+      req,
+      res,
+      workspaceId,
+      projectSourcesMatch[2] ? decodeURIComponent(projectSourcesMatch[2]) : null,
+    )
+    if (req.method === 'POST' && res.statusCode < 400) ctx.projects.touch(project.id)
+    return result
+  }
+
+  const projectFilesMatch = pathname.match(/^\/projects\/([^/]+)\/files(?:\/(.+))?$/)
+  if (projectFilesMatch) {
+    const project = ctx.projects.get(projectFilesMatch[1])
+    if (!project) return sendJson(res, 404, { error: 'project not found' })
+    if (!canAccessProject(identity!, project)) return sendJson(res, 403, { error: 'forbidden' })
+    const result = await handleWorkspaceFiles(ctx, req, res, `project:${project.id}`, projectFilesMatch[2] ? decodeURIComponent(projectFilesMatch[2]) : null)
+    if (req.method === 'POST' && res.statusCode < 400) ctx.projects.touch(project.id)
+    return result
+  }
+
+  const projectMatch = pathname.match(/^\/projects\/([^/]+)$/)
+  if (projectMatch) {
+    const project = ctx.projects.get(projectMatch[1])
+    if (!project) return sendJson(res, 404, { error: 'project not found' })
+    if (!canAccessProject(identity!, project)) return sendJson(res, 403, { error: 'forbidden' })
+    if (req.method === 'GET') return sendJson(res, 200, { project })
+    if (req.method === 'PATCH') {
+      const body = await readJsonBody(req, maxBodyBytes)
+      if (typeof body.name !== 'string' || !body.name.trim()) return sendJson(res, 400, { error: 'project name is required' })
+      return sendJson(res, 200, { project: ctx.projects.rename(project.id, body.name) })
+    }
+    if (req.method === 'DELETE') {
+      if (ctx.sessions.list().some((session) => session.projectId === project.id)) return sendJson(res, 409, { error: 'project still has conversations' })
+      ctx.projects.remove(project.id)
+      res.writeHead(204); return res.end()
+    }
   }
 
   if (req.method === 'GET' && pathname === '/users') {
@@ -387,6 +599,7 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse, m
       maxSteps: typeof body.maxSteps === 'number' ? body.maxSteps : undefined,
       systemPrompt: typeof body.systemPrompt === 'string' ? body.systemPrompt : undefined,
       ownerId: identity!.userId,
+      projectId: undefined,
     })
     return sendJson(res, 201, { id: session.id, driver: session.driver, maxSteps: session.maxSteps })
   }
@@ -396,6 +609,7 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse, m
     const session = ctx.sessions.get(messagesMatch[1])
     if (!session) return sendJson(res, 404, { error: `session "${messagesMatch[1]}" not found` })
     if (!canAccessSession(identity!, session)) return sendJson(res, 403, { error: 'forbidden' })
+    if (!sessionProjectIsValid(ctx, identity!, session)) return sendJson(res, 403, { error: 'invalid project scope' })
 
     const body = await readJsonBody(req, maxBodyBytes)
     if (typeof body.message !== 'string' || !body.message) {
@@ -408,8 +622,24 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse, m
       metadata: body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
         ? body.metadata as Record<string, unknown>
         : undefined,
+      requestId: typeof body.requestId === 'string' ? body.requestId : undefined,
     })
     return sendJson(res, 200, result)
+  }
+
+  const sessionRunsMatch = pathname.match(/^\/sessions\/([^/]+)\/runs$/)
+  if (req.method === 'GET' && sessionRunsMatch) {
+    return sendJson(res, 200, { runs: await ctx.agent.listRuns(sessionRunsMatch[1]) })
+  }
+  const runCancelMatch = pathname.match(/^\/runs\/([^/]+)\/cancel$/)
+  if (req.method === 'POST' && runCancelMatch) {
+    const cancelled = await ctx.agent.cancelRun(runCancelMatch[1])
+    return cancelled ? sendJson(res, 202, { cancelled: true }) : sendJson(res, 409, { error: 'run is not active' })
+  }
+  const runMatch = pathname.match(/^\/runs\/([^/]+)$/)
+  if (req.method === 'GET' && runMatch) {
+    const run = await ctx.agent.getRun(runMatch[1])
+    return run ? sendJson(res, 200, run) : sendJson(res, 404, { error: 'run not found' })
   }
 
   const filesMatch = pathname.match(/^\/sessions\/([^/]+)\/files(?:\/(.+))?$/)
@@ -424,49 +654,8 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse, m
     // file (dataset thật) của BẤT KỲ session nào nếu biết/đoán đúng id.
     // Thêm đúng cùng check đã áp dụng cho 2 endpoint kia.
     if (!canAccessSession(identity!, session)) return sendJson(res, 403, { error: 'forbidden' })
-    const subPath = filesMatch[2] ? decodeURIComponent(filesMatch[2]) : null
-
-    if (req.method === 'GET' && !subPath) {
-      const files = await ctx.workspace.listFiles(filesMatch[1])
-      const snapshot = await ctx.workspace.inspect(filesMatch[1])
-      return sendJson(res, 200, { files, datasets: snapshot.resources?.datasets ?? [], artifacts: snapshot.resources?.artifacts ?? [] })
-    }
-
-    if (req.method === 'GET' && subPath) {
-      try {
-        const buf = await ctx.workspace.readFile(filesMatch[1], subPath)
-        const ext = subPath.split('.').pop()?.toLowerCase() ?? ''
-        const mime: Record<string, string> = { csv: 'text/csv', tsv: 'text/tab-separated-values', json: 'application/json', txt: 'text/plain', html: 'text/html', png: 'image/png', jpg: 'image/jpeg', pdf: 'application/pdf' }
-        res.writeHead(200, { 'content-type': mime[ext] ?? 'application/octet-stream', 'content-disposition': `attachment; filename="${encodeURIComponent(subPath.split('/').pop()!)}"` })
-        return res.end(buf)
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e)
-        return sendJson(res, 404, { error: msg })
-      }
-    }
-
-    if (req.method === 'POST' && !subPath) {
-      let filename = ''
-      let buf: Buffer
-      if ((req.headers['content-type'] ?? '').split(';', 1)[0].trim().toLowerCase() === 'application/octet-stream') {
-        const rawName = Array.isArray(req.headers['x-file-name']) ? req.headers['x-file-name'][0] : req.headers['x-file-name']
-        try { filename = decodeURIComponent(String(rawName ?? '')) } catch { filename = '' }
-        buf = await readBody(req, FILE_MAX_BODY_BYTES)
-      } else {
-        // Backward-compatible JSON path for non-browser clients. Base64 adds
-        // roughly 4/3 overhead, so the request limit must be larger than the
-        // decoded file limit.
-        const body = await readJsonBody(req, Math.ceil(FILE_MAX_BODY_BYTES * 4 / 3) + 1024)
-        filename = typeof body.filename === 'string' ? body.filename : ''
-        const content = typeof body.content === 'string' ? body.content : ''
-        if (!content) return sendJson(res, 400, { error: 'filename and content are required' })
-        buf = body.encoding === 'utf8' ? Buffer.from(content, 'utf8') : Buffer.from(content, 'base64')
-      }
-      if (!filename) return sendJson(res, 400, { error: 'filename is required' })
-      if (buf.byteLength > FILE_MAX_BODY_BYTES) return sendJson(res, 413, { error: 'file too large' })
-      const result = await ctx.workspace.writeFile(filesMatch[1], filename, buf)
-      return sendJson(res, 201, result)
-    }
+    if (!sessionProjectIsValid(ctx, identity!, session)) return sendJson(res, 403, { error: 'invalid project scope' })
+    return handleWorkspaceFiles(ctx, req, res, session.workspaceId, filesMatch[2] ? decodeURIComponent(filesMatch[2]) : null)
   }
 
   const eventsMatch = pathname.match(/^\/sessions\/([^/]+)\/events$/)
@@ -476,6 +665,96 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse, m
     if (!canAccessSession(identity!, session)) return sendJson(res, 403, { error: 'forbidden' })
     const events = await ctx.storage.readEvents(eventsMatch[1])
     return sendJson(res, 200, { events })
+  }
+
+  const eventsV2Match = pathname.match(/^\/v2\/sessions\/([^/]+)\/events$/)
+  if (req.method === 'GET' && eventsV2Match) {
+    const session = ctx.sessions.get(eventsV2Match[1])
+    if (!session) return sendJson(res, 404, { error: `session "${eventsV2Match[1]}" not found` })
+    if (!canAccessSession(identity!, session) || !sessionProjectIsValid(ctx, identity!, session)) return sendJson(res, 403, { error: 'forbidden' })
+    const afterSeq = Math.max(Number(url.searchParams.get('afterSeq') ?? 0) || 0, 0)
+    const limit = Number(url.searchParams.get('limit') ?? 200) || 200
+    return sendJson(res, 200, await ctx.storage.readEventPage(eventsV2Match[1], { afterSeq, limit }))
+  }
+
+  const jobs = ctx.get('jobs')
+  const jobEventsMatch = pathname.match(/^\/jobs\/([^/]+)\/events$/)
+  if (req.method === 'GET' && jobEventsMatch) {
+    if (!jobs) return sendJson(res, 503, { error: 'job service is not enabled' })
+    const job = await jobs.get(jobEventsMatch[1])
+    if (!job) return sendJson(res, 404, { error: 'job not found' })
+    const page = await ctx.storage.readEventPage(job.sessionId ?? `job:${job.id}`, {
+      afterSeq: Number(url.searchParams.get('afterSeq') ?? 0) || 0,
+      limit: 100,
+    })
+    return sendJson(res, 200, { ...page, events: page.events.filter((event) => event.jobId === job.id) })
+  }
+  const jobCancelMatch = pathname.match(/^\/jobs\/([^/]+)\/cancel$/)
+  if (req.method === 'POST' && jobCancelMatch) {
+    if (!jobs) return sendJson(res, 503, { error: 'job service is not enabled' })
+    return await jobs.cancel(jobCancelMatch[1])
+      ? sendJson(res, 202, await jobs.get(jobCancelMatch[1]))
+      : sendJson(res, 409, { error: 'job is not cancellable' })
+  }
+  const jobRetryMatch = pathname.match(/^\/jobs\/([^/]+)\/retry$/)
+  if (req.method === 'POST' && jobRetryMatch) {
+    if (!jobs) return sendJson(res, 503, { error: 'job service is not enabled' })
+    const job = await jobs.retry(jobRetryMatch[1])
+    return job ? sendJson(res, 202, job) : sendJson(res, 409, { error: 'job cannot be retried in this process' })
+  }
+  const jobMatch = pathname.match(/^\/jobs\/([^/]+)$/)
+  if (req.method === 'GET' && jobMatch) {
+    if (!jobs) return sendJson(res, 503, { error: 'job service is not enabled' })
+    const job = await jobs.get(jobMatch[1])
+    return job ? sendJson(res, 200, job) : sendJson(res, 404, { error: 'job not found' })
+  }
+  const sessionJobsMatch = pathname.match(/^\/sessions\/([^/]+)\/jobs$/)
+  if (req.method === 'GET' && sessionJobsMatch) {
+    if (!jobs) return sendJson(res, 503, { error: 'job service is not enabled' })
+    return sendJson(res, 200, { jobs: await jobs.list({ sessionId: sessionJobsMatch[1] }) })
+  }
+
+  const artifacts = ctx.get('artifacts')
+  const sessionArtifactsMatch = pathname.match(/^\/sessions\/([^/]+)\/artifacts$/)
+  if (req.method === 'GET' && sessionArtifactsMatch) {
+    if (!artifacts) return sendJson(res, 503, { error: 'artifact service is not enabled' })
+    return sendJson(res, 200, { artifacts: await artifacts.list({
+      sessionId: sessionArtifactsMatch[1], kind: url.searchParams.get('kind') ?? undefined,
+    }) })
+  }
+  const artifactMatch = pathname.match(/^\/artifacts\/([^/]+)$/)
+  if (req.method === 'GET' && artifactMatch) {
+    if (!artifacts) return sendJson(res, 503, { error: 'artifact service is not enabled' })
+    const artifact = await artifacts.get(artifactMatch[1])
+    return artifact ? sendJson(res, 200, artifact) : sendJson(res, 404, { error: 'artifact not found' })
+  }
+
+  if (req.method === 'GET' && pathname === '/pipelines') {
+    const registry = ctx.get('pipelines')
+    if (!registry) return sendJson(res, 503, { error: 'pipeline service is not enabled' })
+    return sendJson(res, 200, {
+      pipelines: registry.listPipelines(),
+      stages: registry.listStages().map(({ kind, name, description }) => ({ kind, name, description })),
+    })
+  }
+  const pipelineRunMatch = pathname.match(/^\/pipelines\/([^/]+)\/run$/)
+  if (req.method === 'POST' && pipelineRunMatch) {
+    const runner = ctx.get('pipelineRuns')
+    if (!runner) return sendJson(res, 503, { error: 'pipeline service is not enabled' })
+    const body = await readJsonBody(req, maxBodyBytes)
+    if (typeof body.sessionId !== 'string' || !ctx.sessions.get(body.sessionId)) {
+      return sendJson(res, 404, { error: 'session not found' })
+    }
+    const job = await runner.run(pipelineRunMatch[1], body.sessionId, {
+      override: body.override && typeof body.override === 'object' ? body.override as never : undefined,
+      config: body.config && typeof body.config === 'object' ? body.config as never : undefined,
+    })
+    return sendJson(res, 202, job)
+  }
+
+  if (req.method === 'POST' && pathname === '/admin/drain') {
+    await ctx.agent.drain(Number(url.searchParams.get('timeoutMs') ?? 10_000) || 10_000)
+    return sendJson(res, 200, { drained: true })
   }
 
   sendJson(res, 404, { error: 'not found' })

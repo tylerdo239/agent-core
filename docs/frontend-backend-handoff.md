@@ -9,7 +9,8 @@ tự sở hữu prompt, memory, tool routing hoặc RLM loop.
 ```text
 Browser frontend
   └─ :8787 (REST + WS, CÙNG port)
-       ├─ REST  ─ tạo/gửi turn, skills, upload/download, event history
+       ├─ REST  ─ projects, sessions, skills, sources/outputs, jobs,
+       │          tạo/gửi turn, upload/download, event history
        └─ WS    ─ GET /sessions/:id/events/stream — CHỈ nhận (downlink),
                    không nhận create_session/send_message từ client nữa
                        │
@@ -28,14 +29,14 @@ Browser frontend
 
 Quyền sở hữu quan trọng:
 
-- Frontend sở hữu presentation state, connection state và session history
-  trong browser.
+- Frontend sở hữu presentation state và connection state. Backend là nguồn
+  thật của project/session; browser chỉ cache title hội thoại.
 - Backend sở hữu agent behavior, prompt sections, tool/skill catalog, memory,
   workspace và trạng thái từng turn.
 - Frontend **không gửi system prompt mặc định**. Muốn đổi hành vi chung, sửa
   prompt plugin bên backend.
-- Mỗi workspace gắn với đúng một `sessionId`. Đổi session phải tải lại danh
-  sách file của session đó.
+- Mỗi RLM workspace gắn với một `projectId`. Nhiều session (đoạn chat) trong
+  cùng project dùng chung nguồn/output; project khác không được đọc chéo.
 
 ## 2. Chạy backend
 
@@ -45,7 +46,7 @@ manifest đều nằm trong `python/`. Chỉ cần clone repo này:
 ```bash
 cd agent-core
 cp .env.example .env
-# Điền OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL_ID, API_KEYS
+# Điền OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL_ID, POSTGRES_PASSWORD
 docker compose up -d --build
 ```
 
@@ -60,16 +61,17 @@ RLM_RUNTIME_ROOT=/app/bundles/loop-drivers/loop-rlm/python
 Không trỏ `RLM_PYTHON_BIN` vào `.venv` trên host: virtualenv có thể chứa
 symlink tuyệt đối không tồn tại trong container và gây `spawn ... ENOENT`.
 
-Development/hot reload:
+Chạy hệ thống (một Compose duy nhất, source mount + hot reload):
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+docker compose up -d --build
 ```
 
-Production-like:
+Sau khi sửa TypeScript/React/CSS không cần rebuild. Backend tự restart, UI tự
+HMR. Nếu sửa Python worker và cần tạo process mới:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+docker compose restart agent-core
 ```
 
 Các port mặc định trên host:
@@ -90,46 +92,64 @@ curl http://localhost:8787/ready
 
 ## 3. Authentication
 
-Mọi API trừ `/health` và `/ready` yêu cầu một key nằm trong `API_KEYS`.
+Đăng ký/đăng nhập qua `POST /auth/signup` và `POST /auth/login`. Backend trả
+Bearer token gắn với user thật; không dùng mật khẩu GitHub hay API key chung.
 
 REST:
 
 ```http
-Authorization: Bearer <API_KEY>
+Authorization: Bearer <TOKEN>
 ```
 
 Browser WebSocket không set được custom header, vì vậy dùng query string:
 
 ```text
-ws://localhost:8787/sessions/<SESSION_UUID>/events/stream?token=<URL_ENCODED_API_KEY>
+ws://localhost:8787/sessions/<SESSION_UUID>/events/stream?token=<URL_ENCODED_TOKEN>
 ```
 
-Session phải đã tồn tại (tạo trước qua REST) — WS reject ngay lúc handshake
-(401/403/404, trước khi nâng cấp) nếu thiếu/sai token, không có quyền, hoặc
-session không tồn tại.
+Session phải đã tồn tại (tạo trước qua REST — `POST /sessions` hoặc
+`POST /projects/:id/sessions`) — WS reject ngay lúc handshake (401/403/404,
+trước khi nâng cấp) nếu thiếu/sai token, không có quyền, hoặc session không
+tồn tại.
 
-Không đưa `.env` hoặc key thật vào Git. Với deployment public, đặt backend sau
-reverse proxy và đổi key query-string thành token ngắn hạn; contract hiện tại
-được thiết kế cho môi trường nội bộ.
+Không đưa `.env`, password hoặc token thật vào Git/localStorage ngoài auth
+state cần thiết của UI. Với deployment public, đặt backend sau reverse proxy
+và đổi token query-string thành token ngắn hạn; contract hiện tại được thiết
+kế cho môi trường nội bộ.
 
 ## 4. Flow frontend được khuyến nghị
 
+**Chat thường (driver mặc định, không gắn project):**
+
 ```text
-1. POST /sessions (REST) — tạo session, driver="rlm"
+1. POST /sessions (REST) — tạo session, driver="default"
 2. Mở WS GET /sessions/:id/events/stream?token=... — CHỈ để nhận step/done/error
-3. Upload dataset qua REST với cùng sessionId (nếu có)
-4. POST /sessions/:id/messages (REST) — gửi turn thật
-5. Render 0..N message type="step" (qua WS)
-6. Nhận message type="done" (qua WS) — response của bước 4 cũng trả cùng
+3. POST /sessions/:id/messages (REST) — gửi turn thật
+4. Render 0..N message type="step" (qua WS)
+5. Nhận message type="done" (qua WS) — response của bước 3 cũng trả cùng
    `result`, dùng làm lưới an toàn nếu WS rớt giữa chừng, không render lại
    nội dung 2 lần
-7. Refresh GET /sessions/:id/files để hiện output mới
+```
+
+**Phân tích dữ liệu (RLM, gắn Project — nhiều session share chung nguồn/output):**
+
+```text
+1. GET /projects và render danh sách Dự án (Project Hub); tạo mới qua
+   POST /projects nếu chưa có
+2. Chọn project; upload nguồn qua POST /projects/:id/sources
+3. POST /projects/:id/sessions (REST) — tạo session, driver="rlm", trả về
+   `{ id, driver, projectId }` thẳng trong response, KHÔNG qua WS
+4. Mở WS GET /sessions/:id/events/stream?token=... — CHỈ để nhận step/done/error
+5. POST /sessions/:id/messages (REST) — gửi turn thật
+6. Render 0..N message type="step" (qua WS)
+7. Nhận message type="done" (qua WS)
+8. Refresh GET /projects/:id/outputs và /projects/:id/sources để hiện output mới
 ```
 
 Chỉ cho một turn in-flight trên cùng session. Disable nút Send cho tới khi
 nhận `done` hoặc `error`. **Quan trọng**: mở xong WS (đợi sự kiện `open`) rồi
-mới gọi bước 4 — server phát `step` ĐỒNG BỘ ngay trong lúc xử lý message,
-subscribe trễ sẽ lỡ mất các step đầu.
+mới gọi bước gửi message — server phát `step` ĐỒNG BỘ ngay trong lúc xử lý
+message, subscribe trễ sẽ lỡ mất các step đầu.
 
 ## 5. WebSocket contract (downlink-only)
 
@@ -230,18 +250,39 @@ Authorization: Bearer ...
 
 Chỉ các skill `userInvocable` top-level được trả về.
 
-### Tạo session qua REST
+### Project API cho tab Phân tích dữ liệu
+
+```http
+GET /projects
+POST /projects                 {"name":"Revenue 2026"}
+GET /projects/:projectId
+PATCH /projects/:projectId     {"name":"Tên mới"}
+GET /projects/:projectId/sessions
+POST /projects/:projectId/sessions  {}
+```
+
+`POST /projects/:id/sessions` luôn tạo driver `rlm` và trả:
+
+```json
+{"id":"SESSION_UUID","driver":"rlm","projectId":"PROJECT_UUID"}
+```
+
+Backend lấy owner từ Bearer token, không nhận ownerId từ client. User thường
+chỉ thấy/chạm project của mình; session chỉ được chạy khi owner của session và
+project trùng nhau.
+
+### Tạo session thường qua REST
 
 ```http
 POST /sessions
 Content-Type: application/json
 Authorization: Bearer ...
 
-{"driver":"rlm","maxSteps":8}
+{"driver":"default","maxSteps":8}
 ```
 
 ```json
-{"id":"SESSION_UUID","driver":"rlm","maxSteps":8}
+{"id":"SESSION_UUID","driver":"default","maxSteps":8}
 ```
 
 REST là cách DUY NHẤT tạo session (WS không còn nhận `create_session`, xem
@@ -283,48 +324,60 @@ nguồn lịch sử; stream WebSocket chỉ là live view.
 
 ## 7. Workspace và file output
 
-### Liệt kê
+### Liệt kê nguồn input
 
 ```http
-GET /sessions/:sessionId/files
+GET /projects/:projectId/sources
 Authorization: Bearer ...
 ```
 
 ```json
 {
-  "files": [
+  "sources": [
     {
-      "path": "sales.csv",
+      "path": "sources/sales.csv",
       "size": 22302,
       "mtime": "2026-08-22T03:35:29.133Z"
-    },
-    {
-      "path": "generated/summary.html",
-      "size": 12044,
-      "mtime": "2026-08-22T03:36:44.638Z"
     }
   ],
   "datasets": [
     {
       "id": "sales",
       "filename": "sales.csv",
-      "path": "sales.csv",
+      "path": "sources/sales.csv",
       "active": true
     }
-  ],
-  "artifacts": ["generated/summary.html"]
+  ]
 }
 ```
 
-Frontend nên hợp nhất theo `path` để không render trùng:
+Tab **Nguồn** chỉ render mảng `sources`; không đưa artifact/output vào đây.
 
-- `path` nằm trong `artifacts` → nhãn **Output**.
-- `path`/filename nằm trong `datasets` → nhãn **Dataset**.
-- Còn lại → nhãn **File**.
+### Liệt kê và publish output
+
+```http
+GET /projects/:projectId/outputs
+```
+
+Response tách `projectOutputs` đã dùng chung và `sessionOutputs` còn là draft
+của từng đoạn chat. Publish một draft:
+
+```http
+POST /projects/:projectId/outputs
+Content-Type: application/json
+
+{"sessionId":"SESSION_UUID","path":"chart.png"}
+```
+
+Backend copy file từ `.sessions/<sessionId>/generated/` sang `outputs/`, không
+ghi đè tên đã tồn tại, đồng thời ghi metadata `createdBySession/sourcePath`.
+Frontend hiển thị hai nhóm **Output dự án** và **Kết quả từ các đoạn chat**;
+nút **Đưa vào dự án** chỉ xuất hiện ở draft.
 
 Refresh danh sách tại bốn thời điểm:
 
-1. Sau khi tạo session mới thành công (`POST /sessions`, driver `rlm`).
+1. Sau khi mở project, và sau khi tạo session mới thành công
+   (`POST /projects/:id/sessions`, driver `rlm`).
 2. Sau upload thành công.
 3. Sau mỗi WebSocket `done`.
 4. Khi user bấm Refresh.
@@ -335,7 +388,7 @@ Giới hạn file đã decode là `70 MiB`. Gửi binary trực tiếp, không c
 thành base64 trong browser:
 
 ```http
-POST /sessions/:sessionId/files
+POST /projects/:projectId/sources
 Content-Type: application/octet-stream
 X-File-Name: <encodeURIComponent(file.name)>
 Authorization: Bearer ...
@@ -347,8 +400,8 @@ Dùng `XMLHttpRequest` nếu cần upload progress ổn định:
 
 ```ts
 const xhr = new XMLHttpRequest()
-xhr.open('POST', `${restUrl}/sessions/${sessionId}/files`)
-xhr.setRequestHeader('authorization', `Bearer ${apiKey}`)
+xhr.open('POST', `${restUrl}/projects/${projectId}/sources`)
+xhr.setRequestHeader('authorization', `Bearer ${token}`)
 xhr.setRequestHeader('content-type', 'application/octet-stream')
 xhr.setRequestHeader('x-file-name', encodeURIComponent(file.name))
 xhr.upload.onprogress = (event) => {
@@ -363,7 +416,7 @@ xhr.send(file)
 Response:
 
 ```json
-{"path":"sales.csv","size":22302}
+{"path":"sources/sales.csv","size":22302}
 ```
 
 Giữ một success/error banner sau upload; đừng chỉ dùng toast biến mất nhanh.
@@ -371,53 +424,99 @@ Giữ một success/error banner sau upload; đừng chỉ dùng toast biến m�
 Server vẫn hỗ trợ JSON base64 cho client cũ, nhưng frontend mới không nên dùng
 vì tốn thêm khoảng 33% payload và dễ gây lỗi memory/call-stack.
 
-### Download dataset/output
+### Download source/output
 
 ```http
-GET /sessions/:sessionId/files/:encodedPath
+GET /projects/:projectId/files/:encodedPath
+GET /projects/:projectId/outputs/project/:encodedPath
+GET /projects/:projectId/outputs/session/:sessionId/:encodedPath
 Authorization: Bearer ...
 ```
+
+Route `files` dùng cho source. Hai route `outputs` lần lượt tải output đã
+publish và draft thuộc một session cụ thể.
 
 Không dùng `<a href="...">` trực tiếp vì browser không tự thêm Bearer token.
 Dùng authenticated `fetch`, đổi response thành `Blob`, rồi tạo object URL để
 download.
 
-## 8. Session lifecycle và resume
+## 8. Runs, jobs, artifacts và pipeline
 
-- Backend session nằm trong memory registry và có sliding TTL.
-- Frontend hiện giữ danh sách session của chính browser trong `localStorage`.
-- Backend restart làm session registry mất; một ID cũ có thể trả `404` dù UI
-  còn giữ history local.
-- Khi nhận `404 session not found`, đánh dấu session cũ unavailable và tạo
-  session mới; không retry vô hạn.
-- Không có `GET /sessions` công khai vì API key hiện chưa biểu diễn ownership
-  theo từng end-user.
+Một chat turn tạo một **run**. UI có thể poll:
 
-## 9. File backend cần đọc khi tích hợp
+```text
+GET /sessions/:id/runs
+GET /runs/:runId
+POST /runs/:runId/cancel
+```
+
+Một pipeline dài tạo một **job**. Các endpoint:
+
+```text
+GET /sessions/:id/jobs
+GET /jobs/:jobId
+GET /jobs/:jobId/events
+POST /jobs/:jobId/cancel
+POST /jobs/:jobId/retry
+GET /sessions/:id/artifacts
+GET /artifacts/:artifactId
+GET /pipelines
+POST /pipelines/:name/run
+```
+
+Body chạy pipeline:
+
+```json
+{
+  "sessionId": "SESSION_UUID",
+  "override": { "train": "train-flaml" },
+  "config": { "train": { "timeBudgetSeconds": 60 } }
+}
+```
+
+Job events có progress 0..1 và message. Khi job terminal, refresh cả
+`/sessions/:id/files` và `/sessions/:id/artifacts`: file là nguồn dữ liệu để
+download/render, artifact là metadata (producer, hash, kind) để giải thích
+nó được tạo bởi stage nào. Không đoán output chỉ từ text trả lời của model.
+
+## 9. Session lifecycle và resume
+
+- Backend persist session metadata/history và rehydrate cache lúc boot; Python
+  REPL vẫn không persistent, turn tiếp theo sẽ mở worker mới.
+- `GET /projects` và `GET /sessions` đã lọc theo identity; backend persist cả
+  project metadata lẫn session-to-project binding trong SQLite.
+- Frontend chỉ cache title session; event history thật lấy từ
+  `GET /sessions/:id/events` khi resume.
+- Python REPL không sống qua restart, nhưng project sources/outputs vẫn còn
+  nếu workspace volume còn.
+
+## 10. File backend cần đọc khi tích hợp
 
 Contract ổn định:
 
 - `seams/loop.ts` — turn result và toàn bộ stream step union.
+- `seams/projects.ts` — project ownership/lifecycle contract.
 - `seams/workspace.ts` — dataset/artifact/file contract.
 - `seams/skill.ts` — skill metadata.
 
 Transport implementation:
 
-- `bundles/adapters/api-rest/index.ts`
-- `bundles/adapters/api-ws/index.ts`
+- `bundles/adapters/api-rest/index.ts` (REST + WS downlink, không còn bundle
+  `api-ws` riêng — gộp từ Phase 6.3, xem mục 6.9 ở `docs/system-architecture.md`)
 - `bundles/adapters/api-grpc/agent.proto` (không dùng trực tiếp từ browser)
 
 Reference frontend:
 
-- `apps/web/src/App.tsx`
-- `apps/web/src/settings.ts`
-- `apps/web/src/sessionHistory.ts`
+- `apps/web/src/App.tsx` — WS/session state + compose các package UI
+- `packages/ui-settings-general/src/settings.ts`
+- `packages/ui-sidebar/src/sessionHistory.ts`
+- `packages/ui-projects/src/ProjectHub.tsx`
 
 Composition root:
 
 - `src/serve.ts`
 
-## 10. Checklist frontend trước khi bàn giao
+## 11. Checklist frontend trước khi bàn giao
 
 - [ ] API key không hardcode trong source/bundle.
 - [ ] Session tạo qua `POST /sessions` (REST), KHÔNG qua WS.
@@ -433,9 +532,11 @@ Composition root:
 - [ ] Dataset và output được hợp nhất theo path, không render trùng.
 - [ ] Download dùng authenticated fetch.
 - [ ] Resume xử lý được session đã hết TTL/backend restart.
+- [ ] Có UI cho run/job đang chạy và nút cancel khi state cho phép.
+- [ ] Output panel lấy files + artifacts từ backend, không suy luận từ chat.
 - [ ] Không hiển thị internal memory/context JSON như final answer.
 
-## 11. Trạng thái verify hiện tại
+## 12. Trạng thái verify hiện tại
 
 Đã kiểm tra trên Docker Compose:
 
@@ -452,7 +553,7 @@ Generated benchmark reports trong `reports/` không phải source code và khôn
 nên commit. Benchmark definitions/runner trong `benchmarks/` có thể commit để
 người backend tái lập kết quả.
 
-## 12. Python runtime trong repo
+## 13. Python runtime trong repo
 
 - `bundles/loop-drivers/loop-rlm/python/` — nằm HẲN TRONG bundle sở hữu nó
   (chuẩn cấu trúc plugin, xem `docs/plugin-standard-structure.md`), không

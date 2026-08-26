@@ -18,6 +18,7 @@ import {
   LlmService,
   LlmToolCall,
 } from "../../../seams/llm.ts";
+import { postChatCompletion } from "../shared/llm-http.ts";
 
 export namespace LlmQwen {
   export interface Config {
@@ -67,14 +68,6 @@ export namespace LlmQwen {
  * defaults below: they are generic tunables, not infra identifiers.
  */
 const DEFAULT_MAX_TOKENS = 4096;
-const DEFAULT_TIMEOUT_MS = 60000;
-const DEFAULT_MAX_RETRIES = 2;
-const DEFAULT_RETRY_BASE_DELAY_MS = 300;
-const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 interface OpenAIChatMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -218,7 +211,15 @@ export class LlmQwen extends LlmService {
     const body = this.buildRequestBody(model, messages, options);
 
     const url = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
-    const res = await this.fetchWithRetry(url, apiKey, body);
+    const res = await postChatCompletion({
+      url, apiKey, body,
+      timeoutMs: this.config.timeoutMs,
+      maxRetries: this.config.maxRetries,
+      retryBaseDelayMs: this.config.retryBaseDelayMs,
+      signal: options.signal,
+      deadline: options.deadline,
+      warn: (message, ...args) => this.ctx.logger('llm-qwen').warn(message, ...args),
+    }, 'llm-qwen');
     const data = (await res.json()) as OpenAIChatResponse;
     const choice = data.choices?.[0];
     const message = choice?.message;
@@ -250,13 +251,19 @@ export class LlmQwen extends LlmService {
     };
   }
 
-  // Follow-up (2026-08) — streaming: KHÔNG retry (khác complete()/
-  // fetchWithRetry) -- 1 request đã stream được VÀI đoạn rồi mới lỗi giữa
-  // chừng, retry lại từ đầu sẽ phát lại đoạn ĐÃ hiện cho user (đơn giản hoá
-  // có chủ đích, ghi rõ ra đây thay vì tự tin ẩn giấu: lỗi giữa chừng nổi lên
-  // như bất kỳ lỗi nào khác của turn, qua đúng đường xử lý lỗi đã có sẵn ở
-  // loop-default/agent-runner). `onDelta` gọi ngay khi có content mới, KHÔNG
-  // đợi tới lúc xong toàn bộ mới gọi 1 lần.
+  // Follow-up (2026-08) — streaming: dùng CHUNG `postChatCompletion()` với
+  // complete() (merge feat/rlm-dev-integration đưa vào) -- retry-with-backoff
+  // + signal/deadline cancellation giờ nhất quán giữa 2 method, không tự chế
+  // AbortController/timeout riêng nữa (bản đầu KHÔNG hề nhận options.signal,
+  // nghĩa là 1 turn bị cancel giữa chừng vẫn treo nguyên request streaming --
+  // gap thật phát hiện lúc merge, không phải giả thuyết). Retry CHỈ áp dụng
+  // cho request BAN ĐẦU (trước khi response.ok, tức trước khi có byte nào
+  // stream về) -- 1 request đã stream được vài đoạn rồi mới lỗi giữa chừng sẽ
+  // KHÔNG bị retry (đọc thẳng logic postChatCompletion: retry dựa trên kết
+  // quả fetch() đầu tiên, không đụng gì tới việc đọc body sau đó), tránh phát
+  // lại đoạn ĐÃ hiện cho user -- giữ đúng tinh thần đơn giản hoá đã ghi trước
+  // đây, chỉ khác là giờ CÓ cancellation đúng thay vì tự chế thiếu sót.
+  // `onDelta` gọi ngay khi có content mới, KHÔNG đợi tới lúc xong toàn bộ.
   async completeStream(
     messages: LlmMessage[],
     options: LlmCompleteOptions = {},
@@ -271,25 +278,17 @@ export class LlmQwen extends LlmService {
     };
 
     const url = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
-    const timeoutMs = this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timeout);
-    }
-    if (!res.ok || !res.body) {
-      throw new Error(`llm-qwen: streaming request failed (${res.status} ${res.statusText})`);
+    const res = await postChatCompletion({
+      url, apiKey, body,
+      timeoutMs: this.config.timeoutMs,
+      maxRetries: this.config.maxRetries,
+      retryBaseDelayMs: this.config.retryBaseDelayMs,
+      signal: options.signal,
+      deadline: options.deadline,
+      warn: (message, ...args) => this.ctx.logger('llm-qwen').warn(message, ...args),
+    }, 'llm-qwen');
+    if (!res.body) {
+      throw new Error(`llm-qwen: streaming response missing body`);
     }
 
     const reader = res.body.getReader();
@@ -358,60 +357,6 @@ export class LlmQwen extends LlmService {
     };
   }
 
-  // Phase 8.3: retry chỉ cho lỗi TRANSIENT (throw trước khi có response --
-  // network/DNS/reset/abort -- hoặc response 429/5xx). Lỗi 4xx khác (auth
-  // sai, request sai) throw ngay lần đầu, không retry -- request đó sẽ fail
-  // y hệt lần nữa. `res`/`networkError` tách riêng (không dùng try/catch để
-  // phân loại lại lỗi) để không cần đoán lỗi nào tới từ đâu qua message string.
-  private async fetchWithRetry(
-    url: string,
-    apiKey: string,
-    body: Record<string, unknown>,
-  ): Promise<Response> {
-    const maxRetries = this.config.maxRetries ?? DEFAULT_MAX_RETRIES;
-    const baseDelay = this.config.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
-    const timeoutMs = this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-
-    for (let attempt = 0; ; attempt++) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
-      let res: Response | undefined;
-      let networkError: unknown;
-      try {
-        res = await fetch(url, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        });
-      } catch (err) {
-        networkError = err;
-      } finally {
-        clearTimeout(timeout);
-      }
-
-      if (res?.ok) return res;
-      if (res && !RETRYABLE_STATUS.has(res.status)) {
-        throw new Error(`llm-qwen: request failed (${res.status} ${res.statusText})`);
-      }
-      if (attempt >= maxRetries) {
-        if (res) throw new Error(`llm-qwen: request failed (${res.status} ${res.statusText})`);
-        throw networkError;
-      }
-      this.ctx
-        .logger("llm-qwen")
-        .warn(
-          "retry %d/%d after %s",
-          attempt + 1,
-          maxRetries,
-          res ? `HTTP ${res.status}` : `network error: ${(networkError as Error).message}`,
-        );
-      await sleep(baseDelay * 2 ** attempt);
-    }
-  }
 }
 
 function mapMessage(message: LlmMessage): OpenAIChatMessage {

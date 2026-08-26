@@ -10,6 +10,7 @@
     "@agent-core/ui-plugin-inventory": "*",
     "@agent-core/ui-plugin-settings": "*",
     "@agent-core/ui-primitives": "*",
+    "@agent-core/ui-projects": "*",
     "@agent-core/ui-react": "*",
     "@agent-core/ui-rlm-workspace": "*",
     "@agent-core/ui-settings-general": "*",

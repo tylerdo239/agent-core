@@ -27,7 +27,7 @@ export type PluginFiberState = 'pending' | 'loading' | 'active' | 'failed' | 'un
  * adding-plugins.md), không thuộc cấu trúc bundles/ nội bộ nào ở trên. */
 export interface PluginInventoryEntry {
   readonly name: string
-  readonly category: 'provider' | 'tool' | 'skill' | 'loop-driver' | 'prompt' | 'adapter' | 'external'
+  readonly category: 'provider' | 'tool' | 'skill' | 'loop-driver' | 'prompt' | 'adapter' | 'pipeline-stage' | 'pipeline' | 'external'
   readonly state: PluginFiberState
 }
 

@@ -42,7 +42,7 @@
 // biệt rõ với nút cũ, nhưng nút cũ đã xoá hẳn nên không còn nhập nhằng —
 // rút gọn lại "Cấu hình" cho gọn.
 import { useState } from 'react'
-import { Database, KeyRound, LogOut, PanelLeftClose, PanelLeftOpen, Puzzle, Search, Users } from 'lucide-react'
+import { Database, FolderKanban, KeyRound, LogOut, PanelLeftClose, PanelLeftOpen, Puzzle, Search, Users } from 'lucide-react'
 import { Button, Tooltip } from '@agent-core/ui-primitives'
 import { loadSidebarCollapsed, saveSidebarCollapsed } from './sidebarState.ts'
 import { groupSessionsByDate } from './groupSessionsByDate.ts'
@@ -157,12 +157,12 @@ export function Sidebar({
             className={`${styles.settingsTrigger} ${styles.settingsTriggerCollapsed}`}
             aria-label="Phân tích dữ liệu"
           >
-            <Database size={16} aria-hidden="true" />
+            <FolderKanban size={16} aria-hidden="true" />
           </button>
         </Tooltip>
       ) : (
         <button type="button" onClick={onNewDataSession} className={styles.settingsTrigger}>
-          <Database size={16} aria-hidden="true" />
+          <FolderKanban size={16} aria-hidden="true" />
           <span className={styles.settingsLabel}>Phân tích dữ liệu</span>
         </button>
       )}

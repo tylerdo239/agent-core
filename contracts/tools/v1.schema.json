@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-core/tools/v1",
+  "title": "Agent Core Tool Invocation v1",
+  "type": "object",
+  "required": ["name", "args"],
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "args": { "type": "object" },
+    "requestId": { "type": "string" },
+    "sessionId": { "type": "string" },
+    "runId": { "type": "string" }
+  },
+  "additionalProperties": false
+}

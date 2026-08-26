@@ -1,0 +1,66 @@
+{
+  "suite": "ds-deepanalyze-synth-v1",
+  "sources": [
+    {
+      "name": "DeepAnalyze synthetic (questioner/solver/inspector pattern)",
+      "url": "https://arxiv.org/abs/2510.16872",
+      "license": "synthetic, derived from local fixtures"
+    }
+  ],
+  "cases": [
+    {
+      "id": "synth_understand_single",
+      "source": "DeepAnalyze Stage-1 single-ability: structured data understanding",
+      "datasets": ["test_x.csv"],
+      "turns": [
+        {
+          "message": "Using the registered dataset test_x.csv: WITHOUT doing any further computation, call profile_dataset() and summarize: how many rows/columns, list column names, which columns have missing values, and how many duplicated rows exist. Keep it to a short bullet list.",
+          "checks": {
+            "report_keywords": ["rows", "columns", "missing", "duplicated"],
+            "report_sections": ["rows|shape", "columns|column names", "missing|na", "duplicated"],
+            "min_words": 30,
+            "forbidden_tools": ["web_search", "query_database"],
+            "max_iterations": 8,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    },
+    {
+      "id": "synth_code_isolated",
+      "source": "DeepAnalyze Stage-1 single-ability: code generation",
+      "datasets": ["gapminder_gdp_asia.csv"],
+      "turns": [
+        {
+          "message": "Using the registered dataset gapminder_gdp_asia.csv: Write and execute code that computes the Pearson correlation between gdpPercap_1982 and gdpPercap_2007 across countries, rounded to 3 decimals. End with a line like: correlation=<value>",
+          "checks": {
+            "numeric_answers": [{"value": 0.78, "tolerance": 0.25}],
+            "answer_regex": ["correlation"],
+            "forbidden_tools": ["web_search", "query_database"],
+            "max_iterations": 8,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    },
+    {
+      "id": "synth_end_to_end_curriculum",
+      "source": "DeepAnalyze Stage-2 multi-ability: full pipeline (Analyze/Understand/Code/Execute/Answer)",
+      "datasets": ["ravenna_250715.csv"],
+      "turns": [
+        {
+          "message": "Using the registered dataset ravenna_250715.csv: Follow the 5-phase loop. 1) Analyze: state your plan in one sentence. 2) Understand: call profile_dataset() first. 3) Code+Execute: compute mean, median, std of the temp column, and the Pearson correlation between temp and humidity if both columns exist. 4) Answer: structured report with headings (Plan, Understanding, Results, Limitations) and end with mean_temperature=<value> to two decimals. Mention one limitation and one next check.",
+          "checks": {
+            "numeric_answers": [{"value": 29.14, "tolerance": 0.05}],
+            "report_keywords": ["temp", "mean", "limitation"],
+            "report_sections": ["Plan|Analyze", "Understanding|profile", "Results|mean", "Limitation"],
+            "min_words": 90,
+            "forbidden_tools": ["web_search", "query_database"],
+            "max_iterations": 10,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    }
+  ]
+}

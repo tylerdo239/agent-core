@@ -11,16 +11,17 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-// Merge RLM harness (xem docs/agent-core-rate-limit-and-security-audit.md
-// Finding A1 + docs/agent-core-rlm-harness-merge-plan.md mục 3.2/7.3): bản
-// gốc RLM thêm `ToolInvocationContext` (sessionId/source) qua `invoke()`
-// nhưng KHÔNG truyền xuống handler -- tool nào tự đọc `sessionId` từ
-// `args` (model tự cho) thay vì context CHỦ ĐỘNG bị đọc BẤT KỲ session nào,
-// không phải giả thuyết (xem tool-database-query, đã sửa cùng lúc với thay
-// đổi này). `context` bắt buộc (không optional) -- mọi lời gọi tool ĐỀU đi
-// qua `ToolRegistryService.invoke()`, không còn cách nào gọi handler mà
-// thiếu context.
-export type ToolHandler = (args: Record<string, unknown>, context: ToolInvocationContext) => Promise<unknown>
+export class ToolExecutionError extends Error {
+  constructor(
+    public readonly code: 'TOOL_NOT_FOUND' | 'TOOL_ARGS_INVALID' | 'TOOL_PERMISSION_DENIED' | 'TOOL_TIMEOUT' | 'TOOL_CANCELLED' | 'TOOL_HANDLER_ERROR',
+    message: string,
+    public readonly tool?: string,
+    public readonly details?: unknown,
+  ) {
+    super(message)
+    this.name = 'ToolExecutionError'
+  }
+}
 
 /**
  * Phase 8.5 — metadata hiển thị THUẦN (không phải logic nghiệp vụ), để
@@ -73,6 +74,10 @@ export interface ToolDefinition {
   parameters?: Record<string, unknown>
   handler: ToolHandler
   ui?: ToolUiHint
+  permissionActor?: string
+  permissionAction?: string
+  timeoutMs?: number
+  version?: string
   /** Field nào trong `ctx.pluginConfig` tool này đọc — admin cấu hình được
    * qua UI (packages/ui-plugin-settings) nếu khai ở đây. Không khai -> tool
    * không xuất hiện trong danh sách cấu hình (không phải mọi tool đều cần
@@ -82,8 +87,15 @@ export interface ToolDefinition {
 
 export interface ToolInvocationContext {
   sessionId: string
-  source: 'default-loop' | 'planner-critic' | 'rlm' | 'subagent'
+  source: 'default-loop' | 'planner-critic' | 'rlm' | 'subagent' | 'pipeline' | 'api'
+  principal?: string
+  runId?: string
+  jobId?: string
+  deadline?: number
+  signal?: AbortSignal
 }
+
+export type ToolHandler = (args: Record<string, unknown>, context: ToolInvocationContext) => Promise<unknown>
 
 export abstract class ToolRegistryService extends Service {
   constructor(ctx: Context) {

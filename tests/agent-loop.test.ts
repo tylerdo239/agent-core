@@ -13,11 +13,16 @@ import * as agentRunner from '../bundles/providers/agent-runner/index.ts'
 import * as skillRegistry from '../bundles/providers/skill-registry/index.ts'
 import * as skillSupportTone from '../bundles/skills/skill-support-tone/index.ts'
 import * as promptRegistry from '../bundles/providers/prompt-registry/index.ts'
+import * as promptDefaultAgent from '../bundles/prompts/prompt-default-agent/index.ts'
+import * as contextCompactorLlm from '../bundles/providers/context-compactor-llm/index.ts'
 import { LlmCompleteOptions, LlmCompletion, LlmMessage, LlmService } from '../seams/llm.ts'
 import { LoopStep, Session } from '../seams/loop.ts'
 
 class FakeLlm extends LlmService {
   async complete(messages: LlmMessage[], options: LlmCompleteOptions = {}): Promise<LlmCompletion> {
+    expect(messages[0]).toMatchObject({ role: 'system' })
+    expect(messages[0].content).toContain('default conversational agent in agent-core')
+    expect(messages[0].content).not.toContain('Python REPL')
     // Quảng bá tool phải tới được đây — nếu rỗng thì loop-default có bug.
     if (!options.tools?.some((t) => t.name === 'query_database')) {
       throw new Error('FakeLlm: expected query_database tool to be advertised')
@@ -46,6 +51,8 @@ describe('Phase 4 — agent loop end-to-end', () => {
     root.plugin(toolRegistry)
     root.plugin(skillRegistry)
     root.plugin(promptRegistry)
+    root.plugin(promptDefaultAgent)
+    root.plugin(contextCompactorLlm)
     root.plugin(stateSqlite, { path: ':memory:' })
     root.plugin(toolDatabaseQuery)
     root.plugin(fakeLlm)
@@ -70,22 +77,25 @@ describe('Phase 4 — agent loop end-to-end', () => {
     expect(events.map((e) => e.type)).toEqual([
       'seed', // đã seed thẳng vào storage TRƯỚC turn, để verify query_database đọc đúng session hiện tại
       'user_message', // ghi TRƯỚC khi driver chạy, ở agent-runner (entrypoint ổn định chung mọi driver)
+      'prompt_assembled', // exact model-visible prompt/tool snapshot for step 1
       'model_message', // lượt 1: model quyết định gọi tool
+      'tool_audit', // execution pipeline ghi outcome/latency trước khi loop ghi kết quả
       'tool_result', // kết quả tool được ghi TRƯỚC khi qua bước kế tiếp (rule B3)
+      'prompt_assembled', // step 2 is independently replayable
       'model_message', // lượt 2: model trả lời cuối cùng
     ])
 
     expect((events[1] as any).content).toBe('Giá trị đã lưu là bao nhiêu?')
 
-    const firstModelMsg = events[2] as any
+    const firstModelMsg = events[3] as any
     expect(firstModelMsg.toolCall).toEqual({ name: 'query_database', args: {} })
 
-    const toolResult = events[3] as any
+    const toolResult = events[5] as any
     expect(toolResult.name).toBe('query_database')
     // query_database trả về TOÀN BỘ event log của session hiện tại (kể cả
     // chính nó, event 'seed' đã ghi trước đó) — không còn nhận sessionId từ
     // model (Finding A1 fix).
-    expect(toolResult.result).toEqual(events.slice(0, 3))
+    expect(toolResult.result).toEqual(events.slice(0, 4))
 
     // Session history phản ánh đúng toàn bộ lượt hội thoại.
     expect(session.history.map((m) => m.role)).toEqual([
@@ -102,6 +112,8 @@ describe('Phase 4 — agent loop end-to-end', () => {
     root.plugin(toolRegistry)
     root.plugin(skillRegistry)
     root.plugin(promptRegistry)
+    root.plugin(promptDefaultAgent)
+    root.plugin(contextCompactorLlm)
     root.plugin(stateSqlite, { path: ':memory:' })
     // Cố ý KHÔNG mount toolDatabaseQuery — model vẫn "quyết định" gọi nó.
     class BadCallLlm extends LlmService {
@@ -130,7 +142,7 @@ describe('Phase 4 — agent loop end-to-end', () => {
     expect(result.content).toBe('đã xử lý xong dù tool không tồn tại')
     const events = await root.storage.readEvents('s2')
     const toolResult = events.find((e) => e.type === 'tool_result') as any
-    expect(toolResult.result).toEqual({ error: 'tool "ghost_tool" not found' })
+    expect(toolResult.result).toEqual({ error: 'tool "ghost_tool" not found', code: 'TOOL_NOT_FOUND' })
   })
 
   it('Phase 8.5: agent/step forward đúng toolUi mà tool-database-query đã khai, undefined khi tool không có ui', async () => {
@@ -138,6 +150,8 @@ describe('Phase 4 — agent loop end-to-end', () => {
     root.plugin(toolRegistry)
     root.plugin(skillRegistry)
     root.plugin(promptRegistry)
+    root.plugin(promptDefaultAgent)
+    root.plugin(contextCompactorLlm)
     root.plugin(stateSqlite, { path: ':memory:' })
     root.plugin(toolDatabaseQuery)
     root.plugin(fakeLlm)
@@ -169,6 +183,9 @@ describe('Phase 4 — agent loop end-to-end', () => {
     root.plugin(toolRegistry)
     root.plugin(skillRegistry)
     root.plugin(skillSupportTone)
+    root.plugin(promptRegistry)
+    root.plugin(promptDefaultAgent)
+    root.plugin(contextCompactorLlm)
     root.plugin(stateSqlite, { path: ':memory:' })
 
     // Capture đúng mảng messages thật sự gửi cho LLM ở từng lượt gọi.
@@ -228,6 +245,8 @@ describe('Phase 4 — agent loop end-to-end', () => {
     root.plugin(toolRegistry)
     root.plugin(skillRegistry)
     root.plugin(promptRegistry)
+    root.plugin(promptDefaultAgent)
+    root.plugin(contextCompactorLlm)
     root.plugin(stateSqlite, { path: ':memory:' })
     root.plugin((ctx: Context) => {
       ctx.plugin(FakeStreamingLlm)
@@ -262,6 +281,8 @@ describe('Phase 4 — agent loop end-to-end', () => {
     root.plugin(toolRegistry)
     root.plugin(skillRegistry)
     root.plugin(promptRegistry)
+    root.plugin(promptDefaultAgent)
+    root.plugin(contextCompactorLlm)
     root.plugin(stateSqlite, { path: ':memory:' })
     root.plugin(toolDatabaseQuery) // FakeLlm yêu cầu tool này được quảng bá (throw nếu thiếu)
     root.plugin(fakeLlm)

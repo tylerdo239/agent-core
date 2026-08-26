@@ -31,7 +31,7 @@ export abstract class SandboxService extends Service {
     super(ctx, 'sandbox')
   }
 
-  abstract run(code: string, language: string): Promise<SandboxRunResult>
+  abstract run(code: string, language: string, options?: { signal?: AbortSignal }): Promise<SandboxRunResult>
   /** Mở runtime persistent gắn 1-1 với session; gọi lại cùng session là idempotent. */
   abstract openSession(sessionId: string, options: SandboxSessionOptions): Promise<void>
   /** Gửi một operation và stream các event JSON của worker. */
@@ -39,6 +39,7 @@ export abstract class SandboxService extends Service {
     sessionId: string,
     operation: string,
     payload?: Record<string, unknown>,
+    options?: { signal?: AbortSignal },
   ): AsyncIterable<SandboxEvent>
   abstract closeSession(sessionId: string): Promise<void>
 }

@@ -2495,8 +2495,8 @@ python/vendor/           -> bundles/loop-drivers/loop-rlm/python/vendor/
 sửa theo, không sót: `Dockerfile`/`Dockerfile.dev` (2 stage build Python,
 `COPY bundles ./bundles` ở stage runtime đã tự mang theo `python/` mới —
 xoá hẳn dòng `COPY python ./python` riêng), `docker-compose.yml`
-(`RLM_RUNTIME_ROOT`), `docker-compose.dev.yml` (xoá bind-mount `./python`
-riêng — `./bundles` đã bao trọn), `src/serve.ts` (default
+(`RLM_RUNTIME_ROOT`; bind-mount `./bundles` đã bao trọn Python runtime),
+`src/serve.ts` (default
 `RLM_RUNTIME_ROOT`/`rlmWorkerPath`, gộp về 1 hằng số
 `rlmBundlePythonRoot` để không lệch 2 nơi), `bundles/providers/
 sandbox-docker/index.ts` (3 chỗ hardcode `/app/python` — gộp về hằng số

@@ -16,13 +16,14 @@
     "dev:web": "vite --config apps/web/vite.config.ts",
     "build:web": "vite build --config apps/web/vite.config.ts",
     "pretest": "npm run build:web",
-    "test": "vitest run",
+    "test": "NODE_ENV=test vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@deepseek-ai/cordis": "4.0.1",
     "@grpc/grpc-js": "^1.14.4",
     "@grpc/proto-loader": "^0.8.1",
+    "ajv": "^8.17.1",
     "@tencentdb-agent-memory/memory-sdk-ts-v2": "^1.0.0-beta.1",
     "better-sqlite3": "^11.10.0",
     "pg": "^8.23.0",

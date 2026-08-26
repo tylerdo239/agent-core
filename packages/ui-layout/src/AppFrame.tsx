@@ -35,13 +35,15 @@ export interface AppFrameProps {
   subHeader?: ReactNode
   footer: ReactNode
   children: ReactNode
+  /** Wider canvas for project/file-management surfaces; chat remains narrow. */
+  wide?: boolean
 }
 
-export function AppFrame({ sidebar, header, subHeader, footer, children }: AppFrameProps) {
+export function AppFrame({ sidebar, header, subHeader, footer, children, wide = false }: AppFrameProps) {
   return (
     <div className={styles.app}>
       {sidebar}
-      <div className={styles.main}>
+      <div className={wide ? `${styles.main} ${styles.wide}` : styles.main}>
         {header && <header className={styles.header}>{header}</header>}
         {subHeader}
         <main className={styles.messages} aria-live="polite">

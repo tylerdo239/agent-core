@@ -7,6 +7,7 @@ have already been resolved by Cordis providers before control reaches Python.
 
 from __future__ import annotations
 
+import os
 import threading
 import uuid
 from pathlib import Path
@@ -99,7 +100,10 @@ class HarnessRLM(RLMDataAgent):
         # Prompt ownership ends at the TypeScript boundary. Python neither
         # selects nor renders another harness prompt for this turn.
         self.set_system_prompt(prompt)
-        self.set_workspace(self.context_builder.workspace_root(session_id))
+        # The host has already resolved and authorized the workspace. Never
+        # derive it again from sessionId: project chats intentionally share
+        # one project root while keeping separate conversation state.
+        self.set_workspace(Path(os.environ["RLM_WORKSPACE_ROOT"]), session_id)
         tools = [
             dict(tool)
             for tool in (prepared.get("availableTools") or [])

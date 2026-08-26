@@ -13,12 +13,16 @@
 // cần mở rộng trước (thêm `toolCall.id` vào seam).
 import { Context, Service } from '@deepseek-ai/cordis'
 import { LlmCompleteOptions, LlmCompletion, LlmMessage, LlmService } from '../../../seams/llm.ts'
+import { postChatCompletion } from '../shared/llm-http.ts'
 
 export namespace LlmDeepseek {
   export interface Config {
     apiKey?: string
     baseUrl?: string
     model?: string
+    timeoutMs?: number
+    maxRetries?: number
+    retryBaseDelayMs?: number
   }
 }
 
@@ -80,18 +84,13 @@ export class LlmDeepseek extends LlmService {
       }))
     }
 
-    const res = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(body),
-    })
-
-    if (!res.ok) {
-      throw new Error(`llm-deepseek: request failed (${res.status} ${res.statusText})`)
-    }
+    const res = await postChatCompletion({
+      url: `${baseUrl.replace(/\/$/, '')}/chat/completions`, apiKey: apiKey!, body,
+      timeoutMs: this.config.timeoutMs, maxRetries: this.config.maxRetries,
+      retryBaseDelayMs: this.config.retryBaseDelayMs,
+      signal: options.signal, deadline: options.deadline,
+      warn: (message, ...args) => this.ctx.logger('llm-deepseek').warn(message, ...args),
+    }, 'llm-deepseek')
 
     const data = (await res.json()) as {
       model?: string

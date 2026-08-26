@@ -1,12 +1,16 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { readFile, writeFile } from 'node:fs/promises'
+import { createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import { copyFile, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
-import { WorkspaceDataset, WorkspaceService, WorkspaceSnapshot } from '../../../seams/workspace.ts'
+import { PromotedWorkspaceOutput, WorkspaceDataset, WorkspaceFile, WorkspaceService, WorkspaceSnapshot } from '../../../seams/workspace.ts'
 
 export namespace WorkspaceLocal {
   export interface Config {
     basePath?: string
+    maxFileBytes?: number
   }
 }
 
@@ -17,17 +21,26 @@ function safeSessionId(value: string): string {
   return safe || 'default'
 }
 
+function workspaceParts(value: string): string[] {
+  if (value.startsWith('project:')) return ['projects', safeSessionId(value.slice('project:'.length))]
+  return [safeSessionId(value)]
+}
+
+function safeRuntimeSessionId(value: string) { return safeSessionId(value) }
+
 export class WorkspaceLocal extends WorkspaceService {
   private basePath: string
+  private maxFileBytes: number
 
   constructor(ctx: Context, public config: WorkspaceLocal.Config = {}) {
     super(ctx)
     this.basePath = path.resolve(config.basePath ?? 'data/workspaces')
+    this.maxFileBytes = config.maxFileBytes ?? 70 * 1024 * 1024
     mkdirSync(this.basePath, { recursive: true })
   }
 
   root(sessionId: string) {
-    const root = path.resolve(this.basePath, safeSessionId(sessionId))
+    const root = path.resolve(this.basePath, ...workspaceParts(sessionId))
     if (root !== this.basePath && !root.startsWith(this.basePath + path.sep)) {
       throw new Error('workspace path escapes configured base')
     }
@@ -77,13 +90,42 @@ export class WorkspaceLocal extends WorkspaceService {
     return files.sort()
   }
 
-  async writeFile(sessionId: string, filename: string, content: Buffer): Promise<{ path: string; size: number }> {
+  async writeFile(sessionId: string, filename: string, content: Buffer): Promise<{ path: string; size: number; sha256: string }> {
+    if (content.byteLength > this.maxFileBytes) throw new Error(`file exceeds ${this.maxFileBytes} bytes`)
     const root = this.root(sessionId)
-    const safe = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_') || 'upload'
+    const safe = this.uploadPath(sessionId, filename)
     const target = path.join(root, safe)
     if (target !== root && !target.startsWith(root + path.sep)) throw new Error('filename escapes workspace')
-    await writeFile(target, content)
-    // Đăng ký tabular files vào index.json để list_datasets()/load_dataset() thấy
+    mkdirSync(path.dirname(target), { recursive: true })
+    const temporary = path.join(path.dirname(target), `.${path.basename(target)}.${randomUUID()}.tmp`)
+    try {
+      await writeFile(temporary, content)
+      await rename(temporary, target)
+    } catch (error) {
+      await unlink(temporary).catch(() => undefined)
+      throw error
+    }
+    this.registerDataset(root, safe)
+    return { path: safe, size: content.byteLength, sha256: createHash('sha256').update(content).digest('hex') }
+  }
+
+  private safeRelativePath(filename: string) {
+    const parts = String(filename).split('/').filter((part) => part && part !== '.')
+    if (!parts.length || parts.some((part) => part === '..' || part.includes('\0'))) throw new Error('filename escapes workspace')
+    const safe = parts.map((part) => part.replace(/[^a-zA-Z0-9._-]/g, '_')).join('/')
+    if (!safe) throw new Error('filename escapes workspace')
+    return safe
+  }
+
+
+  private uploadPath(workspaceId: string, filename: string) {
+    const safe = this.safeRelativePath(filename)
+    return workspaceId.startsWith('project:') && !safe.startsWith('sources/') ? `sources/${safe}` : safe
+  }
+
+  private registerDataset(root: string, safe: string) {
+    // Generated CSV reports are artifacts, not new input datasets.
+    if (safe.startsWith('generated/') || safe.startsWith('outputs/') || safe.startsWith('.sessions/')) return
     const ext = path.extname(safe).toLowerCase()
     if (TABULAR.has(ext)) {
       const indexPath = path.join(root, 'index.json')
@@ -94,10 +136,45 @@ export class WorkspaceLocal extends WorkspaceService {
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) index = parsed
       } catch { /* start fresh */ }
       const id = path.parse(safe).name
-      index[id] = { filename: safe, path: safe, created_at: new Date().toISOString() }
+      index[id] = { filename: path.basename(safe), path: safe, created_at: new Date().toISOString() }
       writeFileSync(indexPath, JSON.stringify(index, null, 2))
     }
-    return { path: safe, size: content.byteLength }
+  }
+
+  async writeFileFromStream(
+    sessionId: string,
+    filename: string,
+    stream: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array | Buffer>,
+    options: { maxBytes?: number } = {},
+  ) {
+    const root = this.root(sessionId)
+    const safe = this.uploadPath(sessionId, filename)
+    const target = path.join(root, safe)
+    const temporary = path.join(path.dirname(target), `.${path.basename(target)}.${randomUUID()}.tmp`)
+    const maximum = options.maxBytes ?? this.maxFileBytes
+    const hash = createHash('sha256')
+    let size = 0
+    const counter = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        size += chunk.byteLength
+        if (size > maximum) return callback(new Error(`file exceeds ${maximum} bytes`))
+        hash.update(chunk)
+        callback(null, chunk)
+      },
+    })
+    const source = Symbol.asyncIterator in (stream as object)
+      ? Readable.from(stream as AsyncIterable<Uint8Array | Buffer>)
+      : Readable.fromWeb(stream as Parameters<typeof Readable.fromWeb>[0])
+    mkdirSync(path.dirname(target), { recursive: true })
+    try {
+      await pipeline(source, counter, createWriteStream(temporary, { flags: 'wx' }))
+      await rename(temporary, target)
+    } catch (error) {
+      await unlink(temporary).catch(() => undefined)
+      throw error
+    }
+    this.registerDataset(root, safe)
+    return { path: safe, size, sha256: hash.digest('hex') }
   }
 
   async readFile(sessionId: string, filePath: string): Promise<Buffer> {
@@ -107,16 +184,16 @@ export class WorkspaceLocal extends WorkspaceService {
     return readFile(resolved)
   }
 
-  async listFiles(sessionId: string): Promise<Array<{ path: string; size: number; mtime: string }>> {
+  async listFiles(sessionId: string): Promise<WorkspaceFile[]> {
     const root = this.root(sessionId)
-    const out: Array<{ path: string; size: number; mtime: string }> = []
+    const out: WorkspaceFile[] = []
     const visit = (dir: string) => {
       for (const entry of readdirSync(dir)) {
         if (out.length >= 100) return
         const full = path.join(dir, entry)
         try {
           const st = statSync(full)
-          if (st.isDirectory()) { if (entry !== 'rlm_logs' && entry !== '.agent_cache' && entry !== '.agent_bootstrap') visit(full) }
+          if (st.isDirectory()) { if (entry !== 'rlm_logs' && entry !== '.sessions' && entry !== '.agent_cache' && entry !== '.agent_bootstrap') visit(full) }
           else if (st.isFile() && entry !== 'index.json') {
             out.push({ path: path.relative(root, full).split(path.sep).join('/'), size: st.size, mtime: st.mtime.toISOString() })
           }
@@ -127,7 +204,103 @@ export class WorkspaceLocal extends WorkspaceService {
     return out.sort((a, b) => a.path.localeCompare(b.path))
   }
 
-  async inspect(sessionId: string): Promise<WorkspaceSnapshot> {
+  async listSourceFiles(workspaceId: string): Promise<WorkspaceFile[]> {
+    return (await this.listFiles(workspaceId)).filter((file) =>
+      !file.path.startsWith('generated/') && !file.path.startsWith('outputs/'))
+  }
+
+  async listSessionOutputs(workspaceId: string, runtimeSessionId: string): Promise<WorkspaceFile[]> {
+    const root = this.root(workspaceId)
+    const generated = path.join(root, '.sessions', safeRuntimeSessionId(runtimeSessionId), 'generated')
+    return this.walkPublicFiles(generated, generated)
+  }
+
+  async listProjectOutputs(workspaceId: string): Promise<WorkspaceFile[]> {
+    const root = this.root(workspaceId)
+    const published = this.walkPublicFiles(path.join(root, 'outputs'), path.join(root, 'outputs'))
+    // Backward compatibility: artifacts produced before session-scoped outputs
+    // were introduced are treated as already-published project outputs.
+    const legacy = this.walkPublicFiles(path.join(root, 'generated'), path.join(root, 'generated'))
+      .map((file) => ({ ...file, path: `legacy/${file.path}` }))
+    return [...published, ...legacy].sort((a, b) => a.path.localeCompare(b.path))
+  }
+
+  async promoteSessionOutput(
+    workspaceId: string,
+    runtimeSessionId: string,
+    sourcePath: string,
+    outputName?: string,
+  ): Promise<PromotedWorkspaceOutput> {
+    const root = this.root(workspaceId)
+    const sessionGenerated = path.join(root, '.sessions', safeRuntimeSessionId(runtimeSessionId), 'generated')
+    const safeSource = this.safeRelativePath(sourcePath.replace(/^generated\//, ''))
+    const source = path.resolve(sessionGenerated, safeSource)
+    if (source !== sessionGenerated && !source.startsWith(sessionGenerated + path.sep)) throw new Error('output path escapes session')
+    if (lstatSync(source).isSymbolicLink()) throw new Error('symbolic-link outputs cannot be promoted')
+    const realSessionGenerated = realpathSync(sessionGenerated)
+    const realSource = realpathSync(source)
+    if (realSource !== realSessionGenerated && !realSource.startsWith(realSessionGenerated + path.sep)) throw new Error('output path escapes session')
+    const sourceStat = statSync(realSource)
+    if (!sourceStat.isFile()) throw new Error('session output is not a file')
+
+    const requested = this.safeRelativePath(outputName || safeSource)
+    const outputRoot = path.join(root, 'outputs')
+    let relative = requested
+    let target = path.resolve(outputRoot, relative)
+    if (target !== outputRoot && !target.startsWith(outputRoot + path.sep)) throw new Error('output path escapes project')
+    const parsed = path.parse(relative)
+    for (let version = 2; existsSync(target); version += 1) {
+      relative = path.join(parsed.dir, `${parsed.name}-${version}${parsed.ext}`)
+      target = path.resolve(outputRoot, relative)
+    }
+    mkdirSync(path.dirname(target), { recursive: true })
+    await copyFile(realSource, target)
+    const stat = statSync(target)
+    const promoted: PromotedWorkspaceOutput = {
+      path: relative.split(path.sep).join('/'),
+      size: stat.size,
+      mtime: stat.mtime.toISOString(),
+      sourcePath: safeSource.split(path.sep).join('/'),
+      createdBySession: runtimeSessionId,
+    }
+    this.recordPromotion(outputRoot, promoted)
+    return promoted
+  }
+
+  private walkPublicFiles(directory: string, relativeTo: string): WorkspaceFile[] {
+    if (!existsSync(directory)) return []
+    const files: WorkspaceFile[] = []
+    const visit = (current: string) => {
+      for (const entry of readdirSync(current)) {
+        if (files.length >= 100 || entry === '.manifest.json') continue
+        const full = path.join(current, entry)
+        try {
+          const stat = statSync(full)
+          if (stat.isDirectory()) visit(full)
+          else if (stat.isFile()) files.push({
+            path: path.relative(relativeTo, full).split(path.sep).join('/'),
+            size: stat.size,
+            mtime: stat.mtime.toISOString(),
+          })
+        } catch { /* skip files changed during traversal */ }
+      }
+    }
+    visit(directory)
+    return files.sort((a, b) => a.path.localeCompare(b.path))
+  }
+
+  private recordPromotion(outputRoot: string, promoted: PromotedWorkspaceOutput) {
+    const manifestPath = path.join(outputRoot, '.manifest.json')
+    let records: PromotedWorkspaceOutput[] = []
+    try {
+      const parsed = JSON.parse(readFileSync(manifestPath, 'utf8'))
+      if (Array.isArray(parsed)) records = parsed
+    } catch { /* first published output */ }
+    records.push(promoted)
+    writeFileSync(manifestPath, JSON.stringify(records, null, 2))
+  }
+
+  async inspect(sessionId: string, runtimeSessionId?: string): Promise<WorkspaceSnapshot> {
     const root = this.root(sessionId)
     const manifest = this.listDatasets(sessionId)
     const datasets: Array<Record<string, unknown>> = []
@@ -152,7 +325,12 @@ export class WorkspaceLocal extends WorkspaceService {
       activeDataset: active ? { ...active } : undefined,
       resources: {
         datasets: manifest.map((item) => ({ ...item })),
-        artifacts: this.listArtifacts(sessionId),
+        artifacts: [
+          ...(await this.listProjectOutputs(sessionId)).map((file) => file.path.startsWith('legacy/')
+            ? `generated/${file.path.slice('legacy/'.length)}`
+            : `outputs/${file.path}`),
+          ...(runtimeSessionId ? await this.listSessionOutputs(sessionId, runtimeSessionId) : []).map((file) => `generated/${file.path}`),
+        ],
       },
     }
   }

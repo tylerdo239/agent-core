@@ -1,0 +1,60 @@
+{
+  "suite": "ds-report-v1",
+  "sources": [
+    {
+      "name": "DeepAnalyze DABStep-Research (open-ended)",
+      "url": "https://arxiv.org/abs/2510.16872",
+      "license": "inspired, fixtures from InfiAgent-DABench"
+    }
+  ],
+  "cases": [
+    {
+      "id": "report_gapminder_growth_01",
+      "source": "Open-ended analyst-grade report (DeepAnalyze §5.1 analog)",
+      "datasets": ["gapminder_gdp_asia.csv"],
+      "turns": [
+        {
+          "message": "Using the registered dataset gapminder_gdp_asia.csv: Produce an analyst-grade mini-report. Steps: 1) Call profile_dataset() first to understand the data (required). 2) Describe temporal coverage, columns, missingness and any duplicates. 3) Identify the top 3 countries by GDP per capita growth from 1982 to 2007 (compute growth = (gdpPercap_2007 - gdpPercap_1982) / gdpPercap_1982). 4) Flag outliers or data-quality issues you observe. 5) State 2 limitations of this analysis and 1 concrete next-step recommendation. Structure your answer with clear headings (Overview, Growth ranking, Quality & outliers, Limitations, Recommendation). End with a one-line summary.",
+          "checks": {
+            "min_words": 220,
+            "report_sections": [
+              "overview|profile|temporal coverage",
+              "growth|ranking|top 3",
+              "outlier|quality|duplicate",
+              "limitation|caveat|uncertainty",
+              "recommend|next step"
+            ],
+            "report_keywords": ["gdp", "1982", "2007"],
+            "answer_not": ["context_0", "REPL protocol"],
+            "forbidden_tools": ["web_search", "query_database"],
+            "max_iterations": 6,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    },
+    {
+      "id": "report_ravenna_profile_01",
+      "source": "Open-ended profile + insight (lightweight, same fixture as dabench_mean 683)",
+      "datasets": ["ravenna_250715.csv"],
+      "turns": [
+        {
+          "message": "Using the registered dataset ravenna_250715.csv: Write a short analyst note (not just a number). 1) Call profile_dataset() first. 2) Summarize shape, key columns and any missing/bad values. 3) Give the mean temperature (to 2 decimals) AND interpret it (is the distribution plausible? any skew/outlier hint?). 4) State one limitation of using only the mean and one follow-up check you would run. Use headings: Overview, Mean & interpretation, Limitation & next check.",
+          "checks": {
+            "min_words": 180,
+            "numeric_answers": [{"value": 29.14, "tolerance": 0.02}],
+            "report_sections": [
+              "overview|profile",
+              "mean.*interpret|interpretation",
+              "limitation|next check"
+            ],
+            "report_keywords": ["temperature", "missing", "mean"],
+            "forbidden_tools": ["web_search", "query_database"],
+            "max_iterations": 5,
+            "max_context_tokens": 30000
+          }
+        }
+      ]
+    }
+  ]
+}

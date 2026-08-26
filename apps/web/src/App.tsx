@@ -44,9 +44,10 @@ import { AppFrame } from '@agent-core/ui-layout'
 import { AdminUsersPanel, clearAuthState, loadAuthState, LoginForm, saveAuthState, SignupForm, type AuthState } from '@agent-core/ui-auth'
 import { PluginInventoryPanel } from '@agent-core/ui-plugin-inventory'
 import { cacheSessionTitle, fetchSessionHistory, Sidebar, type SessionSummary } from '@agent-core/ui-sidebar'
-import { Composer, EmptyState, GenericToolCard, MessageBubble, StreamingRow, ToolRow } from '@agent-core/ui-conversation'
+import { Composer, EmptyState, GenericToolCard, HumanDecision, MessageBubble, StreamingRow, ToolRow } from '@agent-core/ui-conversation'
 import { loadSettings, type Settings } from '@agent-core/ui-settings-general'
 import { PluginSettingsPanel } from '@agent-core/ui-plugin-settings'
+import { ProjectHub, type ProjectOutputFile, type ProjectSummary } from '@agent-core/ui-projects'
 import type { WorkspaceHeaderPanelProps, SkillComposerExtraProps } from '@agent-core/ui-rlm-workspace'
 import { createClientContext } from './client-context.ts'
 
@@ -88,6 +89,10 @@ interface LoopStep {
     | 'subcall_result'
     | 'context_usage'
     | 'memory_updated'
+    | 'skill_loaded'
+    | 'skill_resource'
+    | 'workspace_read'
+    | 'workspace_write'
   content?: string
   toolCall?: { name: string; args: Record<string, unknown> }
   toolUi?: ToolUiHint
@@ -95,14 +100,25 @@ interface LoopStep {
   args?: Record<string, unknown>
   result?: unknown
   message?: string
-  control?: { question?: string; reason?: string; action?: string }
+  control?: {
+    kind?: string
+    question?: string
+    options?: unknown
+    reason?: string
+    action?: string
+    request_id?: string
+  }
   question?: string
   reason?: string
   code?: string
+  action?: string
+  path?: string
+  skill?: string
+  encoding?: string
 }
 
 type ChatItem =
-  | { kind: 'user' | 'assistant' | 'system' | 'error' | 'critic'; id: string; text: string; ts?: number }
+  | { kind: 'user' | 'assistant' | 'system' | 'error' | 'critic'; id: string; text: string; description?: string; ts?: number }
   | {
       kind: 'tool'
       id: string
@@ -112,6 +128,30 @@ type ChatItem =
       result?: unknown
       errorText?: string
     }
+  | {
+      kind: 'control'
+      id: string
+      question: string
+      options: string[]
+      reason?: string
+      requestId?: string
+      answered?: string
+    }
+
+function humanControlItem(step: LoopStep): Extract<ChatItem, { kind: 'control' }> {
+  const control = step.control
+  const options = Array.isArray(control?.options)
+    ? control.options.filter((option): option is string => typeof option === 'string' && Boolean(option.trim())).map((option) => option.trim())
+    : []
+  return {
+    kind: 'control',
+    id: genId(),
+    question: control?.question || step.question || control?.action || step.action || 'RLM đang chờ quyết định của bạn.',
+    options,
+    reason: control?.reason || step.reason || undefined,
+    requestId: control?.request_id || undefined,
+  }
+}
 
 let nextId = 0
 function genId(): string {
@@ -130,6 +170,25 @@ type UploadState = {
   message?: string
 }
 
+const ACTIVE_SESSION_KEY_PREFIX = 'agent-core-ui-active-session:'
+
+function activeSessionId(userId: string): string | null {
+  return localStorage.getItem(`${ACTIVE_SESSION_KEY_PREFIX}${userId}`)
+}
+
+function rememberActiveSession(userId: string, sessionId: string): void {
+  localStorage.setItem(`${ACTIVE_SESSION_KEY_PREFIX}${userId}`, sessionId)
+}
+
+async function fetchSessionEvents(restUrl: string, token: string, sessionId: string): Promise<LoopStep[]> {
+  const response = await fetch(`${restUrl}/sessions/${sessionId}/events`, {
+    headers: { authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  const payload = (await response.json()) as { events?: LoopStep[] }
+  return payload.events ?? []
+}
+
 function toolRowSummary(item: Extract<ChatItem, { kind: 'tool' }>): string {
   if (item.state === 'error') return item.errorText ?? 'lỗi'
   if (item.state === 'ok' && item.toolUi?.render === 'citations') {
@@ -145,6 +204,28 @@ function toolRowSummary(item: Extract<ChatItem, { kind: 'tool' }>): string {
     if (typeof value === 'string' && value) return `"${value}"`
   }
   return JSON.stringify(item.toolCall.args ?? {})
+}
+
+function workspaceReadActivity(step: Pick<LoopStep, 'action' | 'path'>) {
+  const action = step.action ?? 'đọc'
+  const normalized = action.toLowerCase()
+  let description = 'Đọc dữ liệu từ workspace để phục vụ lượt phân tích hiện tại.'
+  if (normalized === 'list datasets') description = 'Kiểm tra các dataset hiện có trong workspace.'
+  else if (normalized === 'profile dataset') description = 'Đọc cấu trúc, kiểu dữ liệu và thống kê cơ bản của dataset.'
+  else if (normalized === 'load dataset') description = `Nạp ${step.path || 'dataset'} vào môi trường Python để xử lý.`
+  else if (normalized === 'list files') description = 'Kiểm tra các file hiện có trong workspace.'
+  else if (normalized === 'read file') description = `Đọc ${step.path || 'file'} từ workspace.`
+  return { text: `📄 ${action}`, description }
+}
+
+function workspaceWriteActivity(path = '') {
+  const lower = path.toLowerCase()
+  let description = 'Lưu kết quả vào workspace để tải xuống hoặc sử dụng ở lượt sau.'
+  if (lower.endsWith('.json')) description = 'Lưu kết quả dạng JSON vào workspace để tải xuống hoặc dùng lại.'
+  else if (/\.(md|html|pdf)$/.test(lower)) description = 'Lưu báo cáo hoàn chỉnh vào workspace.'
+  else if (/\.(csv|parquet|xlsx)$/.test(lower)) description = 'Lưu dataset kết quả vào workspace.'
+  if (path) description = `${description.replace(/\.$/, '')}: ${path}`
+  return { text: '💾 ghi output', description }
 }
 
 export function App() {
@@ -175,18 +256,23 @@ export function App() {
   // phải localStorage nữa (loadSessionHistory() cũ) — xem
   // packages/ui-sidebar/src/sessionHistory.ts.
   const [sessions, setSessions] = useState<SessionSummary[]>([])
+  const [projects, setProjects] = useState<ProjectSummary[]>([])
+  const [projectsLoading, setProjectsLoading] = useState(false)
+  const [projectView, setProjectView] = useState(false)
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
   const [skills, setSkills] = useState<SkillOption[]>([])
   const [selectedSkill, setSelectedSkill] = useState('')
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([])
   const [workspaceDatasets, setWorkspaceDatasets] = useState<WorkspaceDataset[]>([])
   const [workspaceArtifacts, setWorkspaceArtifacts] = useState<string[]>([])
+  const [projectOutputs, setProjectOutputs] = useState<ProjectOutputFile[]>([])
   const [workspaceLoading, setWorkspaceLoading] = useState(false)
   const [workspaceError, setWorkspaceError] = useState('')
   const [uploadState, setUploadState] = useState<UploadState | null>(null)
 
   const { toasts, push: pushToast } = useToasts()
 
-  async function refreshWorkspaceFiles(sid: string) {
+  async function refreshWorkspaceFiles(sid: string, explicitProjectId?: string) {
     // Module auth: `Settings` không còn `apiKey` (Phase 24) — danh tính là
     // `auth.token`. Hàm này chỉ thực sự được gọi từ chỗ đã qua gate `!auth`
     // (WS handler trong connect()/resumeSession, hoặc nút bấm trong JSX sau
@@ -195,12 +281,44 @@ export function App() {
     if (!auth) return
     setWorkspaceLoading(true)
     try {
-      const res = await fetch(`${settings.restUrl}/sessions/${sid}/files`, { headers: { authorization: `Bearer ${auth.token}` } })
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`)
-      const data = (await res.json()) as { files: WorkspaceFile[]; datasets: WorkspaceDataset[]; artifacts: string[] }
-      setWorkspaceFiles(data.files ?? [])
-      setWorkspaceDatasets(data.datasets ?? [])
-      setWorkspaceArtifacts(data.artifacts ?? [])
+      const projectId = explicitProjectId ?? sessions.find((session) => session.id === sid)?.projectId
+      if (projectId) {
+        const headers = { authorization: `Bearer ${auth.token}` }
+        const [sourceResponse, outputResponse] = await Promise.all([
+          fetch(`${settings.restUrl}/projects/${projectId}/sources`, { headers }),
+          fetch(`${settings.restUrl}/projects/${projectId}/outputs`, { headers }),
+        ])
+        if (!sourceResponse.ok) throw new Error(`HTTP ${sourceResponse.status}: ${await sourceResponse.text()}`)
+        if (!outputResponse.ok) throw new Error(`HTTP ${outputResponse.status}: ${await outputResponse.text()}`)
+        const sourceData = await sourceResponse.json() as { sources?: WorkspaceFile[]; datasets?: WorkspaceDataset[] }
+        const outputData = await outputResponse.json() as {
+          projectOutputs?: WorkspaceFile[]
+          sessionOutputs?: Array<{ sessionId: string; files: WorkspaceFile[] }>
+        }
+        const mappedOutputs: ProjectOutputFile[] = [
+          ...(outputData.projectOutputs ?? []).map((file) => ({ ...file, scope: 'project' as const })),
+          ...(outputData.sessionOutputs ?? []).flatMap((group) => group.files.map((file) => ({
+            ...file,
+            scope: 'session' as const,
+            sessionId: group.sessionId,
+            conversationTitle: sessions.find((session) => session.id === group.sessionId)?.title,
+          }))),
+        ]
+        setWorkspaceFiles(sourceData.sources ?? [])
+        setWorkspaceDatasets(sourceData.datasets ?? [])
+        setProjectOutputs(mappedOutputs)
+        setWorkspaceArtifacts(mappedOutputs
+          .filter((file) => file.scope === 'project' || file.sessionId === sid)
+          .map((file) => file.scope === 'project' ? `outputs/${file.path}` : `generated/${file.path}`))
+      } else {
+        const res = await fetch(`${settings.restUrl}/sessions/${sid}/files`, { headers: { authorization: `Bearer ${auth.token}` } })
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`)
+        const data = (await res.json()) as { files: WorkspaceFile[]; datasets: WorkspaceDataset[]; artifacts: string[] }
+        setWorkspaceFiles(data.files ?? [])
+        setWorkspaceDatasets(data.datasets ?? [])
+        setWorkspaceArtifacts(data.artifacts ?? [])
+        setProjectOutputs([])
+      }
       setWorkspaceError('')
     } catch (error: unknown) {
       setWorkspaceError(error instanceof Error ? error.message : String(error))
@@ -215,34 +333,22 @@ export function App() {
   async function handleFileUpload(file: File) {
     if (!auth) return
     let sid = sessionId
-    if (!sid) {
+    const projectId = activeProjectId
+    if (!sid && !projectId) {
       // Tự tạo session nếu chưa có (nhánh phòng thủ hiếm gặp — workspace bar
       // chỉ hiện cho session driver 'rlm' đã tồn tại, xem mục 3; vẫn giữ vì
       // race window hẹp giữa lúc bấm "Phân tích dữ liệu" và session_created
       // WS trả về).
-      try {
-        const res = await fetch(`${settings.restUrl}/sessions`, {
-          method: 'POST',
-          headers: { authorization: `Bearer ${auth.token}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ driver: 'rlm' }),
-        })
-        if (!res.ok) throw new Error(await res.text())
-        const data = (await res.json()) as { id: string }
-        sid = data.id
-        setSessionId(sid)
-        sessionIdRef.current = sid
-        setStatus('connected')
-      } catch (e: unknown) {
-        pushToast(`Không tạo được session: ${e instanceof Error ? e.message : String(e)}`, 'error')
-        return
-      }
+      pushToast('Hãy tạo hoặc chọn một dự án trước khi upload nguồn.', 'error')
+      return
     }
     if (file.size > 70 * 1024 * 1024) { pushToast('File quá lớn (tối đa 70 MiB).', 'error'); return }
     setUploadState({ phase: 'uploading', filename: file.name, progress: 0 })
     try {
       await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest()
-        xhr.open('POST', `${settings.restUrl}/sessions/${sid}/files`)
+        const endpoint = projectId ? `/projects/${projectId}/sources` : `/sessions/${sid}/files`
+        xhr.open('POST', `${settings.restUrl}${endpoint}`)
         xhr.setRequestHeader('authorization', `Bearer ${auth.token}`)
         xhr.setRequestHeader('content-type', 'application/octet-stream')
         xhr.setRequestHeader('x-file-name', encodeURIComponent(file.name))
@@ -255,7 +361,7 @@ export function App() {
         xhr.onerror = () => reject(new Error('Network error'))
         xhr.send(file)
       })
-      await refreshWorkspaceFiles(sid)
+      await refreshWorkspaceFiles(sid ?? '', projectId ?? undefined)
       setUploadState({ phase: 'success', filename: file.name, progress: 100, message: 'Đã upload và đăng ký trong workspace.' })
       pushToast(`Đã tải lên ${file.name}`, 'default')
     } catch (e: unknown) {
@@ -266,9 +372,13 @@ export function App() {
   }
 
   async function downloadWorkspaceFile(filePath: string) {
-    if (!sessionId || !auth) return
+    if ((!sessionId && !activeProjectId) || !auth) return
     try {
-      const response = await fetch(`${settings.restUrl}/sessions/${sessionId}/files/${encodeURIComponent(filePath)}`, {
+      const projectId = activeProjectId ?? sessions.find((session) => session.id === sessionId)?.projectId
+      const endpoint = projectId
+        ? `/projects/${projectId}/files/${encodeURIComponent(filePath)}`
+        : `/sessions/${sessionId}/files/${encodeURIComponent(filePath)}`
+      const response = await fetch(`${settings.restUrl}${endpoint}`, {
         headers: { authorization: `Bearer ${auth.token}` },
       })
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`)
@@ -281,6 +391,40 @@ export function App() {
     } catch (error: unknown) {
       pushToast(`Không tải được ${filePath}: ${error instanceof Error ? error.message : String(error)}`, 'error')
     }
+  }
+
+  async function downloadProjectOutput(output: ProjectOutputFile) {
+    if (!activeProjectId || !auth) return
+    const endpoint = output.scope === 'project'
+      ? `/projects/${activeProjectId}/outputs/project/${encodeURIComponent(output.path)}`
+      : `/projects/${activeProjectId}/outputs/session/${output.sessionId}/${encodeURIComponent(output.path)}`
+    try {
+      const response = await fetch(`${settings.restUrl}${endpoint}`, { headers: { authorization: `Bearer ${auth.token}` } })
+      if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`)
+      const url = URL.createObjectURL(await response.blob())
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = output.path.split('/').pop() || 'output'
+      anchor.click()
+      URL.revokeObjectURL(url)
+    } catch (error: unknown) {
+      pushToast(`Không tải được output: ${error instanceof Error ? error.message : String(error)}`, 'error')
+    }
+  }
+
+  async function promoteProjectOutput(output: ProjectOutputFile) {
+    if (!activeProjectId || !auth || output.scope !== 'session' || !output.sessionId) return
+    const response = await fetch(`${settings.restUrl}/projects/${activeProjectId}/outputs`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${auth.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: output.sessionId, path: output.path }),
+    })
+    if (!response.ok) {
+      pushToast(`Không đưa được output vào dự án: ${await response.text()}`, 'error')
+      return
+    }
+    await refreshWorkspaceFiles(sessionId ?? '', activeProjectId)
+    pushToast(`Đã đưa ${output.path} vào output chung của dự án.`, 'default')
   }
 
   const wsRef = useRef<WebSocket | null>(null)
@@ -332,6 +476,24 @@ export function App() {
   useEffect(() => {
     const isNewItem = items.length !== prevItemsLengthRef.current
     prevItemsLengthRef.current = items.length
+    // Merge feat/rlm-dev-integration: giữ thêm 1 điều kiện loại trừ từ nhánh
+    // đó — RLM vừa trả 'final' sau 1 chuỗi tool/critic dài thì KHÔNG kéo
+    // xuống cuối 1 câu trả lời dài, giữ viewport ở timeline hoạt động (kéo
+    // thẳng xuống cuối làm timeline trông như "biến mất").
+    const last = items[items.length - 1]
+    if (last?.kind === 'assistant') {
+      let lastUserIndex = -1
+      for (let index = items.length - 2; index >= 0; index -= 1) {
+        if (items[index].kind === 'user') {
+          lastUserIndex = index
+          break
+        }
+      }
+      const turnHasActivity = items
+        .slice(lastUserIndex + 1, -1)
+        .some((item) => item.kind === 'critic' || item.kind === 'tool')
+      if (turnHasActivity) return
+    }
     messagesEndRef.current?.scrollIntoView({ block: 'end', behavior: isNewItem ? 'smooth' : 'auto' })
   }, [items])
 
@@ -341,6 +503,14 @@ export function App() {
   // lúc socket 'open' — caller PHẢI await xong hàm này trước khi POST
   // /sessions/:id/messages, để không lỡ mất step đầu tiên (server emit
   // 'agent/step' đồng bộ ngay trong lúc xử lý message, xem seams/loop.ts).
+  //
+  // Merge feat/rlm-dev-integration: nhánh đó còn 1 hàm `connect()` khác hẳn
+  // (mở WS chung `${wsUrl}/?token=...` rồi gửi `create_session`/`send_message`
+  // qua chính socket đó, nhận lại `session_created`) — protocol CŨ, đã bị
+  // xoá khỏi backend từ Phase 6.3 (api-ws gộp vào api-rest, WS giờ downlink-
+  // only, xem header file). RETIRE HẲN `connect()` — mọi chỗ gọi nó đổi
+  // sang tổ hợp openStream()/ensureStream() + POST /sessions[/:id/messages]
+  // (xem sendUserMessage(), startProjectConversation() bên dưới).
   function openStream(current: Settings, token: string, sid: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const url = `${current.wsUrl}/sessions/${sid}/events/stream?token=${encodeURIComponent(token)}`
@@ -526,7 +696,7 @@ export function App() {
       return
     }
     if (step.type === 'critic_message') {
-      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `🔍 đang rà soát: ${step.content}`, ts: Date.now() }])
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '🔍 Rà soát', description: step.content, ts: Date.now() }])
       return
     }
     if (step.type === 'final') {
@@ -543,12 +713,27 @@ export function App() {
       return
     }
     if (step.type === 'analysis' && step.content) {
-      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: `🔍 ${step.content}` }])
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '🧠 Think', description: step.content }])
+      return
+    }
+    if (step.type === 'skill_loaded') {
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '📚 Skill', description: `Đọc ${step.skill ?? 'unknown'} để áp dụng hướng dẫn chuyên môn.` }])
+      return
+    }
+    if (step.type === 'skill_resource') {
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '📚 Skill resource', description: `Đọc ${step.skill ?? 'unknown'}${step.path ? `/${step.path}` : ''}.` }])
+      return
+    }
+    if (step.type === 'workspace_read') {
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), ...workspaceReadActivity(step) }])
+      return
+    }
+    if (step.type === 'workspace_write') {
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), ...workspaceWriteActivity(step.path) }])
       return
     }
     if (step.type === 'human_decision') {
-      const text = step.control?.question || step.control?.reason || step.control?.action || 'RLM đang chờ quyết định của bạn.'
-      setItems((prev) => [...prev, { kind: 'system', id: genId(), text }])
+      setItems((prev) => [...prev, humanControlItem(step)])
       return
     }
     if (step.type === 'error') {
@@ -561,10 +746,121 @@ export function App() {
     wsRef.current = null
     wsSessionIdRef.current = null
     activeToolItemIdRef.current = null
+    sessionIdRef.current = null
+    // Driver là lựa chọn UI đã biết ngay khi user bấm "Chat mới" hoặc
+    // "Phân tích dữ liệu"; không được đợi `session_created` mới cập nhật.
+    // Session creation bị trì hoãn tới tin nhắn/upload đầu tiên, còn slot
+    // workspace + skill selector phải hiện ngay để user có thể upload trước.
+    setSessionDriver(driver)
+    setWorkspaceFiles([])
+    setWorkspaceDatasets([])
+    setWorkspaceArtifacts([])
+    setProjectOutputs([])
+    setWorkspaceError('')
+    setUploadState(null)
     setItems([])
     setSessionId(null)
     pendingSessionDriverRef.current = driver
     setStatus('connected')
+    setProjectView(false)
+    if (driver !== 'rlm') setActiveProjectId(null)
+  }
+
+  async function loadProjects() {
+    if (!auth) return
+    setProjectsLoading(true)
+    try {
+      const response = await fetch(`${settings.restUrl}/projects`, { headers: { authorization: `Bearer ${auth.token}` } })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const payload = await response.json() as { projects?: ProjectSummary[] }
+      setProjects(payload.projects ?? [])
+    } catch (error) {
+      pushToast(`Không tải được dự án: ${error instanceof Error ? error.message : String(error)}`, 'error')
+    } finally {
+      setProjectsLoading(false)
+    }
+  }
+
+  function openProjects(projectId?: string) {
+    wsRef.current?.close()
+    wsRef.current = null
+    setProjectView(true)
+    setActiveProjectId(projectId ?? null)
+    setSessionId(null)
+    setItems([])
+    setSessionDriver('rlm')
+    setWorkspaceFiles([])
+    setWorkspaceDatasets([])
+    setWorkspaceArtifacts([])
+    setProjectOutputs([])
+    setUploadState(null)
+    void loadProjects()
+    if (projectId) void refreshWorkspaceFiles('', projectId)
+  }
+
+  async function createProject(name: string) {
+    if (!auth) return
+    const response = await fetch(`${settings.restUrl}/projects`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${auth.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    if (!response.ok) {
+      pushToast(`Không tạo được dự án: ${await response.text()}`, 'error')
+      return
+    }
+    const { project } = await response.json() as { project: ProjectSummary }
+    setProjects((previous) => [project, ...previous])
+    setActiveProjectId(project.id)
+    await refreshWorkspaceFiles('', project.id)
+  }
+
+  async function startProjectConversation(initialMessage?: string) {
+    if (!auth || !activeProjectId) return
+    const response = await fetch(`${settings.restUrl}/projects/${activeProjectId}/sessions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${auth.token}`, 'content-type': 'application/json' },
+      body: '{}',
+    })
+    if (!response.ok) {
+      pushToast(`Không tạo được đoạn chat: ${await response.text()}`, 'error')
+      return
+    }
+    const created = await response.json() as { id: string; projectId: string }
+    const title = initialMessage ? cacheSessionTitle(created.id, initialMessage) : 'Đoạn chat mới'
+    const summary: SessionSummary = {
+      id: created.id, driver: 'rlm', projectId: created.projectId,
+      title, createdAt: Date.now(),
+    }
+    setSessions((previous) => [summary, ...previous])
+    titledSessionIdsRef.current.add(created.id)
+    setProjectView(false)
+    setSessionDriver('rlm')
+    setItems([])
+    setSessionId(created.id)
+    sessionIdRef.current = created.id
+    // REST-first (openStream/ensureStream, xem ghi chú retire connect() ở
+    // trên): session đã tạo xong qua POST /projects/:id/sessions — chỉ cần
+    // mở downlink rồi POST tin nhắn đầu tiên (nếu có), không còn WS
+    // create_session/send_message của feature branch.
+    await ensureStream(settings, auth.token, created.id)
+    if (initialMessage) {
+      setItems([{ kind: 'user', id: genId(), text: initialMessage, ts: Date.now() }])
+      setTurnInFlight(true)
+      try {
+        const msgRes = await fetch(`${settings.restUrl}/sessions/${created.id}/messages`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${auth.token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ message: initialMessage, selectedSkill: selectedSkill || undefined }),
+        })
+        if (!msgRes.ok) throw new Error(await msgRes.text())
+        setTurnInFlight(false)
+      } catch (e: unknown) {
+        setTurnInFlight(false)
+        pushToast(`Gửi tin nhắn thất bại: ${e instanceof Error ? e.message : String(e)}`, 'error')
+      }
+    }
+    await refreshWorkspaceFiles(created.id, created.projectId)
   }
 
   // Dựng lại ChatItem[] từ event log THẬT (GET /sessions/:id/events) — khác
@@ -581,6 +877,18 @@ export function App() {
     for (const raw of events) {
       const step = raw as LoopStep & { type: string }
       if (step.type === 'user_message') {
+        let pendingControl = -1
+        for (let index = result.length - 1; index >= 0; index -= 1) {
+          const item = result[index]
+          if (item.kind === 'control' && !item.answered) {
+            pendingControl = index
+            break
+          }
+        }
+        if (pendingControl !== -1) {
+          const item = result[pendingControl] as Extract<ChatItem, { kind: 'control' }>
+          result[pendingControl] = { ...item, answered: step.content ?? '' }
+        }
         result.push({ kind: 'user', id: genId(), text: step.content ?? '' })
         continue
       }
@@ -620,7 +928,27 @@ export function App() {
         continue
       }
       if (step.type === 'critic_message') {
-        result.push({ kind: 'critic', id: genId(), text: `🔍 đang rà soát: ${step.content}` })
+        result.push({ kind: 'critic', id: genId(), text: '🔍 Rà soát', description: step.content })
+        continue
+      }
+      if (step.type === 'analysis' && step.content) {
+        result.push({ kind: 'critic', id: genId(), text: '🧠 Think', description: step.content })
+        continue
+      }
+      if (step.type === 'skill_loaded') {
+        result.push({ kind: 'critic', id: genId(), text: '📚 Skill', description: `Đọc ${step.skill ?? 'unknown'} để áp dụng hướng dẫn chuyên môn.` })
+        continue
+      }
+      if (step.type === 'skill_resource') {
+        result.push({ kind: 'critic', id: genId(), text: '📚 Skill resource', description: `Đọc ${step.skill ?? 'unknown'}${step.path ? `/${step.path}` : ''}.` })
+        continue
+      }
+      if (step.type === 'workspace_read') {
+        result.push({ kind: 'critic', id: genId(), ...workspaceReadActivity(step) })
+        continue
+      }
+      if (step.type === 'workspace_write') {
+        result.push({ kind: 'critic', id: genId(), ...workspaceWriteActivity(step.path) })
         continue
       }
       if (step.type === 'final_answer') {
@@ -628,11 +956,7 @@ export function App() {
         continue
       }
       if (step.type === 'human_decision') {
-        result.push({
-          kind: 'system',
-          id: genId(),
-          text: step.control?.question || step.question || step.control?.reason || step.reason || 'RLM đang chờ quyết định của bạn.',
-        })
+        result.push(humanControlItem(step))
         continue
       }
       if (step.type === 'error') {
@@ -650,23 +974,30 @@ export function App() {
     // docs/agent-core-rlm-web-ui-plugin-plan.md mục 1: driver của session cũ
     // đã có sẵn trong `sessions` (GET /sessions trả đúng field này) — không
     // cần gọi thêm API riêng chỉ để biết driver.
-    const driver = sessions.find((s) => s.id === id)?.driver ?? 'default'
+    const selected = sessions.find((s) => s.id === id)
+    const driver = selected?.driver ?? 'default'
+    const projectId = selected?.projectId
+    setProjectView(false)
+    setActiveProjectId(projectId ?? null)
     setSessionDriver(driver)
-    if (driver === 'rlm') refreshWorkspaceFiles(id)
+    if (driver === 'rlm') refreshWorkspaceFiles(id, projectId)
     try {
-      const res = await fetch(`${settings.restUrl}/sessions/${id}/events`, {
-        headers: { authorization: `Bearer ${auth.token}` },
-      })
-      if (!res.ok) {
+      let events: LoopStep[]
+      try {
+        events = await fetchSessionEvents(settings.restUrl, auth.token, id)
+      } catch (error) {
+        const status = error instanceof Error ? error.message : ''
         pushToast(
-          res.status === 404 ? 'Cuộc trò chuyện này đã hết hạn hoặc không còn tồn tại.' : `Không tải được lịch sử (lỗi ${res.status}).`,
+          status === 'HTTP 404' ? 'Cuộc trò chuyện này đã hết hạn hoặc không còn tồn tại.' : `Không tải được lịch sử (${status || 'lỗi không xác định'}).`,
           'error',
         )
         return
       }
-      const { events } = (await res.json()) as { events: LoopStep[] }
+      wsRef.current?.close()
+      wsRef.current = null
       activeToolItemIdRef.current = null
       setItems(reconstructItems(events))
+      rememberActiveSession(auth.user.id, id)
       titledSessionIdsRef.current.add(id) // đã có lịch sử thật -> không ghi đè title bằng tin nhắn tiếp theo
       setSessionId(id)
       sessionIdRef.current = id
@@ -687,27 +1018,63 @@ export function App() {
       wsRef.current = null
       wsSessionIdRef.current = null
       setSessions([])
+      setProjects([])
       setItems([])
       setSessionId(null)
       setStatus('connecting')
       return
     }
-    fetchSessionHistory(settings.restUrl, auth.token)
-      .then(setSessions)
-      .catch(() => pushToast('Không tải được danh sách cuộc trò chuyện.', 'error'))
-    initSession(settings, auth.token)
+    // Merge feat/rlm-dev-integration: nhánh đó tự resume session gần nhất
+    // (nhớ qua activeSessionId()) lúc mount/đăng nhập thay vì chỉ probe REST
+    // rồi để trắng — hành vi ĐÁNG giữ (đúng tinh thần "reload không mất chỗ
+    // đang xem"), giữ lại nhưng viết lại qua resumeSession()/initSession()
+    // (REST-first) thay vì connect() (protocol WS create_session/
+    // session_created đã bị retire, xem ghi chú ở openStream()).
+    let disposed = false
+    void fetchSessionHistory(settings.restUrl, auth.token)
+      .then((history) => {
+        if (disposed) return
+        setSessions(history)
+        void loadProjects()
+        const rememberedId = activeSessionId(auth.user.id)
+        const target = history.find((session) => session.id === rememberedId) ?? history[0]
+        if (!target) {
+          initSession(settings, auth.token)
+          return
+        }
+        void resumeSession(target.id)
+      })
+      .catch(() => {
+        if (disposed) return
+        pushToast('Không tải được danh sách cuộc trò chuyện.', 'error')
+        initSession(settings, auth.token)
+      })
     return () => {
-      wsRef.current?.close()
+      disposed = true
+      const socket = wsRef.current
+      wsRef.current = null
+      socket?.close()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth])
 
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault()
-    const text = composerText.trim()
-    if (!text || turnInFlight || !auth || status !== 'connected') return
+  // Merge feat/rlm-dev-integration: giữ chữ ký `sendUserMessage(rawText,
+  // controlItemId?)` của nhánh đó (JSX bên dưới, HumanDecision.onAnswer, gọi
+  // trực tiếp hàm này với 1 câu trả lời BẤT KỲ, không phải composerText) —
+  // handleSubmit() giờ chỉ còn là wrapper mỏng cho <Composer onSubmit>
+  // (xem ngay dưới thân hàm). Guard dùng bản REST-first của HEAD (không cần
+  // `ws` mở sẵn — gửi tin nhắn là POST /sessions/:id/messages, WS chỉ để
+  // NHẬN step/done/error, xem openStream()).
+  async function sendUserMessage(rawText: string, controlItemId?: string): Promise<boolean> {
+    const text = rawText.trim()
+    if (!text || turnInFlight || !auth || status !== 'connected') return false
 
-    setItems((prev) => [...prev, { kind: 'user', id: genId(), text, ts: Date.now() }])
+    setItems((prev) => [
+      ...prev.map((item) =>
+        controlItemId && item.kind === 'control' && item.id === controlItemId ? { ...item, answered: text } : item,
+      ),
+      { kind: 'user' as const, id: genId(), text, ts: Date.now() },
+    ])
     setComposerText('')
     setTurnInFlight(true)
 
@@ -762,7 +1129,14 @@ export function App() {
     } catch (e: unknown) {
       setTurnInFlight(false)
       pushToast(`Gửi tin nhắn thất bại: ${e instanceof Error ? e.message : String(e)}`, 'error')
+      return false
     }
+    return true
+  }
+
+  function handleSubmit(event: React.FormEvent) {
+    event.preventDefault()
+    void sendUserMessage(composerText)
   }
 
   function handleLogout() {
@@ -802,6 +1176,10 @@ export function App() {
     ...file,
     kind: artifactPaths.has(file.path) ? 'output' as const : datasetPaths.has(file.path) || datasetPaths.has(file.path.split('/').pop() ?? '') ? 'dataset' as const : 'file' as const,
   }))
+  const activeProject = projects.find((project) => project.id === activeProjectId)
+  const projectConversations = sessions
+    .filter((session) => session.projectId === activeProjectId)
+    .map(({ id, title, createdAt }) => ({ id, title, createdAt }))
 
   // Module auth: chưa đăng nhập -> thay TOÀN BỘ khung chat bằng màn hình
   // đăng nhập/đăng ký — đặt SAU mọi hook (đúng rules of hooks), TRƯỚC JSX
@@ -832,12 +1210,13 @@ export function App() {
     <>
       <ToastContainer toasts={toasts} />
       <AppFrame
+        wide={projectView}
         sidebar={
           <Sidebar
-            sessions={sessions}
+            sessions={sessions.filter((session) => !session.projectId)}
             activeSessionId={sessionId}
             onNewChat={() => startNewChat()}
-            onNewDataSession={() => startNewChat('rlm')}
+            onNewDataSession={() => openProjects()}
             onSelectSession={resumeSession}
             isAdmin={auth.user.role === 'admin'}
             onOpenAdminPanel={() => setAdminPanelOpen(true)}
@@ -859,7 +1238,7 @@ export function App() {
         // báo lại. Dùng `subHeader` (mới thêm vào AppFrame cho đúng việc
         // này) thay vì `header` — xuống hàng riêng, tách bạch khỏi tiêu đề.
         subHeader={
-          clientCtx && (
+          !projectView && clientCtx && (
             <RenderSlot<WorkspaceHeaderPanelProps>
               ctx={clientCtx}
               name="session.chrome.header"
@@ -881,7 +1260,7 @@ export function App() {
             />
           )
         }
-        footer={
+        footer={projectView ? null : (
           <>
             {clientCtx && (
               <RenderSlot<SkillComposerExtraProps>
@@ -899,10 +1278,44 @@ export function App() {
             )}
             <Composer value={composerText} onChange={setComposerText} onSubmit={handleSubmit} disabled={!composerEnabled} />
           </>
-        }
+        )}
       >
+        {projectView ? (
+          <ProjectHub
+            key={activeProjectId ?? 'project-list'}
+            projects={projects}
+            activeProject={activeProject}
+            conversations={projectConversations}
+            sources={workspaceEntries.filter((file) => file.kind !== 'output').map((file) => ({ ...file, kind: file.kind === 'dataset' ? 'dataset' as const : 'file' as const }))}
+            outputs={projectOutputs}
+            loading={projectsLoading || workspaceLoading}
+            uploadProgress={uploadState?.phase === 'uploading' ? uploadState.progress : undefined}
+            onCreateProject={createProject}
+            onOpenProject={(id) => openProjects(id)}
+            onBack={() => openProjects()}
+            onStartConversation={startProjectConversation}
+            onOpenConversation={resumeSession}
+            onUpload={handleFileUpload}
+            onDownloadSource={downloadWorkspaceFile}
+            onDownloadOutput={downloadProjectOutput}
+            onPromoteOutput={promoteProjectOutput}
+          />
+        ) : <>
         {items.length === 0 && <EmptyState />}
         {items.map((item) => {
+          if (item.kind === 'control') {
+            return (
+              <HumanDecision
+                key={item.id}
+                question={item.question}
+                options={item.options}
+                reason={item.reason}
+                answered={item.answered}
+                disabled={!composerEnabled}
+                onAnswer={(answer) => sendUserMessage(answer, item.id)}
+              />
+            )
+          }
           if (item.kind === 'tool') {
             const owner: ToolViewOwnerProps = { toolCall: item.toolCall, result: item.result, state: item.state, toolUi: item.toolUi }
             return (
@@ -933,6 +1346,7 @@ export function App() {
               key={item.id}
               kind={item.kind}
               text={item.text}
+              description={item.description}
               ts={item.ts}
               onCopied={() => pushToast('Đã sao chép')}
             />
@@ -940,6 +1354,7 @@ export function App() {
         })}
         {showStreamingRow && <StreamingRow />}
         <div ref={messagesEndRef} />
+        </>}
       </AppFrame>
 
       <AdminUsersPanel
