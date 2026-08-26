@@ -43,6 +43,7 @@ import { PluginSettingsPanel } from '@agent-core/ui-plugin-settings'
 import { ProjectHub, type ProjectOutputFile, type ProjectSummary } from '@agent-core/ui-projects'
 import type { WorkspaceHeaderPanelProps, SkillComposerExtraProps } from '@agent-core/ui-rlm-workspace'
 import { createClientContext } from './client-context.ts'
+import { OutputPreviewModal, type OutputPreviewTarget } from './OutputPreviewModal.tsx'
 
 type ToolUiHint = ToolViewOwnerProps['toolUi']
 
@@ -167,6 +168,8 @@ type UploadState = {
   filename: string
   progress: number
   message?: string
+  completed?: number
+  total?: number
 }
 
 const ACTIVE_SESSION_KEY_PREFIX = 'agent-core-ui-active-session:'
@@ -268,6 +271,7 @@ export function App() {
   const [workspaceLoading, setWorkspaceLoading] = useState(false)
   const [workspaceError, setWorkspaceError] = useState('')
   const [uploadState, setUploadState] = useState<UploadState | null>(null)
+  const [outputPreview, setOutputPreview] = useState<OutputPreviewTarget | null>(null)
 
   const { toasts, push: pushToast } = useToasts()
 
@@ -326,11 +330,12 @@ export function App() {
     }
   }
 
-  // docs/agent-core-rlm-web-ui-plugin-plan.md mục 2: nhận thẳng 1 File —
+  // Workspace plugin sở hữu DOM input và chuyển một batch File[] cho App —
   // <input type="file"> giờ nằm TRONG WorkspaceHeaderPanel (ui-rlm-workspace),
   // App.tsx không còn sở hữu DOM input đó nữa, chỉ còn phần gọi API thật.
-  async function handleFileUpload(file: File) {
+  async function handleFileUpload(files: File[]) {
     if (!auth) return
+    if (!files.length) return
     let sid = sessionId
     const projectId = activeProjectId
     if (!sid && !projectId) {
@@ -341,31 +346,42 @@ export function App() {
       pushToast('Hãy tạo hoặc chọn một dự án trước khi upload nguồn.', 'error')
       return
     }
-    if (file.size > 70 * 1024 * 1024) { pushToast('File quá lớn (tối đa 70 MiB).', 'error'); return }
-    setUploadState({ phase: 'uploading', filename: file.name, progress: 0 })
+    const oversized = files.find((file) => file.size > 70 * 1024 * 1024)
+    if (oversized) { pushToast(`${oversized.name} quá lớn (tối đa 70 MiB mỗi file).`, 'error'); return }
+    const total = files.length
+    let currentFile = files[0]
+    let currentProgress = 0
     try {
-      await new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest()
-        const endpoint = projectId ? `/projects/${projectId}/sources` : `/sessions/${sid}/files`
-        xhr.open('POST', `${settings.restUrl}${endpoint}`)
-        xhr.setRequestHeader('authorization', `Bearer ${auth.token}`)
-        xhr.setRequestHeader('content-type', 'application/octet-stream')
-        xhr.setRequestHeader('x-file-name', encodeURIComponent(file.name))
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) {
-            setUploadState({ phase: 'uploading', filename: file.name, progress: Math.round((e.loaded / e.total) * 100) })
+      for (const [index, file] of files.entries()) {
+        currentFile = file
+        currentProgress = Math.round(index * 100 / total)
+        setUploadState({ phase: 'uploading', filename: file.name, progress: currentProgress, completed: index, total })
+        await new Promise<void>((resolve, reject) => {
+          const xhr = new XMLHttpRequest()
+          const endpoint = projectId ? `/projects/${projectId}/sources` : `/sessions/${sid}/files`
+          xhr.open('POST', `${settings.restUrl}${endpoint}`)
+          xhr.setRequestHeader('authorization', `Bearer ${auth.token}`)
+          xhr.setRequestHeader('content-type', 'application/octet-stream')
+          xhr.setRequestHeader('x-file-name', encodeURIComponent(file.name))
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              const progress = Math.round(((index + e.loaded / e.total) / total) * 100)
+              currentProgress = progress
+              setUploadState({ phase: 'uploading', filename: file.name, progress, completed: index, total })
+            }
           }
-        }
-        xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(xhr.responseText || `HTTP ${xhr.status}`)))
-        xhr.onerror = () => reject(new Error('Network error'))
-        xhr.send(file)
-      })
+          xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(xhr.responseText || `HTTP ${xhr.status}`)))
+          xhr.onerror = () => reject(new Error('Network error'))
+          xhr.send(file)
+        })
+      }
       await refreshWorkspaceFiles(sid ?? '', projectId ?? undefined)
-      setUploadState({ phase: 'success', filename: file.name, progress: 100, message: 'Đã upload và đăng ký trong workspace.' })
-      pushToast(`Đã tải lên ${file.name}`, 'default')
+      const label = total === 1 ? files[0].name : `${total} file`
+      setUploadState({ phase: 'success', filename: label, progress: 100, message: 'Đã upload và đăng ký trong workspace.', completed: total, total })
+      pushToast(`Đã tải lên ${label}`, 'default')
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e)
-      setUploadState({ phase: 'error', filename: file.name, progress: 0, message })
+      setUploadState({ phase: 'error', filename: currentFile.name, progress: currentProgress, message, total })
       pushToast(`Upload thất bại: ${message}`, 'error')
     }
   }
@@ -373,11 +389,9 @@ export function App() {
   async function downloadWorkspaceFile(filePath: string) {
     if ((!sessionId && !activeProjectId) || !auth) return
     try {
-      const projectId = activeProjectId ?? sessions.find((session) => session.id === sessionId)?.projectId
-      const endpoint = projectId
-        ? `/projects/${projectId}/files/${encodeURIComponent(filePath)}`
-        : `/sessions/${sessionId}/files/${encodeURIComponent(filePath)}`
-      const response = await fetch(`${settings.restUrl}${endpoint}`, {
+      const endpoint = workspaceFileEndpoint(filePath)
+      if (!endpoint) return
+      const response = await fetch(endpoint, {
         headers: { authorization: `Bearer ${auth.token}` },
       })
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`)
@@ -392,23 +406,69 @@ export function App() {
     }
   }
 
-  async function downloadProjectOutput(output: ProjectOutputFile) {
-    if (!activeProjectId || !auth) return
-    const endpoint = output.scope === 'project'
-      ? `/projects/${activeProjectId}/outputs/project/${encodeURIComponent(output.path)}`
-      : `/projects/${activeProjectId}/outputs/session/${output.sessionId}/${encodeURIComponent(output.path)}`
+  function workspaceFileEndpoint(filePath: string): string | null {
+    const projectId = activeProjectId ?? sessions.find((session) => session.id === sessionId)?.projectId
+    if (projectId) {
+      if (filePath.startsWith('generated/') && sessionId) {
+        return `${settings.restUrl}/projects/${projectId}/outputs/session/${sessionId}/${encodeURIComponent(filePath.slice('generated/'.length))}`
+      }
+      if (filePath.startsWith('outputs/')) {
+        return `${settings.restUrl}/projects/${projectId}/outputs/project/${encodeURIComponent(filePath.slice('outputs/'.length))}`
+      }
+      return `${settings.restUrl}/projects/${projectId}/files/${encodeURIComponent(filePath)}`
+    }
+    return sessionId ? `${settings.restUrl}/sessions/${sessionId}/files/${encodeURIComponent(filePath)}` : null
+  }
+
+  function projectOutputEndpoint(output: ProjectOutputFile): string | null {
+    if (!activeProjectId) return null
+    return output.scope === 'project'
+      ? `${settings.restUrl}/projects/${activeProjectId}/outputs/project/${encodeURIComponent(output.path)}`
+      : output.sessionId
+        ? `${settings.restUrl}/projects/${activeProjectId}/outputs/session/${output.sessionId}/${encodeURIComponent(output.path)}`
+        : null
+  }
+
+  function previewWorkspaceOutput(file: { path: string; size: number }) {
+    const endpoint = workspaceFileEndpoint(file.path)
+    if (endpoint) setOutputPreview({ path: file.path, size: file.size, endpoint })
+  }
+
+  function previewProjectOutput(output: ProjectOutputFile) {
+    const endpoint = projectOutputEndpoint(output)
+    if (endpoint) setOutputPreview({ path: output.path, size: output.size, endpoint })
+  }
+
+  async function downloadPreview(target: OutputPreviewTarget) {
+    if (!auth) return
     try {
-      const response = await fetch(`${settings.restUrl}${endpoint}`, { headers: { authorization: `Bearer ${auth.token}` } })
+      const response = await fetch(target.endpoint, { headers: { authorization: `Bearer ${auth.token}` } })
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`)
       const url = URL.createObjectURL(await response.blob())
       const anchor = document.createElement('a')
       anchor.href = url
-      anchor.download = output.path.split('/').pop() || 'output'
+      anchor.download = target.path.split('/').pop() || 'output'
       anchor.click()
       URL.revokeObjectURL(url)
     } catch (error: unknown) {
       pushToast(`Không tải được output: ${error instanceof Error ? error.message : String(error)}`, 'error')
     }
+  }
+
+  async function deletePreview(target: OutputPreviewTarget) {
+    if (!auth) return
+    const response = await fetch(target.endpoint, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${auth.token}` },
+    })
+    if (!response.ok) {
+      const message = `HTTP ${response.status}: ${await response.text()}`
+      pushToast(`Không xoá được output: ${message}`, 'error')
+      throw new Error(message)
+    }
+    setOutputPreview(null)
+    await refreshWorkspaceFiles(sessionId ?? '', activeProjectId ?? undefined)
+    pushToast(`Đã xoá ${target.path}`, 'default')
   }
 
   async function promoteProjectOutput(output: ProjectOutputFile) {
@@ -1096,6 +1156,13 @@ export function App() {
   return (
     <>
       <ToastContainer toasts={toasts} />
+      <OutputPreviewModal
+        target={outputPreview}
+        token={auth.token}
+        onClose={() => setOutputPreview(null)}
+        onDownload={downloadPreview}
+        onDelete={deletePreview}
+      />
       <AppFrame
         wide={projectView}
         sidebar={
@@ -1136,6 +1203,7 @@ export function App() {
                 onUpload: handleFileUpload,
                 onRefresh: () => sessionId && refreshWorkspaceFiles(sessionId),
                 onDownload: downloadWorkspaceFile,
+                onPreview: previewWorkspaceOutput,
                 datasetsCount: workspaceDatasets.length,
                 artifactsCount: workspaceArtifacts.length,
                 loading: workspaceLoading,
@@ -1184,7 +1252,7 @@ export function App() {
             onOpenConversation={resumeSession}
             onUpload={handleFileUpload}
             onDownloadSource={downloadWorkspaceFile}
-            onDownloadOutput={downloadProjectOutput}
+            onPreviewOutput={previewProjectOutput}
             onPromoteOutput={promoteProjectOutput}
           />
         ) : <>

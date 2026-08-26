@@ -181,7 +181,8 @@ history, extension state và output nháp của chính nó. Nhiều session tron
 
 ```text
 Browser chọn file
-  → POST /projects/:id/sources (raw binary; `/files` vẫn tương thích client cũ)
+  → chọn 1..N file; UI gửi tuần tự từng raw binary
+  → POST /projects/:id/sources (`/files` vẫn tương thích client cũ)
   → api-rest kiểm tra auth + project ownership + giới hạn payload
   → ctx.workspace.writeFile("project:<id>", filename, bytes)
   → provider lưu file
@@ -195,7 +196,10 @@ escape. `workspace-local` dùng `data/rlm-workspaces/projects/<projectId>`;
 Output RLM mặc định nằm ở `.sessions/<sessionId>/generated/`, vì vậy hai đoạn
 chat không ghi đè kết quả của nhau. `POST /projects/:id/outputs` copy một draft
 được chọn sang `outputs/` để dùng chung; file cũ trong `generated/` được hiển
-thị như output dự án legacy, không bị trộn trở lại tab Nguồn.
+thị như output dự án legacy, không bị trộn trở lại tab Nguồn. Click output ở UI
+mở `OutputPreviewModal`; tải và preview dùng cùng GET endpoint có auth. DELETE
+đi qua `ctx.workspace.deleteFile(...)`, chỉ nhận đường dẫn output và đồng bộ
+manifest của output dự án để không còn metadata mồ côi.
 
 ### 4.3 Gửi một RLM turn
 
@@ -490,6 +494,11 @@ schemas tự chúng đã vượt threshold sau compact, turn fail rõ thay vì c
 lặp vô hạn. Đây là compact **trong một request**, khác `ctx.turnMemory` là
 rolling summary **giữa các request** của RLM.
 
+RLM Python cũng guard trước mọi root-model call, nhưng ngưỡng được tính bằng
+`prompt dự kiến + max output tokens`, không chỉ input hiện tại. Guard được chạy
+cả trước finalizer khi hết iteration và trong flow resume, nên một response dài
+ở iteration cuối không thể bỏ qua compact rồi đẩy request quá cỡ sang model.
+
 ### 6.8 Tools, skills và subagents
 
 | Folder | Vai trò |
@@ -539,7 +548,8 @@ giá holdout tách trước train để tránh leakage.
 
 | File/folder | Vai trò |
 |---|---|
-| `apps/web/src/App.tsx` | Shell chat, WS flow, upload progress, workspace panel |
+| `apps/web/src/App.tsx` | Shell chat, WS flow, upload nhiều file/progress và điều phối workspace |
+| `apps/web/src/OutputPreviewModal.tsx` | Preview ảnh/PDF/text output, tải xuống và xác nhận xoá |
 | `AssistantMarkdown.tsx` | Render final answer Markdown an toàn |
 | `Sidebar.tsx` | Danh sách/resume session phía browser |
 | `GenericToolCard.tsx`, `ToolRow.tsx` | Render tool event theo `toolUi` metadata |
@@ -551,7 +561,7 @@ giá holdout tách trước train để tránh leakage.
 | `packages/ui-tool-web-search` | Specialized web-search card plugin |
 | `packages/ui-primitives` | Button/modal/pill/toast/tooltip dùng chung |
 | `packages/ui-theme` | Design tokens CSS |
-| `packages/ui-projects` | Danh sách/tạo project, project detail, tab Đoạn chat/Nguồn/Output và publish draft |
+| `packages/ui-projects` | Danh sách/tạo project, tab Đoạn chat/Nguồn/Output, chọn nhiều source, preview và publish draft |
 
 Frontend mới có thể bỏ reference UI và viết lại hoàn toàn, miễn giữ contract
 trong `frontend-backend-handoff.md`.

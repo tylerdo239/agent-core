@@ -9,7 +9,7 @@
 // 4 rule 4-5): mọi dữ liệu qua props, App.tsx vẫn là nguồn sự thật DUY NHẤT
 // cho workspace state + các lời gọi API thật. `<input type="file">` sở hữu
 // NGAY TRONG component (đóng gói DOM ref cục bộ) — App.tsx chỉ nhận
-// `onUpload(file)` với 1 File thật, không cần biết chi tiết DOM input.
+// `onUpload(files)` với toàn bộ File đã chọn, không cần biết chi tiết DOM input.
 import { useRef } from 'react'
 import { Button } from '@agent-core/ui-primitives'
 
@@ -25,14 +25,17 @@ export interface WorkspaceUploadState {
   filename: string
   progress: number
   message?: string
+  completed?: number
+  total?: number
 }
 
 export interface WorkspaceHeaderPanelProps {
   uploadDisabled: boolean
   refreshDisabled: boolean
-  onUpload: (file: File) => void
+  onUpload: (files: File[]) => void
   onRefresh: () => void
   onDownload: (path: string) => void
+  onPreview: (file: WorkspaceEntry) => void
   datasetsCount: number
   artifactsCount: number
   loading: boolean
@@ -47,6 +50,7 @@ export function WorkspaceHeaderPanel({
   onUpload,
   onRefresh,
   onDownload,
+  onPreview,
   datasetsCount,
   artifactsCount,
   loading,
@@ -57,8 +61,8 @@ export function WorkspaceHeaderPanel({
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
-    if (file) onUpload(file)
+    const files = Array.from(event.target.files ?? [])
+    if (files.length) onUpload(files)
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
@@ -76,6 +80,7 @@ export function WorkspaceHeaderPanel({
           <input
             ref={fileInputRef}
             type="file"
+            multiple
             accept=".csv,.tsv,.xlsx,.xls,.parquet,.json,.txt"
             style={{ display: 'none' }}
             onChange={handleFileChange}
@@ -87,7 +92,9 @@ export function WorkspaceHeaderPanel({
       {uploadState && (
         <div id="upload-status" className={`upload-${uploadState.phase}`} role="status" aria-live="polite">
           <div className="upload-status-label">
-            <span>{uploadState.phase === 'uploading' ? `Đang upload ${uploadState.filename}` : uploadState.phase === 'success' ? `✓ ${uploadState.filename}` : `✕ ${uploadState.filename}`}</span>
+            <span>{uploadState.phase === 'uploading'
+              ? `Đang upload${uploadState.total && uploadState.total > 1 ? ` ${(uploadState.completed ?? 0) + 1}/${uploadState.total}` : ''}: ${uploadState.filename}`
+              : uploadState.phase === 'success' ? `✓ ${uploadState.filename}` : `✕ ${uploadState.filename}`}</span>
             <span>{uploadState.phase === 'uploading' ? `${uploadState.progress}%` : uploadState.message}</span>
           </div>
           <div className="upload-progress-track">
@@ -105,8 +112,8 @@ export function WorkspaceHeaderPanel({
             key={file.path}
             type="button"
             className={`workspace-file workspace-file-${file.kind}`}
-            onClick={() => onDownload(file.path)}
-            title={`Tải ${file.path}${file.size ? ` · ${(file.size / 1024).toFixed(1)} KB` : ''}`}
+            onClick={() => file.kind === 'output' ? onPreview(file) : onDownload(file.path)}
+            title={`${file.kind === 'output' ? 'Preview' : 'Tải'} ${file.path}${file.size ? ` · ${(file.size / 1024).toFixed(1)} KB` : ''}`}
           >
             <span>{file.kind === 'output' ? '📦 Output' : file.kind === 'dataset' ? '▦ Dataset' : '📄 File'}</span>
             <strong>{file.path}</strong>

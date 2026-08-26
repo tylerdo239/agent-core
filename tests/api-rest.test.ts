@@ -59,6 +59,9 @@ class FakeWorkspace extends WorkspaceService {
     if (!value) throw new Error(`file ${filePath} not found`)
     return Buffer.from(value)
   }
+  async deleteFile(sessionId: string, filePath: string) {
+    return this.session(sessionId).delete(filePath)
+  }
   async listFiles(sessionId: string) {
     return [...this.session(sessionId)].map(([filePath, content]) => ({ path: filePath, size: content.byteLength, mtime: '2026-01-01T00:00:00.000Z' }))
   }
@@ -379,6 +382,9 @@ describe('Phase 6.1 — REST API', () => {
       expect(listB.files.map((file: any) => file.path)).not.toContain('sales.csv')
       const sourcesA = await (await fetch(`${base}/projects/${a.id}/sources`, { headers: auth })).json()
       expect(sourcesA.sources.map((file: any) => file.path)).toEqual(['sales.csv'])
+      const refuseSourceDelete = await fetch(`${base}/projects/${a.id}/files/${encodeURIComponent('sales.csv')}`, { method: 'DELETE', headers: auth })
+      expect(refuseSourceDelete.status).toBe(403)
+      expect((await fetch(`${base}/projects/${a.id}/files/${encodeURIComponent('sales.csv')}`, { headers: auth })).status).toBe(200)
 
       const first = await (await fetch(`${base}/projects/${a.id}/sessions`, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: '{}' })).json()
       const second = await (await fetch(`${base}/projects/${a.id}/sessions`, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: '{}' })).json()
@@ -406,6 +412,15 @@ describe('Phase 6.1 — REST API', () => {
       const publishedDownload = await fetch(`${base}/projects/${a.id}/outputs/project/${encodeURIComponent('draft.json')}`, { headers: auth })
       expect(publishedDownload.status).toBe(200)
       expect(await publishedDownload.text()).toBe('{"score":0.9}')
+
+      const deleteDraft = await fetch(`${base}/projects/${a.id}/outputs/session/${first.id}/${encodeURIComponent('draft.json')}`, { method: 'DELETE', headers: auth })
+      expect(deleteDraft.status).toBe(204)
+      const deletePublished = await fetch(`${base}/projects/${a.id}/outputs/project/${encodeURIComponent('draft.json')}`, { method: 'DELETE', headers: auth })
+      expect(deletePublished.status).toBe(204)
+      const outputsAfterDelete = await (await fetch(`${base}/projects/${a.id}/outputs`, { headers: auth })).json()
+      expect(outputsAfterDelete.projectOutputs).toEqual([])
+      expect(outputsAfterDelete.sessionOutputs.find((group: any) => group.sessionId === first.id).files).toEqual([])
+      expect((await fetch(`${base}/projects/${a.id}/outputs/project/${encodeURIComponent('draft.json')}`, { headers: auth })).status).toBe(404)
 
       expect((await fetch(`${base}/projects/${a.id}`, { headers: { authorization: `Bearer ${charlie.token}` } })).status).toBe(403)
       expect((await fetch(`${base}/projects/${a.id}/files`, { headers: { authorization: `Bearer ${charlie.token}` } })).status).toBe(403)

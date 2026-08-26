@@ -5,13 +5,13 @@
 // khớp key -> rơi về fallback; unmount fiber giữa chừng (mô phỏng hot-swap)
 // -> rơi về fallback, không crash trang. Cùng pattern
 // packages/ui-tool-web-search/tests/index.test.tsx.
-import { afterEach, describe, expect, it } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { Context } from '@deepseek-ai/cordis'
 import * as uiSlots from '@agent-core/ui-slots'
 import * as uiRlmWorkspace from '../src/index.ts'
 import { RenderSlot } from '@agent-core/ui-react'
-import type { WorkspaceHeaderPanelProps } from '../src/WorkspaceHeaderPanel.tsx'
+import { WorkspaceHeaderPanel, type WorkspaceHeaderPanelProps } from '../src/WorkspaceHeaderPanel.tsx'
 import type { SkillComposerExtraProps } from '../src/SkillComposerExtra.tsx'
 
 async function settle() {
@@ -45,6 +45,7 @@ const headerOwner: WorkspaceHeaderPanelProps = {
   onUpload: () => {},
   onRefresh: () => {},
   onDownload: () => {},
+  onPreview: () => {},
   datasetsCount: 0,
   artifactsCount: 0,
   loading: false,
@@ -63,6 +64,30 @@ const composerOwner: SkillComposerExtraProps = {
 afterEach(cleanup)
 
 describe('ui-rlm-workspace — dispatch theo entryKey = session.driver', () => {
+  it('chuyển toàn bộ file được chọn và preview output thay vì tải trực tiếp', () => {
+    const onUpload = vi.fn()
+    const onDownload = vi.fn()
+    const onPreview = vi.fn()
+    const { container } = render(<WorkspaceHeaderPanel {...headerOwner}
+      onUpload={onUpload}
+      onDownload={onDownload}
+      onPreview={onPreview}
+      entries={[
+        { path: 'sales.csv', size: 12, mtime: '', kind: 'dataset' },
+        { path: 'generated/chart.png', size: 24, mtime: '', kind: 'output' },
+      ]}
+    />)
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement
+    const files = [new File(['a'], 'a.csv'), new File(['b'], 'b.csv')]
+    fireEvent.change(input, { target: { files } })
+    expect(onUpload).toHaveBeenCalledWith(files)
+
+    fireEvent.click(screen.getByText('sales.csv'))
+    expect(onDownload).toHaveBeenCalledWith('sales.csv')
+    fireEvent.click(screen.getByText('generated/chart.png'))
+    expect(onPreview).toHaveBeenCalledWith(expect.objectContaining({ path: 'generated/chart.png' }))
+  })
+
   it('entryKey "rlm" -> render WorkspaceHeaderPanel/SkillComposerExtra thật, không phải fallback', async () => {
     const { ctx } = await bootCtxWithPlugin()
 

@@ -14,11 +14,33 @@ export interface PostChatOptions {
 
 const RETRYABLE = new Set([429, 500, 502, 503, 504])
 
-function statusError(provider: string, response: Response) {
-  if (response.status === 401 || response.status === 403) return new LlmError('LLM_AUTH', `${provider}: authentication failed (${response.status})`, response.status)
-  if (response.status === 429) return new LlmError('LLM_RATE_LIMITED', `${provider}: rate limited`, response.status)
-  if (response.status >= 500) return new LlmError('LLM_SERVER_ERROR', `${provider}: server error ${response.status}`, response.status)
-  return new LlmError('LLM_REQUEST_INVALID', `${provider}: request rejected ${response.status}`, response.status)
+const MAX_ERROR_DETAIL_CHARS = 600
+
+function cleanErrorDetail(raw: string): string {
+  let detail = raw
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const nested = parsed.error && typeof parsed.error === 'object'
+      ? parsed.error as Record<string, unknown>
+      : undefined
+    detail = String(nested?.message ?? parsed.message ?? parsed.detail ?? '')
+  } catch { /* plain-text upstream error */ }
+  return detail
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-[redacted]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_ERROR_DETAIL_CHARS)
+}
+
+async function statusError(provider: string, response: Response) {
+  const raw = await response.text().catch(() => '')
+  const detail = cleanErrorDetail(raw)
+  const suffix = detail ? `: ${detail}` : ''
+  if (response.status === 401 || response.status === 403) return new LlmError('LLM_AUTH', `${provider}: authentication failed (${response.status})${suffix}`, response.status)
+  if (response.status === 429) return new LlmError('LLM_RATE_LIMITED', `${provider}: rate limited${suffix}`, response.status)
+  if (response.status >= 500) return new LlmError('LLM_SERVER_ERROR', `${provider}: server error ${response.status}${suffix}`, response.status)
+  return new LlmError('LLM_REQUEST_INVALID', `${provider}: request rejected ${response.status}${suffix}`, response.status)
 }
 
 async function sleep(ms: number, signal?: AbortSignal) {
@@ -62,7 +84,7 @@ export async function postChatCompletion(options: PostChatOptions, provider: str
 
     const retryable = failure !== undefined || (response !== undefined && RETRYABLE.has(response.status))
     if (!retryable || attempt >= retries) {
-      if (response) throw statusError(provider, response)
+      if (response) throw await statusError(provider, response)
       throw new LlmError('LLM_NETWORK', `${provider}: ${failure instanceof Error ? failure.message : String(failure)}`)
     }
     await response?.body?.cancel().catch(() => undefined)

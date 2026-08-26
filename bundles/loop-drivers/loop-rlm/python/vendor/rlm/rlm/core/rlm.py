@@ -38,6 +38,15 @@ from rlm.utils.rlm_utils import filter_sensitive_keys
 from rlm.utils.token_utils import count_tokens, get_context_limit
 
 
+FINAL_ANSWER_INSTRUCTION = (
+    "The iteration budget is exhausted. Return only the self-contained, "
+    "user-facing final answer based on the evidence already obtained. Do not "
+    "describe internal reasoning, context/history variables, REPL operations, "
+    "prompt inspection, or attempts to continue working. If evidence is "
+    "insufficient, state the limitation plainly instead of inventing details."
+)
+
+
 class RLM:
     """
     Recursive Language Model class that the user instantiates and runs on their tasks.
@@ -362,21 +371,6 @@ class RLM:
                     # Check timeout before each iteration
                     self._check_timeout(i, time_start)
 
-                    # Compaction: check if context needs summarization
-                    if self.compaction and hasattr(environment, "append_compaction_entry"):
-                        current_tokens, threshold_tokens, max_tokens = self._get_compaction_status(
-                            message_history
-                        )
-                        self.verbose.print_compaction_status(
-                            current_tokens, threshold_tokens, max_tokens
-                        )
-                        if current_tokens >= threshold_tokens:
-                            compaction_count += 1
-                            self.verbose.print_compaction()
-                            message_history = self._compact_history(
-                                lm_handler, environment, message_history, compaction_count
-                            )
-
                     context_count = (
                         environment.get_context_count()
                         if isinstance(environment, SupportsPersistence)
@@ -387,19 +381,29 @@ class RLM:
                         if isinstance(environment, SupportsPersistence)
                         else 0
                     )
+                    next_user_prompt = build_user_prompt(
+                        root_prompt,
+                        i,
+                        context_count,
+                        history_count,
+                        max_iterations=self.max_iterations,
+                    )
+                    # Reserve enough room for the configured root-model output.
+                    # The old check looked only at the existing input and could
+                    # cross the threshold after one long response, then call the
+                    # finalizer with an oversized prompt.
+                    message_history, compaction_count = self._compact_before_completion(
+                        lm_handler,
+                        environment,
+                        message_history,
+                        compaction_count,
+                        extra_messages=[next_user_prompt],
+                    )
                     # Fully prefixed trajectory: persist the per-turn user prompt
                     # into message_history so the model sees a single continuous
                     # [system, metadata, user_0, assistant_0, repl_0, user_1, ...]
                     # chain across turns.
-                    message_history.append(
-                        build_user_prompt(
-                            root_prompt,
-                            i,
-                            context_count,
-                            history_count,
-                            max_iterations=self.max_iterations,
-                        )
-                    )
+                    message_history.append(next_user_prompt)
 
                     iteration: RLMIteration = self._completion_turn(
                         prompt=message_history,
@@ -479,6 +483,13 @@ class RLM:
                 ) from None
 
             # Default behavior: we run out of iterations, provide one final answer
+            message_history, compaction_count = self._compact_before_completion(
+                lm_handler,
+                environment,
+                message_history,
+                compaction_count,
+                extra_messages=[self._final_answer_message()],
+            )
             time_end = time.perf_counter()
             final_answer = self._default_answer(message_history, lm_handler)
             usage = lm_handler.get_usage_summary()
@@ -606,9 +617,50 @@ class RLM:
         return current_tokens, threshold_tokens, max_tokens
 
     def _should_compact(self, message_history: list[dict[str, Any]]) -> bool:
-        """True when root message history is at or over the compaction threshold."""
+        """True when input plus the configured output reserve reaches the threshold."""
         current_tokens, threshold_tokens, _ = self._get_compaction_status(message_history)
-        return current_tokens >= threshold_tokens
+        return current_tokens + self._root_output_token_reserve() >= threshold_tokens
+
+    def _root_output_token_reserve(self) -> int:
+        """Maximum root response tokens that must fit beside the input prompt."""
+        sampling_args = (self.backend_kwargs or {}).get("sampling_args") or {}
+        raw = sampling_args.get(
+            "max_tokens",
+            sampling_args.get("max_completion_tokens", 0),
+        )
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return 0
+
+    def _compact_before_completion(
+        self,
+        lm_handler: LMHandler,
+        environment: BaseEnv,
+        message_history: list[dict[str, Any]],
+        compaction_count: int,
+        *,
+        extra_messages: list[dict[str, Any]] | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Compact before a model call, including its prompt and output reserve."""
+        if not self.compaction or not hasattr(environment, "append_compaction_entry"):
+            return message_history, compaction_count
+        projected = [*message_history, *(extra_messages or [])]
+        current_tokens, threshold_tokens, max_tokens = self._get_compaction_status(projected)
+        self.verbose.print_compaction_status(current_tokens, threshold_tokens, max_tokens)
+        if not self._should_compact(projected):
+            return message_history, compaction_count
+        compaction_count += 1
+        self.verbose.print_compaction()
+        return (
+            self._compact_history(
+                lm_handler,
+                environment,
+                message_history,
+                compaction_count,
+            ),
+            compaction_count,
+        )
 
     def _compact_history(
         self,
@@ -686,18 +738,7 @@ class RLM:
         Default behavior if the RLM runs out of iterations and does not find a final answer.
         It will take the message history, and try to generate a final answer from it.
         """
-        current_prompt = message_history + [
-            {
-                "role": "user",
-                "content": (
-                    "The iteration budget is exhausted. Return only the self-contained, "
-                    "user-facing final answer based on the evidence already obtained. Do not "
-                    "describe internal reasoning, context/history variables, REPL operations, "
-                    "prompt inspection, or attempts to continue working. If evidence is "
-                    "insufficient, state the limitation plainly instead of inventing details."
-                ),
-            }
-        ]
+        current_prompt = message_history + [self._final_answer_message()]
         response = lm_handler.completion(current_prompt)
 
         if self.logger:
@@ -711,6 +752,10 @@ class RLM:
             )
 
         return response
+
+    @staticmethod
+    def _final_answer_message() -> dict[str, Any]:
+        return {"role": "user", "content": FINAL_ANSWER_INSTRUCTION}
 
     def _fallback_answer(self, message: str | dict[str, Any]) -> str:
         """

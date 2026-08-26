@@ -63,6 +63,12 @@ describe('project workspace isolation', () => {
       expect(published).toMatchObject({ path: 'draft.json', createdBySession: first.id })
       expect((await root.workspace.listProjectOutputs(second.workspaceId)).map((file) => file.path)).toEqual(['draft.json'])
       expect((await root.workspace.listSessionOutputs(first.workspaceId, first.id)).map((file) => file.path)).toEqual(['draft.json'])
+
+      expect(await root.workspace.deleteFile(first.workspaceId, `.sessions/${first.id}/generated/draft.json`)).toBe(true)
+      expect(await root.workspace.listSessionOutputs(first.workspaceId, first.id)).toEqual([])
+      expect(await root.workspace.deleteFile(first.workspaceId, 'outputs/draft.json')).toBe(true)
+      expect(await root.workspace.listProjectOutputs(first.workspaceId)).toEqual([])
+      expect(await root.workspace.deleteFile(first.workspaceId, 'outputs/draft.json')).toBe(false)
     } finally { await root.fiber.dispose() }
   })
 

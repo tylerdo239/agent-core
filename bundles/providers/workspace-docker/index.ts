@@ -93,6 +93,17 @@ export class WorkspaceDocker extends WorkspaceService {
     throw new Error('workspace read ended without a result')
   }
 
+  async deleteFile(sessionId: string, filePath: string): Promise<boolean> {
+    const sandbox = this.ctx.get('sandbox')
+    if (!sandbox) throw new Error('workspace-docker requires a sandbox provider')
+    await sandbox.openSession(sessionId, { cwd: this.root(sessionId) })
+    for await (const event of sandbox.request(sessionId, 'delete_workspace_file', { path: filePath })) {
+      if (event.type === '__result__') return Boolean(event.deleted)
+      if (event.type === 'error') throw new Error(String(event.message ?? 'delete failed'))
+    }
+    throw new Error('workspace delete ended without a result')
+  }
+
   async listFiles(sessionId: string): Promise<Array<{ path: string; size: number; mtime: string }>> {
     const sandbox = this.ctx.get('sandbox') as { request?: (id: string, op: string, p: Record<string, unknown>) => AsyncIterable<Record<string, unknown>> } | undefined
     if (!sandbox?.request) return []

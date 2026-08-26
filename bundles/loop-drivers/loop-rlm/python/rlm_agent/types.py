@@ -74,3 +74,6 @@ class AgentTurnResult:
     usage: dict[str, Any] = field(default_factory=dict)
     execution_time: float = 0.0
     trace_path: str | None = None
+    # BUG-10 silent-failure: mô tả lỗi có cấu trúc của turn (nếu có) để TS side
+    # lưu lại và thông báo cho turn KẾ TIẾP qua [SESSION HEALTH] note.
+    turn_issue: dict[str, Any] | None = None
