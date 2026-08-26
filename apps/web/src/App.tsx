@@ -566,9 +566,12 @@ export function App() {
       const url = `${current.wsUrl}/sessions/${sid}/events/stream?token=${encodeURIComponent(token)}`
       const ws = new WebSocket(url)
       let settled = false
+      // Gán NGAY lúc tạo (không đợi 'open') — 'close'/'error' bên dưới cần so
+      // sánh được `wsRef.current === ws` NGAY TỪ LÚC CONNECTING, không chỉ từ
+      // lúc OPEN (xem lý do ở guard trong 'close').
+      wsRef.current = ws
 
       ws.addEventListener('open', () => {
-        wsRef.current = ws
         wsSessionIdRef.current = sid
         setStatus('connected')
         settled = true
@@ -609,7 +612,18 @@ export function App() {
       })
 
       ws.addEventListener('close', (event) => {
-        setStatus('disconnected')
+        // Bug thật đã sửa (2026-08): CHỈ set 'disconnected' nếu socket đang
+        // đóng vẫn còn là socket HIỆN HÀNH (wsRef.current === ws). startNewChat()/
+        // ensureStream()/resumeSession() đều `.close()` socket CŨ rồi gán lại
+        // wsRef.current (null hoặc socket MỚI) NGAY, đồng bộ — nhưng sự kiện
+        // 'close' của socket cũ chỉ tới SAU đó, bất đồng bộ. Không guard thì
+        // 'close' trễ của socket cũ ghi đè lên đúng status vừa set cho ngữ
+        // cảnh MỚI (vd. "connected" mà startNewChat() vừa set) về lại
+        // 'disconnected', khoá cứng composer vĩnh viễn vì không còn gì mở lại
+        // WS (session mới chỉ tạo lúc gửi tin, mà gửi tin lại bị chính status
+        // này chặn) — xảy ra mỗi khi có 1 WS đang mở từ session auto-resume lúc
+        // load trang rồi user bấm "Chat mới"/đổi session ngay sau đó.
+        if (wsRef.current === ws) setStatus('disconnected')
         if (wsSessionIdRef.current === sid) wsSessionIdRef.current = null
         // Module auth: 401 giờ nghĩa là TOKEN hết hạn/bị thu hồi (không còn
         // "sai API key" — token đã được xác thực lúc mở kết nối, hết hạn/bị
@@ -628,7 +642,9 @@ export function App() {
       })
 
       ws.addEventListener('error', () => {
-        setStatus('disconnected')
+        // Cùng guard như 'close' ở trên — socket lỗi không còn là socket hiện
+        // hành thì không được phép đổi status thay cho ngữ cảnh mới.
+        if (wsRef.current === ws) setStatus('disconnected')
         if (!settled) {
           settled = true
           reject(new Error('WS connection error'))
