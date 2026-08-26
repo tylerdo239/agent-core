@@ -60,6 +60,11 @@ interface LoopStep {
   // liệu gần giống nhau song song.
   type:
     | 'user_message'
+    // Follow-up (2026-08): 1 mảnh nội dung MỚI trong lúc model đang generate
+    // (xem seams/loop.ts) — chỉ đến qua WS LIVE, không bao giờ xuất hiện khi
+    // đọc lại event log THẬT (không lưu storage), reconstructItems() không
+    // cần biết type này.
+    | 'token'
     | 'model_message'
     // Gap thật (user báo lại: RLM chạy nhưng UI chờ không hiện đang làm gì):
     // loop-rlm phát 'tool_call' RIÊNG (name/args tách khỏi step, không lồng
@@ -284,6 +289,11 @@ export function App() {
   // mở lại stream hay tái dùng socket đang mở (Phase 6.3: 1 WS = 1 session).
   const wsSessionIdRef = useRef<string | null>(null)
   const activeToolItemIdRef = useRef<string | null>(null)
+  // Follow-up (2026-08): id của ChatItem 'assistant' đang được ghép dần từ
+  // các step 'token' (null = chưa có/đã đóng lại) — set khi token ĐẦU TIÊN
+  // của 1 lượt generate tới, reset về null lúc model_message (có toolCall,
+  // tool card mới sắp tạo) hoặc lúc 'final' đóng lại bubble đang stream.
+  const streamingAssistantIdRef = useRef<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
@@ -311,8 +321,18 @@ export function App() {
     }
   }, [])
 
+  // Follow-up (2026-08): tham khảo Claude/dsh — cuộn "smooth" cho item MỚI
+  // (tin nhắn/tool card mới xuất hiện), nhưng KHÔNG smooth khi chỉ là
+  // bubble đang stream lớn dần (items.length không đổi, chỉ text bên trong
+  // đổi) — 1 lượt streaming gọi setItems() hàng chục lần (mỗi token, xem
+  // applyStep()), smooth-scroll lặp lại liên tục sẽ tự dẫm lên chính nó
+  // (animation trước bị ngắt bởi animation sau) gây giật thay vì mượt. Auto
+  // (tức thời) trong lúc stream vẫn giữ đúng vị trí cuối trang, không giật.
+  const prevItemsLengthRef = useRef(0)
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ block: 'end' })
+    const isNewItem = items.length !== prevItemsLengthRef.current
+    prevItemsLengthRef.current = items.length
+    messagesEndRef.current?.scrollIntoView({ block: 'end', behavior: isNewItem ? 'smooth' : 'auto' })
   }, [items])
 
   // Mở downlink WS cho ĐÚNG 1 session đã tồn tại (Phase 6.3: WS không còn
@@ -438,14 +458,35 @@ export function App() {
   }
 
   function applyStep(step: LoopStep) {
+    // Follow-up (2026-08): stream nội dung "gõ từng chữ" — chưa có bubble
+    // đang stream thì tạo mới (bubble xuất hiện ngay ở token đầu tiên, không
+    // đợi cả câu xong), có rồi thì ghép nối tiếp vào ĐÚNG bubble đó.
+    if (step.type === 'token') {
+      const delta = step.content ?? ''
+      if (!delta) return
+      const streamingId = streamingAssistantIdRef.current
+      if (streamingId) {
+        setItems((prev) => prev.map((it) => (it.kind === 'assistant' && it.id === streamingId ? { ...it, text: it.text + delta } : it)))
+      } else {
+        const id = genId()
+        streamingAssistantIdRef.current = id
+        setItems((prev) => [...prev, { kind: 'assistant', id, text: delta, ts: Date.now() }])
+      }
+      return
+    }
     if (step.type === 'model_message') {
       if (step.toolCall) {
+        // Đóng bubble đang stream (nếu có — model có thể "nói" 1 đoạn ngắn
+        // trước khi gọi tool) trước khi thêm tool card ngay bên dưới nó.
+        streamingAssistantIdRef.current = null
         const id = genId()
         activeToolItemIdRef.current = id
         setItems((prev) => [...prev, { kind: 'tool', id, toolCall: step.toolCall!, toolUi: step.toolUi, state: 'running' }])
       }
       // model_message KHÔNG có toolCall = nội dung sẽ trùng với step 'final'
-      // ngay sau đó — không render lặp (đúng hành vi app.js cũ).
+      // ngay sau đó — không render lặp (đúng hành vi app.js cũ). Cố tình
+      // KHÔNG reset streamingAssistantIdRef ở nhánh này — 'final' ngay sau
+      // đây cần thấy ref còn set để biết bubble đã hiện đủ qua token rồi.
       return
     }
     // loop-rlm phát riêng 'tool_call' (name/args tách khỏi step, xem chú
@@ -489,6 +530,15 @@ export function App() {
       return
     }
     if (step.type === 'final') {
+      // Provider hỗ trợ streaming: nội dung đã hiện đủ qua các step 'token'
+      // rồi (ref còn set từ model_message không toolCall ngay trước đó) —
+      // chỉ cần đóng lại, KHÔNG tạo bubble mới (tránh lặp nguyên câu trả lời).
+      if (streamingAssistantIdRef.current) {
+        streamingAssistantIdRef.current = null
+        return
+      }
+      // Provider không hỗ trợ streaming (hoặc fake LLM trong test) — hành vi
+      // cũ: 'final' là nơi DUY NHẤT tạo bubble assistant.
       setItems((prev) => [...prev, { kind: 'assistant', id: genId(), text: step.content ?? '', ts: Date.now() }])
       return
     }
@@ -724,12 +774,18 @@ export function App() {
     setAuthView('login')
   }
 
-  // Chỉ báo Ở CẤP LƯỢT (không phải gõ từng ký tự — WS không có protocol
-  // token-delta, xem seams/loop.ts). Không hiện nếu item cuối ĐANG LÀ 1 tool
-  // đang chạy — tool đó đã có shimmer riêng của chính nó (ToolRow), tránh 2
-  // shimmer chồng nhau cho cùng 1 lượt.
+  // Follow-up (2026-08): trước đây chỉ báo Ở CẤP LƯỢT (WS chưa có protocol
+  // token-delta) — giờ có streaming thật (xem applyStep(), step 'token'),
+  // nên thêm điều kiện loại trừ MỚI: item cuối đang là bubble assistant đang
+  // stream thì tự nó đã là chỉ báo "đang chạy" rồi (chữ đang gõ ra), không
+  // cần thêm 1 dòng "..." chồng lên dưới. Vẫn giữ điều kiện loại trừ cũ cho
+  // tool đang chạy (đã có shimmer riêng, ToolRow) và cho trường hợp provider
+  // không hỗ trợ streaming (rơi về đúng hành vi cũ).
   const lastItem = items[items.length - 1]
-  const showStreamingRow = turnInFlight && !(lastItem?.kind === 'tool' && lastItem.state === 'running')
+  const showStreamingRow =
+    turnInFlight &&
+    !(lastItem?.kind === 'tool' && lastItem.state === 'running') &&
+    !(lastItem?.kind === 'assistant' && lastItem.id === streamingAssistantIdRef.current)
 
   // Follow-up (2026-08): chat MỚI (chưa gõ gì) giờ hợp lệ để gõ/gửi dù
   // `sessionId` còn null (session thật chỉ tạo lúc gửi — xem handleSubmit),
@@ -856,6 +912,9 @@ export function App() {
                 title={item.toolUi?.label ?? item.toolCall.name}
                 summary={toolRowSummary(item)}
                 state={item.state}
+                // Follow-up (2026-08): kết quả search (citations) hiện NGAY
+                // khi xong, không cần bấm — user báo trước đây bị ẩn mất.
+                defaultExpanded={item.toolUi?.render === 'citations'}
               >
                 {item.state === 'ok' && clientCtx && (
                   <RenderSlot<ToolViewOwnerProps>

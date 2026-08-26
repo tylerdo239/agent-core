@@ -282,5 +282,77 @@ describe('Phase 9.4 — App smoke test', () => {
       expect(screen.getByText('"Vietnam coffee market size"')).toBeTruthy()
       expect(screen.queryByText('{"query":"Vietnam coffee market size"}')).toBeNull()
     })
+
+    // Follow-up (2026-08): user báo kết quả search bị ẩn ngay sau khi trả
+    // lời xong (ToolRow collapsed-by-default áp dụng cho MỌI tool trước
+    // đây) — verify đúng chỗ NỐI trong App.tsx: tool có toolUi.render ===
+    // 'citations' (web_search) tự mở ngay khi 'ok', không cần bấm gì cả.
+    it("web_search 'ok' (render: citations) -> nguồn hiện NGAY, không cần bấm mở rộng", async () => {
+      const socket = await createSessionAndGetSocket()
+      const toolUi = { icon: '🔍', label: 'Tìm kiếm web', render: 'citations' as const, summaryArg: 'query' }
+
+      await act(async () => {
+        socket.emitMessage({ type: 'step', sessionId: 's1', step: { type: 'tool_call', name: 'web_search', args: { query: 'x' }, toolUi } })
+        await new Promise((r) => setTimeout(r, 5))
+      })
+      await act(async () => {
+        socket.emitMessage({
+          type: 'step',
+          sessionId: 's1',
+          step: { type: 'tool_result', name: 'web_search', result: { results: [{ title: 'Báo Dân Trí', url: 'https://dantri.com.vn' }] }, toolUi },
+        })
+        await new Promise((r) => setTimeout(r, 10))
+      })
+
+      // Không bấm gì cả — nguồn phải hiện sẵn.
+      expect(screen.getByText('Báo Dân Trí')).toBeTruthy()
+    })
+
+    // Follow-up (2026-08) — streaming: user báo chưa thấy trả lời "gõ từng
+    // chữ". Step 'token' mới (backend phát khi provider hỗ trợ SSE, xem
+    // seams/llm.ts + loop-default) -- verify applyStep() ghép đúng 1 bubble
+    // DUY NHẤT từ nhiều mảnh nhỏ, và 'final' theo sau KHÔNG tạo bubble lặp.
+    it("step 'token' liên tiếp -> ghép thành 1 bubble assistant DUY NHẤT, tăng dần theo từng mảnh", async () => {
+      const socket = await createSessionAndGetSocket()
+
+      await act(async () => {
+        socket.emitMessage({ type: 'step', sessionId: 's1', step: { type: 'token', content: 'xin' } })
+        await new Promise((r) => setTimeout(r, 5))
+      })
+      expect(screen.getByText('xin')).toBeTruthy()
+
+      await act(async () => {
+        socket.emitMessage({ type: 'step', sessionId: 's1', step: { type: 'token', content: ' chào' } })
+        await new Promise((r) => setTimeout(r, 5))
+      })
+      // Vẫn 1 bubble duy nhất, nội dung đã ghép nối tiếp — không phải 2 bubble riêng.
+      expect(screen.getByText('xin chào')).toBeTruthy()
+      expect(screen.queryByText('xin')).toBeNull()
+    })
+
+    it("'token' rồi 'final' cùng nội dung -> KHÔNG lặp bubble (final chỉ đóng lại bubble đã stream)", async () => {
+      const socket = await createSessionAndGetSocket()
+
+      await act(async () => {
+        socket.emitMessage({ type: 'step', sessionId: 's1', step: { type: 'token', content: 'xin chào bạn' } })
+        socket.emitMessage({ type: 'step', sessionId: 's1', step: { type: 'model_message', content: 'xin chào bạn' } })
+        socket.emitMessage({ type: 'step', sessionId: 's1', step: { type: 'final', content: 'xin chào bạn' } })
+        await new Promise((r) => setTimeout(r, 10))
+      })
+
+      expect(screen.getAllByText('xin chào bạn').length).toBe(1)
+    })
+
+    it("KHÔNG có 'token' nào (provider không hỗ trợ streaming) -> 'final' vẫn tự tạo bubble như cũ", async () => {
+      const socket = await createSessionAndGetSocket()
+
+      await act(async () => {
+        socket.emitMessage({ type: 'step', sessionId: 's1', step: { type: 'model_message', content: 'câu trả lời không stream' } })
+        socket.emitMessage({ type: 'step', sessionId: 's1', step: { type: 'final', content: 'câu trả lời không stream' } })
+        await new Promise((r) => setTimeout(r, 10))
+      })
+
+      expect(screen.getByText('câu trả lời không stream')).toBeTruthy()
+    })
   })
 })

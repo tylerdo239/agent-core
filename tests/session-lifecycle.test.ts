@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import * as sessionRegistry from '../bundles/providers/session-registry/index.ts'
-import { Session } from '../seams/loop.ts'
+import { currentDateNote, Session } from '../seams/loop.ts'
 
 async function settle() {
   await new Promise((r) => setTimeout(r, 10))
@@ -130,20 +130,26 @@ describe('Phase 25 — buildPrompt() gộp mọi extraSystemNotes thành ĐÚNG 
     expect(prompt.at(-1)).toEqual({ role: 'user', content: 'câu hỏi' })
   })
 
-  it('không có system prompt gốc -- vẫn chỉ 1 message system (từ các note), không lẫn message system rời', () => {
+  it('không có system prompt gốc -- vẫn chỉ 1 message system (từ note ngày hiện tại + các note khác), không lẫn message system rời', () => {
     const session = new Session('s', 8, undefined)
     const prompt = session.buildPrompt('câu hỏi', ['note A', 'note B', 'note C'])
 
     const systemMessages = prompt.filter((m) => m.role === 'system')
     expect(systemMessages.length).toBe(1)
-    expect(prompt[0].content).toBe('note A\n\nnote B\n\nnote C')
+    // note ngày hiện tại (currentDateNote()) luôn đứng ĐẦU, trước mọi note khác.
+    expect(prompt[0].content).toBe(`${currentDateNote()}\n\nnote A\n\nnote B\n\nnote C`)
   })
 
-  it('không có note nào -- không tự thêm message system thừa, giữ nguyên history', () => {
+  // Follow-up (2026-08) — filter thời gian cho skill nghiên cứu/phân tích
+  // (business-case-builder...): buildPrompt() giờ LUÔN tiêm currentDateNote()
+  // dù extraSystemNotes rỗng — model cần biết "hôm nay là ngày nào" ở MỌI
+  // lượt, không chỉ lượt có skill/memory match, để mặc định hiểu đúng
+  // "không nêu mốc thời gian = hỏi về hiện tại" (xem seams/loop.ts).
+  it('không có note nào khác -- vẫn tự thêm note ngày hiện tại vào system prompt gốc', () => {
     const session = new Session('s', 8, 'sys')
     const prompt = session.buildPrompt('câu hỏi', [])
 
     expect(prompt.filter((m) => m.role === 'system').length).toBe(1)
-    expect(prompt[0]).toEqual({ role: 'system', content: 'sys' })
+    expect(prompt[0]).toEqual({ role: 'system', content: `sys\n\n${currentDateNote()}` })
   })
 })

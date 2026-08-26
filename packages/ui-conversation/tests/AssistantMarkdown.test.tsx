@@ -38,4 +38,21 @@ describe('Phase 10.4 — AssistantMarkdown', () => {
     render(<AssistantMarkdown content="Xin chào, tôi có thể giúp gì cho bạn?" />)
     expect(screen.getByText('Xin chào, tôi có thể giúp gì cho bạn?')).toBeTruthy()
   })
+
+  // Bug thật user báo (2026-08): bảng markdown (cú pháp GFM) không vẽ được
+  // thành bảng — react-markdown mặc định chỉ parse CommonMark thuần, không
+  // hỗ trợ bảng, cần remark-gfm. Verify render ra <table> thật, không phải
+  // còn nguyên văn bản `| a | b |` thô.
+  it('bảng markdown (GFM) render ra <table>/<th>/<td> thật, không còn cú pháp | | thô', () => {
+    const content = ['| Tên | Giá |', '| --- | --- |', '| Cà phê | 30.000 |', '| Trà sữa | 25.000 |'].join('\n')
+    render(<AssistantMarkdown content={content} />)
+
+    const table = document.querySelector(`.${styles.markdown} table`)
+    expect(table).toBeTruthy()
+    expect(table?.querySelectorAll('th').length).toBe(2)
+    expect(screen.getByText('Tên').tagName).toBe('TH')
+    expect(screen.getByText('Cà phê').closest('td')).toBeTruthy()
+    expect(screen.getByText('25.000').closest('td')).toBeTruthy()
+    expect(screen.queryByText(/---/)).toBeNull()
+  })
 })

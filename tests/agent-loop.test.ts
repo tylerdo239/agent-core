@@ -202,4 +202,81 @@ describe('Phase 4 — agent loop end-to-end', () => {
     // xem chú thích tại seams/loop.ts Session.buildPrompt().
     expect(session.history.some((m) => m.content.includes('xác nhận đã hiểu đúng vấn đề'))).toBe(false)
   })
+
+  // Follow-up (2026-08) — streaming: user báo chưa thấy trả lời "gõ từng
+  // chữ". loop-default giờ feature-detect `runCtx.llm.completeStream` (tuỳ
+  // chọn trên seam, xem seams/llm.ts) -- verify cả 2 nhánh trong CÙNG 1
+  // provider giả: có completeStream() thì DÙNG NÓ (complete() cố tình throw
+  // để lộ ra ngay nếu loop-default lỡ gọi nhầm complete()), phát đúng step
+  // 'token' cho từng mảnh MỘT (không tích luỹ sẵn) trước khi phát
+  // 'model_message'/'final' như cũ.
+  it('provider có completeStream() -> loop-default DÙNG streaming, phát đúng step "token" cho từng mảnh trước "final"', async () => {
+    class FakeStreamingLlm extends LlmService {
+      async complete(): Promise<LlmCompletion> {
+        throw new Error('KHÔNG được gọi complete() khi provider đã có completeStream()')
+      }
+      async completeStream(
+        _messages: LlmMessage[],
+        _options: LlmCompleteOptions,
+        onDelta: (d: string) => void,
+      ): Promise<LlmCompletion> {
+        for (const piece of ['xin', ' chào', ' bạn']) onDelta(piece)
+        return { content: 'xin chào bạn' }
+      }
+    }
+    const root = new Context()
+    root.plugin(toolRegistry)
+    root.plugin(skillRegistry)
+    root.plugin(promptRegistry)
+    root.plugin(stateSqlite, { path: ':memory:' })
+    root.plugin((ctx: Context) => {
+      ctx.plugin(FakeStreamingLlm)
+    })
+    root.plugin(loopRegistry)
+    root.plugin(loopDefault)
+    root.plugin(agentRunner)
+    await settle()
+
+    const steps: LoopStep[] = []
+    root.on('agent/step', (event) => steps.push(event.step))
+
+    const session = new Session('stream-demo')
+    const result = await root.agent.runTurn('default', session, 'chào')
+
+    expect(result.content).toBe('xin chào bạn')
+    const tokenSteps = steps.filter((s) => s.type === 'token')
+    expect(tokenSteps.map((s: any) => s.content)).toEqual(['xin', ' chào', ' bạn'])
+    // Đúng thứ tự: mọi 'token' phát TRƯỚC 'model_message'/'final' (khớp thứ
+    // tự thật await completeStream() resolve rồi mới ghi storage/emit tiếp).
+    const tokenIndices = steps.map((s, i) => (s.type === 'token' ? i : -1)).filter((i) => i !== -1)
+    const modelMsgIdx = steps.findIndex((s) => s.type === 'model_message')
+    expect(Math.max(...tokenIndices)).toBeLessThan(modelMsgIdx)
+    // 'token' KHÔNG được ghi vào storage (chỉ 'model_message' mới lưu) —
+    // xem ghi chú tại seams/loop.ts (LoopStep, case 'token').
+    const stored = await root.storage.readEvents('stream-demo')
+    expect(stored.some((e) => e.type === 'token')).toBe(false)
+  })
+
+  it('provider KHÔNG có completeStream() -> loop-default rơi về complete() như cũ, không phát step "token" nào', async () => {
+    const root = new Context()
+    root.plugin(toolRegistry)
+    root.plugin(skillRegistry)
+    root.plugin(promptRegistry)
+    root.plugin(stateSqlite, { path: ':memory:' })
+    root.plugin(toolDatabaseQuery) // FakeLlm yêu cầu tool này được quảng bá (throw nếu thiếu)
+    root.plugin(fakeLlm)
+    root.plugin(loopRegistry)
+    root.plugin(loopDefault)
+    root.plugin(agentRunner)
+    await settle()
+
+    const steps: LoopStep[] = []
+    root.on('agent/step', (event) => steps.push(event.step))
+
+    await root.storage.appendEvent('store-C', { type: 'seed', value: 1 })
+    const session = new Session('no-stream-demo')
+    await root.agent.runTurn('default', session, 'test')
+
+    expect(steps.some((s) => s.type === 'token')).toBe(false)
+  })
 })

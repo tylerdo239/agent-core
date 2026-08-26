@@ -5,14 +5,26 @@ gọi tool đúng cú pháp. File này nói RIÊNG về kỷ luật thu thập d
 trường cho use-case kịch bản kinh doanh — đọc trước khi bắt đầu bước 2 trong
 `SKILL.md`.
 
+## 0. Ngôn ngữ query — xác định TRƯỚC lượt search đầu tiên
+
+Xem SKILL.md rule #2: đối tượng Việt Nam (công ty, thị trường VN — kể cả tên
+có chữ tiếng Anh như "FPT Telecom") → lượt search ĐẦU TIÊN bắt buộc bằng
+tiếng Việt (vd. `"FPT Telecom kết quả kinh doanh 2025"`, `"quy mô thị trường
+viễn thông Việt Nam 2025"`), không phải bản dịch tiếng Anh của cùng câu hỏi.
+Chỉ chuyển sang tiếng Anh cho lượt search TIẾP THEO nếu nguồn tiếng Việt
+nghèo nàn (thường xảy ra với báo cáo ngành công nghệ/benchmark quốc tế, mục
+4 dưới đây) — và khi đó phải ghi rõ trong báo cáo đây là nguồn tham chiếu
+quốc tế, không phải số liệu gốc của đối tượng VN đang phân tích.
+
 ## 1. Loại query nên chạy
 
 Chạy có mục đích, không search tràn lan. Với 1 kịch bản đầy đủ, thường cần
 khoảng 4-8 lượt search, chia theo mục đích:
 
-1. **Quy mô thị trường** — `"<ngành> market size Vietnam 2025"` hoặc tương
-   đương bằng tiếng Anh nếu nguồn tiếng Việt nghèo nàn (báo cáo ngành thường
-   công bố bằng tiếng Anh nhiều hơn).
+1. **Quy mô thị trường** — đối tượng VN: `"quy mô thị trường <ngành> Việt Nam
+   2025"` bằng tiếng Việt trước; chỉ chuyển sang `"<ngành> market size Vietnam
+   2025"` (tiếng Anh) nếu nguồn tiếng Việt nghèo nàn (báo cáo ngành thường
+   công bố bằng tiếng Anh nhiều hơn) — xem mục 0.
 2. **Xu hướng ngành** — tin tức/báo cáo 6-12 tháng gần nhất, tránh trích dẫn
    nguồn quá cũ (số liệu ngành thay đổi nhanh, đặc biệt ngành công nghệ).
 3. **Đối thủ cụ thể** — tên công ty + "pricing"/"funding"/"tính năng" — cần

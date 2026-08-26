@@ -63,6 +63,13 @@ export type LoopStep =
   // xem seams/tools.ts), driver chỉ forward — KHÔNG phải state mới, KHÔNG
   // phải nơi loop driver tự quyết định cách hiển thị. UI (web-ui) đọc field
   // này thay vì hardcode theo tên tool.
+  // Follow-up (2026-08) — streaming: 1 mảnh nội dung MỚI (không tích luỹ sẵn)
+  // trong lúc model đang generate, phát NGAY khi provider hỗ trợ (xem
+  // seams/llm.ts, LlmService.completeStream) — "live tap" thuần cho UI hiện
+  // tiến trình, KHÔNG bao giờ ghi vào storage (coding rule B3 vẫn chỉ lưu
+  // đúng 1 `model_message` hoàn chỉnh mỗi bước — xem loop-default). Resume 1
+  // session cũ qua GET /sessions/:id/events sẽ KHÔNG bao giờ thấy type này.
+  | { type: 'token'; content: string }
   | { type: 'model_message'; content: string; toolCall?: LlmToolCall; toolUi?: ToolUiHint }
   | { type: 'tool_call'; name: string; args: Record<string, unknown>; toolUi?: ToolUiHint }
   | { type: 'tool_result'; name: string; result: unknown; toolUi?: ToolUiHint }
@@ -105,6 +112,30 @@ export abstract class LoopRegistryService extends Service {
   abstract register(name: string, driver: LoopDriver): void
   abstract get(name: string): LoopDriver | undefined
   abstract has(name: string): boolean
+}
+
+/**
+ * Follow-up (2026-08) — filter thời gian cho các skill nghiên cứu/phân tích
+ * (business-case-builder...): model không có cách nào biết "hôm nay là
+ * ngày nào" trừ khi được nói thẳng — không có chỗ nào trong hệ thống trước
+ * đây tiêm mốc thời gian thật vào prompt. Hệ quả thật: câu hỏi kiểu "phân
+ * tích tình hình ngành X" (không nêu mốc thời gian) khiến model tự chọn
+ * mốc bất kỳ (có thể là dữ liệu huấn luyện cũ) khi gọi `web_search`, thay
+ * vì mặc định hiểu là hỏi về HIỆN TẠI. Tiêm ngay trong `buildPrompt()`
+ * (không phải ở loop-default/loop-rlm riêng lẻ) — đúng coding rule B6, và
+ * tính LẠI mỗi lần gọi (không cache) để session sống lâu vẫn luôn đúng
+ * ngày thật, không "đông cứng" theo lúc session được tạo.
+ */
+export function currentDateNote(): string {
+  const now = new Date()
+  const formatted = now.toLocaleDateString('vi-VN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+  return (
+    `Hôm nay là ${formatted}. Nếu người dùng không nêu rõ mốc thời gian cụ thể, ` +
+    `hãy hiểu là đang hỏi về tình hình HIỆN TẠI/GẦN ĐÂY — khi cần tra cứu thông tin ` +
+    `(vd. tool tìm kiếm web), chủ động thêm mốc thời gian hiện tại (năm/tháng) vào ` +
+    `truy vấn hoặc ưu tiên kết quả mới nhất, tránh dùng số liệu/thông tin cũ đã lỗi ` +
+    `thời mà không kiểm tra lại.`
+  )
 }
 
 /**
@@ -181,10 +212,10 @@ export class Session {
   buildPrompt(userMessage: string, extraSystemNotes: string[] = []): LlmMessage[] {
     this.history.push({ role: 'user', content: userMessage })
     this.trimHistory()
-    if (extraSystemNotes.length === 0) return [...this.history]
+    const notes = [currentDateNote(), ...extraSystemNotes]
     const hasLeadingSystem = this.history[0]?.role === 'system'
     const leadingContent = hasLeadingSystem ? [this.history[0].content] : []
-    const merged: LlmMessage = { role: 'system', content: [...leadingContent, ...extraSystemNotes].join('\n\n') }
+    const merged: LlmMessage = { role: 'system', content: [...leadingContent, ...notes].join('\n\n') }
     const rest = hasLeadingSystem ? this.history.slice(1) : this.history
     return [merged, ...rest]
   }

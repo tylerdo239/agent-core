@@ -14,7 +14,7 @@
 // giờ gắn click handler (bodyNode luôn null khi lỗi) nên chevron/click chưa
 // từng thật sự hoạt động ở đó — giữ đúng hành vi THẬT, không giữ đúng CSS
 // chết.
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronRight, CircleAlert } from 'lucide-react'
 import styles from './ToolRow.module.css'
 
@@ -29,12 +29,31 @@ export interface ToolRowProps {
   title: string
   summary: string
   state: 'running' | 'ok' | 'error'
+  /**
+   * Follow-up (2026-08): user báo kết quả search bị ẩn sau khi trả lời xong
+   * — collapsed-by-default (hành vi cũ, mọi tool) khiến citations/nguồn
+   * tham khảo (`ToolUiHint.render === 'citations'`, xem seams/tools.ts) biến
+   * mất ngay khi xong, phải bấm mới thấy lại. Đặt `true` cho tool nào kết
+   * quả nên hiện NGAY, không cần thao tác thêm — mặc định `false` giữ
+   * nguyên hành vi thu gọn cũ cho tool khác (vd. query_database, kết quả kỹ
+   * thuật không cần phô ra ngay). Tự mở đúng 1 LẦN khi chuyển sang 'ok' —
+   * không ép mở lại nếu user đã tự tay đóng.
+   */
+  defaultExpanded?: boolean
   children?: ReactNode
 }
 
-export function ToolRow({ icon, title, summary, state, children }: ToolRowProps) {
+export function ToolRow({ icon, title, summary, state, defaultExpanded = false, children }: ToolRowProps) {
   const [expanded, setExpanded] = useState(false)
+  const autoExpandedRef = useRef(false)
   const expandable = state === 'ok'
+
+  useEffect(() => {
+    if (defaultExpanded && state === 'ok' && !autoExpandedRef.current) {
+      autoExpandedRef.current = true
+      setExpanded(true)
+    }
+  }, [defaultExpanded, state])
 
   const toggle = () => {
     if (expandable) setExpanded((v) => !v)

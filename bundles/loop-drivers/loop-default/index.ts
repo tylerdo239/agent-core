@@ -55,7 +55,17 @@ export const apply = (ctx: Context) => {
           parameters: t.parameters,
         }))
 
-        const response = await runCtx.llm.complete(messages, { tools: toolSpecs })
+        // Follow-up (2026-08): stream token thật khi provider hỗ trợ
+        // (feature-detect qua `completeStream` -- optional trên seam, xem
+        // seams/llm.ts) -- rơi về complete() không đổi cho provider/fake LLM
+        // test nào chưa/không implement. Step 'token' CHỈ phát live (agent/
+        // step), KHÔNG ghi storage -- đúng 1 'model_message' hoàn chỉnh vẫn
+        // được ghi & phát như cũ ngay dưới đây sau khi response resolve.
+        const response = runCtx.llm.completeStream
+          ? await runCtx.llm.completeStream(messages, { tools: toolSpecs }, (contentDelta) => {
+              runCtx.emit('agent/step', { sessionId: session.id, step: { type: 'token', content: contentDelta } })
+            })
+          : await runCtx.llm.complete(messages, { tools: toolSpecs })
         // Phase 8.5: tra ui hint NGAY LÚC PHÁT step — chỉ forward metadata đã
         // khai sẵn trên ToolDefinition, không tự quyết định cách hiển thị.
         const tool = response.toolCall ? runCtx.tools.get(response.toolCall.name) : undefined
