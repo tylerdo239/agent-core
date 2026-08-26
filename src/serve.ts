@@ -360,10 +360,24 @@ async function main() {
   mount('plugin-config-postgres', 'provider', pluginConfigPostgres, { connectionString: databaseUrl })
 
   // Module memory (ctx.memory, TÙY CHỌN) — xem chú thích tại
-  // tryBootstrapMemoryCoreAdmin ở trên. Không set MEMORY_CORE_URL = bỏ qua
-  // hoàn toàn, ctx.memory không mount, hệ thống chạy y hệt trước đây.
-  const memoryCoreUrl = process.env.MEMORY_CORE_URL
+  // tryBootstrapMemoryCoreAdmin ở trên. Không set MEMORY_CORE_API_KEY = bỏ
+  // qua hoàn toàn, ctx.memory không mount, hệ thống chạy y hệt trước đây.
+  //
+  // Bug thật phát hiện lúc deploy VPS (2026-08): trước đây feature-detect
+  // dựa trên `MEMORY_CORE_URL` — nhưng docker-compose.yml's `environment:`
+  // luôn TỰ ĐIỀN default `http://memory-core:8420` cho biến này (kể cả khi
+  // `.env` không set gì), nên `memoryCoreUrl` LUÔN truthy trong container
+  // Docker, khiến FATAL check ngay dưới đây bắn sai cho MỌI deploy fresh
+  // không cấu hình memory (không phải lỗi riêng của 1 user). Sửa: dùng
+  // `MEMORY_CORE_API_KEY` làm tín hiệu BẬT/TẮT chính — biến này KHÔNG có
+  // default nào ở compose (`${MEMORY_CORE_API_KEY:-}`, rỗng nếu không set),
+  // nên "không set" luôn đúng nghĩa "không set" thật. `memoryCoreUrl` tự
+  // default về địa chỉ container `memory-core` trong compose CHỈ KHI đã có
+  // API key (đúng tinh thần "chỉ cần set 1 biến cho Docker" mà .env.example
+  // hứa, không còn đụng docker-compose.yml nữa vì Compose không hỗ trợ
+  // default có điều kiện theo biến khác).
   const memoryCoreApiKey = process.env.MEMORY_CORE_API_KEY
+  const memoryCoreUrl = process.env.MEMORY_CORE_URL || (memoryCoreApiKey ? 'http://memory-core:8420' : undefined)
   if (memoryCoreUrl && !memoryCoreApiKey) {
     console.error('FATAL: MEMORY_CORE_URL được set nhưng thiếu MEMORY_CORE_API_KEY — set cả 2 hoặc bỏ trống cả 2.')
     process.exit(1)

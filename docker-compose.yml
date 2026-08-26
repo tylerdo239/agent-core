@@ -72,9 +72,16 @@ services:
       - .env
     environment:
       DATABASE_URL: postgres://agent_core:${POSTGRES_PASSWORD}@postgres:5432/agent_core_users
-      # Tuỳ chọn — bỏ trống/không set 3 dòng dưới thì ctx.memory không mount,
-      # hệ thống chạy y hệt như không có module memory (xem src/serve.ts).
-      MEMORY_CORE_URL: ${MEMORY_CORE_URL:-http://memory-core:8420}
+      # Tuỳ chọn — bỏ trống/không set MEMORY_CORE_API_KEY thì ctx.memory
+      # không mount, hệ thống chạy y hệt như không có module memory (xem
+      # src/serve.ts). Bug thật đã gặp (2026-08): dòng MEMORY_CORE_URL ở đây
+      # TỪNG có default cứng `http://memory-core:8420` — khiến biến này LUÔN
+      # truthy trong container dù `.env` không set gì, làm FATAL check ở
+      # serve.ts bắn sai cho MỌI deploy fresh không cấu hình memory. Bỏ hẳn
+      # default ở đây — serve.ts giờ tự suy ra URL mặc định CHỈ KHI đã có
+      # API key (đọc đúng thứ tự ưu tiên tại đó), compose chỉ cần pass-through
+      # đúng những gì `.env` thật sự có.
+      MEMORY_CORE_URL: ${MEMORY_CORE_URL:-}
       MEMORY_CORE_API_KEY: ${MEMORY_CORE_API_KEY:-}
       MEMORY_CORE_SERVICE_ID: ${MEMORY_CORE_SERVICE_ID:-default}
       # RLM harness (merge, xem docs/agent-core-rlm-harness-merge-plan.md) —
