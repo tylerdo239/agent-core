@@ -104,13 +104,27 @@ services:
       - "${PORT_WEB_UI:-8790}:5173"
     volumes:
       - agent-core-data:/app/data
-      # Một compose duy nhất cho giai đoạn phát triển: source trên host là
-      # source thật trong container. Sửa TS/CSS không cần rebuild image.
-      - ./seams:/app/seams
-      - ./bundles:/app/bundles
-      - ./src:/app/src
-      - ./packages:/app/packages
-      - ./apps:/app/apps
+      # Follow-up (2026-08) — trước đây chỉ mount 5 thư mục source cần cho
+      # serve.ts chạy (seams/bundles/src/packages/apps). Không đủ cho 1 agent
+      # KHÁC (vd. opencode, cài sẵn global trong image, xem Dockerfile.dev)
+      # chạy BÊN TRONG container: agent đó cần thấy/đọc/sửa TOÀN BỘ repo thật
+      # (tests/, docs/, benchmarks/, scripts/, tsconfig.json, package.json,
+      # README...), không chỉ phần runtime cần để serve. Mount thẳng root —
+      # `.git` cũng tự nhiên có theo (agent trong container git status/diff
+      # được ngay trên chính repo host, không phải bản sao rời).
+      - .:/app
+      # Che (shadow) LẠI /app/node_modules bằng volume ẩn danh riêng ngay sau
+      # dòng `.:/app` ở trên — BẮT BUỘC, không được để node_modules của HOST
+      # đè lên: node_modules trong image được `npm ci` lúc build
+      # (Dockerfile.dev), khớp đúng glibc/Node ABI của container; node_modules
+      # trên host build cho MÔI TRƯỜNG HOST — lẫn 2 bên gây bug thật đã gặp
+      # (native module vd. better-sqlite3 build sai Node version). Cái giá
+      # phải trả: thêm dependency mới (đổi package.json/package-lock.json rồi
+      # `docker compose build`) KHÔNG tự động lọt vào volume ẩn danh này —
+      # phải renew nó lúc up:
+      #   docker compose build agent-core && \
+      #   docker compose up -d --force-recreate --renew-anon-volumes agent-core
+      - /app/node_modules
     restart: "no"
     command:
       - sh
