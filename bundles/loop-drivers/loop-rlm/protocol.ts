@@ -4,6 +4,8 @@ import { PromptRegistryService } from '../../../seams/prompt.ts'
 import { SkillDefinition } from '../../../seams/skill.ts'
 import { WorkspaceSnapshot } from '../../../seams/workspace.ts'
 import { ToolDefinition } from '../../../seams/tools.ts'
+import { createContractValidator } from '../../../src/contracts.ts'
+import { injectEnvironmentNote } from '../../../src/environment-note.ts'
 
 export interface RlmSessionState {
   contextIndex: number
@@ -14,6 +16,10 @@ export interface RlmSessionState {
 export interface PreparedRlmTurn {
   contractVersion: 2
   sessionId: string
+  projectId?: string
+  workspaceId: string
+  runId?: string
+  requestId?: string
   request: string
   contextIndex: number
   historyIndex: number
@@ -29,6 +35,23 @@ export interface PreparedRlmTurn {
   context: Record<string, unknown>
   metadata?: Record<string, unknown>
 }
+
+const validatePreparedTurn = createContractValidator<PreparedRlmTurn>('rlm/v2', {
+  type: 'object',
+  // workspaceId is emitted by the new host but remains optional on v2 so
+  // recorded/legacy prepared turns do not become invalid without a v3 bump.
+  required: ['contractVersion', 'sessionId', 'request', 'contextIndex', 'historyIndex', 'availableTools', 'prompt', 'promptVersion', 'context'],
+  properties: {
+    contractVersion: { const: 2 }, sessionId: { type: 'string', minLength: 1 },
+    projectId: { type: 'string', minLength: 1 }, workspaceId: { type: 'string', minLength: 1 },
+    runId: { type: 'string', minLength: 1 }, requestId: { type: 'string', minLength: 1 },
+    request: { type: 'string' }, contextIndex: { type: 'integer', minimum: 0 },
+    historyIndex: { type: 'integer', minimum: 0 }, availableTools: { type: 'array' },
+    prompt: { type: 'string', minLength: 1 }, promptVersion: { type: 'string', minLength: 1 },
+    context: { type: 'object' },
+  },
+  additionalProperties: true,
+})
 
 function skillPayload(skill?: SkillDefinition) {
   if (!skill) return undefined
@@ -47,10 +70,11 @@ export async function prepareRlmTurn(options: {
   memory: TurnMemoryService
   workspace: WorkspaceSnapshot
   skill?: SkillDefinition
+  skillCatalog?: SkillDefinition[]
   tools: ToolDefinition[]
   prompts: PromptRegistryService
 }): Promise<PreparedRlmTurn> {
-  const { session, input, memory, workspace, skill, tools, prompts } = options
+  const { session, input, memory, workspace, skill, skillCatalog = [], tools, prompts } = options
   const state = session.extension<RlmSessionState>('loop:rlm', () => ({
     contextIndex: 0,
     historyIndex: 0,
@@ -84,6 +108,9 @@ export async function prepareRlmTurn(options: {
       }
   const selectedSkill = state.pendingControl ? undefined : skillPayload(skill)
   if (selectedSkill) context.selected_skill = selectedSkill
+  if (skillCatalog.length) {
+    context.skill_catalog = skillCatalog.map(({ name, description }) => ({ name, description }))
+  }
   const availableTools = tools.map(({ name, description, parameters }) => ({
     name,
     description,
@@ -92,13 +119,17 @@ export async function prepareRlmTurn(options: {
   // Runtime state stays in the REPL context. It is deliberately not rendered
   // into the system prompt, keeping instruction priority and prefix stable.
   context.available_tools = availableTools
-  const prompt = prompts.render({
+  const prompt = injectEnvironmentNote(prompts.render({
     driver: 'rlm',
     sessionId: session.id,
-  })
-  return {
+  }), 'identity')
+  return validatePreparedTurn({
     contractVersion: 2,
     sessionId: session.id,
+    ...(session.projectId ? { projectId: session.projectId } : {}),
+    workspaceId: session.workspaceId,
+    ...(input.runId ? { runId: input.runId } : {}),
+    ...(input.requestId ? { requestId: input.requestId } : {}),
     request: input.message,
     contextIndex: state.contextIndex,
     historyIndex: state.historyIndex,
@@ -108,5 +139,5 @@ export async function prepareRlmTurn(options: {
     promptVersion: prompt.version,
     context,
     metadata: input.metadata,
-  }
+  })
 }

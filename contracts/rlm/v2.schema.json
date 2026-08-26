@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-core/rlm/v2",
+  "title": "Prepared RLM Turn v2",
+  "type": "object",
+  "required": ["contractVersion", "sessionId", "request", "contextIndex", "historyIndex", "availableTools", "prompt", "promptVersion", "context"],
+  "properties": {
+    "contractVersion": { "const": 2 },
+    "runId": { "type": "string", "minLength": 1 },
+    "requestId": { "type": "string", "minLength": 1 },
+    "sessionId": { "type": "string", "minLength": 1 },
+    "projectId": { "type": "string", "minLength": 1 },
+    "workspaceId": { "type": "string", "minLength": 1 },
+    "request": { "type": "string" },
+    "contextIndex": { "type": "integer", "minimum": 0 },
+    "historyIndex": { "type": "integer", "minimum": 0 },
+    "availableTools": { "type": "array" },
+    "prompt": { "type": "string", "minLength": 1 },
+    "promptVersion": { "type": "string", "minLength": 1 },
+    "context": { "type": "object" }
+  },
+  "additionalProperties": true
+}

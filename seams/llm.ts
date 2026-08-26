@@ -47,6 +47,16 @@ export interface LlmCompleteOptions {
   maxTokens?: number
   purpose?: 'root' | 'sub' | 'memory'
   extraBody?: Record<string, unknown>
+  signal?: AbortSignal
+  /** Absolute epoch deadline shared across retries. */
+  deadline?: number
+}
+
+export type LlmErrorCode = 'LLM_CANCELLED' | 'LLM_TIMEOUT' | 'LLM_RATE_LIMITED' | 'LLM_SERVER_ERROR' | 'LLM_AUTH' | 'LLM_REQUEST_INVALID' | 'LLM_NETWORK'
+export class LlmError extends Error {
+  constructor(public readonly code: LlmErrorCode, message: string, public readonly status?: number) {
+    super(message); this.name = 'LlmError'
+  }
 }
 
 export abstract class LlmService extends Service {

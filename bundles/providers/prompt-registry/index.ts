@@ -14,6 +14,9 @@ export class PromptRegistry extends PromptRegistryService {
     if (!Number.isFinite(section.order)) {
       throw new Error(`prompt section "${section.name}" order must be finite`)
     }
+    if (section.drivers?.some((driver) => !driver.trim())) {
+      throw new Error(`prompt section "${section.name}" contains an empty driver`)
+    }
     this.ctx.effect(() => {
       if (this.sections.has(section.name)) {
         throw new Error(`prompt section "${section.name}" already registered`)
@@ -30,6 +33,9 @@ export class PromptRegistry extends PromptRegistryService {
 
   assemble(context: PromptAssembleContext = {}) {
     const sections = [...this.sections.values()]
+      .filter((section) => !section.drivers || (
+        typeof context.driver === 'string' && section.drivers.includes(context.driver)
+      ))
       .sort((left, right) => left.order - right.order)
       .map((section) => ({
         name: section.name,

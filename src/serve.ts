@@ -50,14 +50,22 @@ import * as toolRegistry from '../bundles/providers/tool-registry/index.ts'
 import * as stateSqlite from '../bundles/providers/state-sqlite/index.ts'
 import * as permissionRbac from '../bundles/providers/permission-rbac/index.ts'
 import * as llmQwen from '../bundles/providers/llm-qwen/index.ts'
+import * as contextCompactorLlm from '../bundles/providers/context-compactor-llm/index.ts'
 import * as subagentManager from '../bundles/providers/subagent-manager/index.ts'
 import * as skillRegistry from '../bundles/providers/skill-registry/index.ts'
+import * as skillSelectionLlm from '../bundles/providers/skill-selection-llm/index.ts'
 import * as skillFilesystem from '../bundles/providers/skill-filesystem/index.ts'
 import * as promptRegistry from '../bundles/providers/prompt-registry/index.ts'
+import * as promptDefaultAgent from '../bundles/prompts/prompt-default-agent/index.ts'
 import * as promptRlmDataAgent from '../bundles/prompts/prompt-rlm-data-agent/index.ts'
+import * as promptDeepanalyzePhases from '../bundles/prompts/prompt-deepanalyze-phases/index.ts'
 import * as memoryRolling from '../bundles/providers/memory-rolling/index.ts'
 import * as workspaceLocal from '../bundles/providers/workspace-local/index.ts'
 import * as workspaceDocker from '../bundles/providers/workspace-docker/index.ts'
+import * as artifactService from '../bundles/providers/artifact-service/index.ts'
+import * as jobRunner from '../bundles/providers/job-runner/index.ts'
+import * as pipelineRegistry from '../bundles/providers/pipeline-registry/index.ts'
+import * as pipelineRunner from '../bundles/providers/pipeline-runner/index.ts'
 import * as sandboxIpython from '../bundles/providers/sandbox-ipython/index.ts'
 import * as sandboxDocker from '../bundles/providers/sandbox-docker/index.ts'
 // skill-support-tone: ví dụ #1 cho ctx.skills — chèn hướng dẫn giọng văn hỗ
@@ -73,13 +81,22 @@ import * as toolDatabaseQuery from '../bundles/tools/tool-database-query/index.t
 // key), trả về title/url/snippet thật — xem bundles/tools/tool-web-search
 // cho chi tiết parser + rủi ro markup DuckDuckGo có thể đổi.
 import * as toolWebSearch from '../bundles/tools/tool-web-search/index.ts'
+import * as toolSkill from '../bundles/tools/tool-skill/index.ts'
 import * as sessionRegistry from '../bundles/providers/session-registry/index.ts'
+import * as projectRegistry from '../bundles/providers/project-registry/index.ts'
 import * as authUsers from '../bundles/providers/auth-users/index.ts'
 import * as pluginConfigPostgres from '../bundles/providers/plugin-config-postgres/index.ts'
 import * as memoryTencentdb from '../bundles/providers/memory-tencentdb/index.ts'
 import * as apiRest from '../bundles/adapters/api-rest/index.ts'
 import * as apiGrpc from '../bundles/adapters/api-grpc/index.ts'
 import * as webUi from '../bundles/adapters/web-ui/index.ts'
+import * as stageDataLoad from '../bundles/pipelines/stages/data-load/index.ts'
+import * as stageFeatureBasic from '../bundles/pipelines/stages/feature-basic/index.ts'
+import * as stageTrainMajority from '../bundles/pipelines/stages/train-majority/index.ts'
+import * as stageTrainFlaml from '../bundles/pipelines/stages/train-flaml/index.ts'
+import * as stageValidateHoldout from '../bundles/pipelines/stages/validate-split/index.ts'
+import * as stageReportMarkdown from '../bundles/pipelines/stages/report-markdown/index.ts'
+import * as pipelineTabularClassification from '../bundles/pipelines/pipeline-tabular-classification/index.ts'
 
 const agentCoreRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const localEnvPath = path.join(agentCoreRoot, '.env')
@@ -267,7 +284,7 @@ async function main() {
   // lệnh `mount(...)` GỌI SAU đó (kể cả 4 adapter cuối file) vẫn được ghi
   // nhận đúng vì list() luôn đọc lại đúng mảng gốc này lúc có request, mount
   // plugin-inventory không cần đứng cuối cùng.
-  type PluginCategory = 'provider' | 'tool' | 'skill' | 'loop-driver' | 'prompt' | 'adapter' | 'external'
+  type PluginCategory = 'provider' | 'tool' | 'skill' | 'loop-driver' | 'prompt' | 'adapter' | 'pipeline-stage' | 'pipeline' | 'external'
   interface MountRecord {
     readonly name: string
     readonly category: PluginCategory
@@ -322,14 +339,28 @@ async function main() {
     maxRetries: optionalNumber('OPENAI_MAX_RETRIES'),
     retryBaseDelayMs: optionalNumber('OPENAI_RETRY_BASE_DELAY_MS'),
   })
+  mount('context-compactor-llm', 'provider', contextCompactorLlm, {
+    contextLimitTokens: optionalNumber('DEFAULT_MODEL_CONTEXT_TOKENS')
+      ?? optionalNumber('RLM_MODEL_CONTEXT_TOKENS')
+      ?? 30_000,
+    thresholdPct: optionalNumber('DEFAULT_COMPACTION_THRESHOLD_PCT')
+      ?? optionalNumber('RLM_COMPACTION_THRESHOLD_PCT')
+      ?? 0.8,
+  })
   mount('subagent-manager', 'provider', subagentManager)
   mount('skill-registry', 'provider', skillRegistry)
+  mount('skill-selection-llm', 'provider', skillSelectionLlm)
   mount('skill-support-tone', 'skill', skillSupportTone)
   mount('skill-filesystem', 'provider', skillFilesystem, {
     root: process.env.RLM_SKILLS_ROOT ?? path.join(agentCoreRoot, 'bundles', 'skills'),
   })
   mount('prompt-registry', 'provider', promptRegistry)
+  mount('prompt-default-agent', 'prompt', promptDefaultAgent)
   mount('prompt-rlm-data-agent', 'prompt', promptRlmDataAgent)
+  // Fixed wording still degraded DS (3 FAIL in ds suite, timeout). Keep disabled;
+  // the phase discipline is already covered by G1's evidence-policy <Understand>
+  // line + repl-protocol 1-sentence plan. Enable via skill when needed.
+  // root.plugin(promptDeepanalyzePhases)
   mount('memory-rolling', 'provider', memoryRolling, {
     basePath: process.env.RLM_MEMORY_PATH ?? path.join(agentCoreRoot, 'data', 'rlm-memory'),
   })
@@ -340,6 +371,9 @@ async function main() {
       volumePrefix: process.env.RLM_DOCKER_VOLUME_PREFIX ?? 'agent-core-rlm-workspace',
     })
   }
+  mount('artifact-service', 'provider', artifactService)
+  mount('job-runner', 'provider', jobRunner, { maxConcurrent: optionalNumber('JOB_MAX_CONCURRENT') })
+  mount('pipeline-registry', 'provider', pipelineRegistry)
   mount('loop-registry', 'provider', loopRegistry)
   mount('loop-default', 'loop-driver', loopDefault)
   mount('loop-rlm', 'loop-driver', loopRlm)
@@ -353,6 +387,7 @@ async function main() {
     ttlMs: optionalNumber('SESSION_TTL_MS'),
     sweepIntervalMs: optionalNumber('SESSION_SWEEP_INTERVAL_MS'),
   })
+  mount('project-registry', 'provider', projectRegistry)
   mount('auth-users', 'provider', authUsers, { connectionString: databaseUrl })
   // ctx.pluginConfig — cấu hình plugin admin đổi được qua UI (không cần
   // restart), vd. serperApiKey cho tool-web-search. Cùng DATABASE_URL đã
@@ -441,10 +476,20 @@ async function main() {
       memory: process.env.RLM_DOCKER_MEMORY,
       cpus: optionalNumber('RLM_DOCKER_CPUS'),
       pidsLimit: optionalNumber('RLM_DOCKER_PIDS_LIMIT'),
-      removeWorkspaceVolumeOnClose: optionalBoolean('RLM_DOCKER_REMOVE_VOLUME_ON_CLOSE') ?? true,
+      // Project workspaces are shared by multiple chat sessions and survive
+      // worker restarts. Destruction must be an explicit project lifecycle action.
+      removeWorkspaceVolumeOnClose: optionalBoolean('RLM_DOCKER_REMOVE_VOLUME_ON_CLOSE') ?? false,
       extraBody: openaiExtraBody ? JSON.stringify(openaiExtraBody) : undefined,
     })
   }
+  mount('stage-data-load', 'pipeline-stage', stageDataLoad)
+  mount('stage-feature-basic', 'pipeline-stage', stageFeatureBasic)
+  mount('stage-train-majority', 'pipeline-stage', stageTrainMajority)
+  mount('stage-train-flaml', 'pipeline-stage', stageTrainFlaml)
+  mount('stage-validate-holdout', 'pipeline-stage', stageValidateHoldout)
+  mount('stage-report-markdown', 'pipeline-stage', stageReportMarkdown)
+  mount('pipeline-tabular-classification', 'pipeline', pipelineTabularClassification)
+  mount('pipeline-runner', 'provider', pipelineRunner)
   mount('tool-database-query', 'tool', toolDatabaseQuery)
   mount('tool-web-search', 'tool', toolWebSearch, {
     // Audit fix: trước đây không có timeout, fetch() có thể treo cả turn vô
@@ -456,6 +501,7 @@ async function main() {
     // SERPER_API_KEY = bỏ qua Serper hoàn toàn, chạy y hệt trước đây.
     serperApiKey: process.env.SERPER_API_KEY,
   })
+  mount('tool-skill', 'tool', toolSkill)
 
   // EXTRA_PLUGINS (docs/agent-core-adding-plugins.md) — plugin bên thứ ba,
   // KHÔNG cần sửa file này. Nạp SAU mọi seam nội bộ (author có thể `inject`
@@ -504,6 +550,7 @@ async function main() {
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, async () => {
       console.log(`\n${signal} — shutting down...`)
+      await root.agent.drain(optionalNumber('SHUTDOWN_DRAIN_MS') ?? 10_000)
       await root.fiber.dispose()
       process.exit(0)
     })

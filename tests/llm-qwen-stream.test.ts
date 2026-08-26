@@ -161,12 +161,17 @@ describe('llm-qwen — completeStream() (SSE thật, dựa trên probe trực ti
     await fiber.dispose()
   })
 
+  // Merge feat/rlm-dev-integration: completeStream() giờ dùng CHUNG
+  // postChatCompletion() với complete() (xem bundles/providers/shared/
+  // llm-http.ts) -- lỗi HTTP không-ok ném ra LlmError có message theo dạng
+  // "<provider>: server error <status>" thay vì chuỗi "streaming request
+  // failed" cũ (ad-hoc, trước khi có helper dùng chung).
   it('response không ok (lỗi HTTP) -> throw ngay, không gọi onDelta lần nào', async () => {
     global.fetch = (async () => new Response('server error', { status: 500 })) as unknown as typeof fetch
 
     const { root, fiber } = await mount(BASE_CONFIG)
     const onDelta = () => { throw new Error('KHÔNG được gọi') }
-    await expect(root.llm.completeStream!([{ role: 'user', content: 'hi' }], {}, onDelta)).rejects.toThrow('streaming request failed')
+    await expect(root.llm.completeStream!([{ role: 'user', content: 'hi' }], {}, onDelta)).rejects.toThrow('llm-qwen: server error 500')
     await fiber.dispose()
   })
 })

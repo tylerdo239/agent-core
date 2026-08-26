@@ -15,6 +15,7 @@ export type MessageBubbleKind = 'user' | 'assistant' | 'system' | 'error' | 'cri
 export interface MessageBubbleProps {
   kind: MessageBubbleKind
   text: string
+  description?: string
   ts?: number
   /** Gọi SAU KHI đã copy vào clipboard thành công — App.tsx dùng để push toast xác nhận. */
   onCopied?: () => void
@@ -24,11 +25,17 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
 }
 
-export function MessageBubble({ kind, text, ts, onCopied }: MessageBubbleProps) {
+export function MessageBubble({ kind, text, description, ts, onCopied }: MessageBubbleProps) {
   const cssKind = kind === 'critic' ? 'step' : kind
 
   if (kind !== 'user' && kind !== 'assistant') {
-    return <div className={`${styles.msg} ${styles[cssKind]}`}>{text}</div>
+    return (
+      <div className={`${styles.msg} ${styles[cssKind]}`} title={description}>
+        <span className={styles.activityTitle}>{text}</span>
+        {description && <span className={styles.separator}>·</span>}
+        {description && <span className={styles.description}>{description}</span>}
+      </div>
+    )
   }
 
   async function handleCopy() {

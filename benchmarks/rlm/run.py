@@ -37,6 +37,80 @@ INTERNAL_LANGUAGE = re.compile(
 )
 NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
+# ---- G2/G3 helpers (DeepAnalyze-inspired) ----
+
+def _classify_format_gate(events: list[dict[str, Any]], result: dict[str, Any]) -> dict[str, Any]:
+    """G3: distinguish protocol vs capability failures."""
+    has_code = any(event.get("type") == "code" for event in events)
+    has_iteration = any(event.get("type") == "iteration_completed" for event in events)
+    has_error = any(event.get("type") == "error" for event in events)
+    answer = str(result.get("content") or "").strip()
+    status = str(result.get("status") or "")
+    if has_error and not has_code:
+        return {"gate": "protocol_error", "reason": "error_without_code", "detail": "turn emitted error before any code block"}
+    if not has_code and has_iteration:
+        # Model issued iterations but never produced a code block (plain text / JSON-only)
+        if answer:
+            return {"gate": "protocol_no_fence", "reason": "no_repl_fence", "detail": "iterations present but no code event — likely plain text without ```repl"}
+        return {"gate": "protocol_no_fence", "reason": "empty_turn", "detail": "no code event and no answer"}
+    if not has_code and not has_iteration and answer:
+        # Direct path may submit in first block which still counts as code; this branch is rare
+        return {"gate": "ok", "reason": "direct_answer", "detail": "no explicit iteration event but answer present"}
+    if not has_code and not has_iteration and not answer:
+        return {"gate": "protocol_stalled", "reason": "no_progress", "detail": "no code and no answer — stalled"}
+    if status != "completed" and not has_error:
+        return {"gate": "capability_error", "reason": f"status_{status}", "detail": f"turn status {status!r} without error event"}
+    return {"gate": "ok", "reason": "ok", "detail": ""}
+
+
+def _compute_s_interaction(events: list[dict[str, Any]], checks: dict[str, Any]) -> dict[str, Any]:
+    """G2: DeepAnalyze S_interaction analog — trajectory quality 0..1."""
+    iterations = sum(1 for e in events if e.get("type") == "iteration_completed")
+    observations = [e for e in events if e.get("type") == "observation"]
+    code_events = [e for e in events if e.get("type") == "code"]
+    error_events = [e for e in events if e.get("type") == "error"]
+    # successful iterations = observations with success==True and empty stderr
+    successful = sum(1 for e in observations if e.get("success") and not str(e.get("stderr") or "").strip())
+    # failed = observations with success==False or stderr present
+    failed = len(observations) - successful
+    # repeated code detection (exact duplicate code blocks)
+    code_strings = [str(e.get("code") or "").strip() for e in code_events if str(e.get("code") or "").strip()]
+    seen: dict[str, int] = {}
+    repeated = 0
+    for c in code_strings:
+        if c in seen:
+            repeated += 1
+        seen[c] = seen.get(c, 0) + 1
+    unique_ratio = len(seen) / max(1, len(code_strings))
+    # profile_dataset usage (G1 <Understand> primitive)
+    used_profile = any("profile_dataset" in c for c in code_strings)
+    uses_dataset = bool(checks.get("_has_dataset") or "dataset" in json.dumps(checks).lower() or any("dataset" in c.lower() or "load_dataset" in c for c in code_strings))
+    # Success ratio
+    success_ratio = (successful / max(1, iterations)) if iterations else 1.0
+    # Waste penalty: repeated + extra iterations beyond budget
+    waste_penalty = repeated / max(1, len(code_strings)) if code_strings else 0.0
+    # Efficiency: how close to minimal iterations (assume optimal ~1-2 for many tasks)
+    # We do not penalize heavily — just blend with success_ratio
+    s_interaction = max(0.0, min(1.0, success_ratio * 0.6 + unique_ratio * 0.2 + (1.0 - waste_penalty) * 0.2))
+    # If no iterations at all, S=0 unless direct path succeeded
+    if iterations == 0 and not successful:
+        s_interaction = 0.0
+    # Flag for dataset tasks where profile_dataset was NOT used (DeepAnalyze -7.1 ablation)
+    missing_understand = uses_dataset and not used_profile and iterations > 0
+    return {
+        "iterations": iterations,
+        "successful_iterations": successful,
+        "failed_iterations": failed,
+        "code_blocks": len(code_strings),
+        "repeated_code_blocks": repeated,
+        "unique_code_ratio": round(unique_ratio, 3),
+        "used_profile_dataset": used_profile,
+        "missing_understand": missing_understand,
+        "s_interaction": round(s_interaction, 3),
+        "success_ratio": round(success_ratio, 3),
+        "error_events": len(error_events),
+    }
+
 # Session workspaces live under one of these layouts depending on the sandbox
 # provider (local bind mount vs. named volume translated by the docker shim);
 # see workspace_candidates().
@@ -54,41 +128,51 @@ def workspace_candidates(session_id: str) -> list[Path]:
     ]
 
 
-def register_datasets(session_id: str, case: dict[str, Any]) -> list[str]:
-    """Copy case fixtures into every candidate session-workspace location and
-    register them in index.json so the agent's list_datasets()/load_dataset()
-    helpers see them regardless of sandbox provider layout. Returns
-    human-readable setup problems (empty list means success)."""
+def upload_fixture(base_url: str, api_key: str, session_id: str, source: Path) -> None:
+    """Put a benchmark fixture in the real workspace through the public API.
+
+    Do not copy directly into data/: production uses a Docker named volume, so
+    a host-side copy creates a benchmark that passes setup but is invisible to
+    the running agent.
+    """
+    request = urllib.request.Request(
+        f"{base_url.rstrip('/')}/sessions/{session_id}/files",
+        data=source.read_bytes(),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/octet-stream",
+            "X-File-Name": source.name,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            if response.status not in (200, 201):
+                raise RuntimeError(f"upload returned HTTP {response.status}")
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"upload {source.name!r} failed ({error.code}): {detail}") from error
+
+
+def register_datasets(base_url: str, api_key: str, session_id: str, case: dict[str, Any]) -> list[str]:
+    """Upload fixtures and let the configured workspace provider register them.
+
+    This works unchanged for local workspaces, Docker volumes, and remote
+    deployments because it exercises the same binary upload path as the UI.
+    """
     wanted = case.get("datasets") or []
     if not wanted:
         return []
-    targets = [path for path in workspace_candidates(session_id) if path.is_dir()]
-    if not targets:
-        # The provider creates the workspace lazily on first use; pre-create
-        # every candidate layout so the right one is populated either way.
-        for candidate in workspace_candidates(session_id):
-            candidate.mkdir(parents=True, exist_ok=True)
-            targets.append(candidate)
     problems: list[str] = []
-    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     for name in wanted:
         source = find_fixture(name)
         if source is None:
             problems.append(f"fixture {name!r} not found under {FIXTURES}")
             continue
-        payload = source.read_bytes()
-        entry = {"filename": name, "path": name, "created_at": stamp}
-        for workspace in targets:
-            (workspace / name).write_bytes(payload)
-            index_path = workspace / "index.json"
-            try:
-                index = json.loads(index_path.read_text(encoding="utf-8"))
-                if not isinstance(index, dict):
-                    index = {}
-            except (OSError, ValueError):
-                index = {}
-            index[source.stem] = entry
-            index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
+        try:
+            upload_fixture(base_url, api_key, session_id, source)
+        except RuntimeError as error:
+            problems.append(str(error))
     return problems
 
 
@@ -139,6 +223,11 @@ class TurnScore:
     duration_seconds: float
     status: str
     context_peak_tokens: int = 0
+    # G2/G3 extensions (backward-compatible defaults)
+    s_interaction: float = 0.0
+    format_gate: str = "ok"
+    format_reason: str = ""
+    interaction: dict[str, Any] | None = None
 
 
 def score_turn(
@@ -203,6 +292,31 @@ def score_turn(
     if any(event.get("type") == "error" for event in events):
         failures.append("turn emitted an error event")
 
+    # ---- G4: report quality heuristics (open-ended) ----
+    # report_keywords: each keyword must appear (case-insensitive)
+    for kw in checks.get("report_keywords", []):
+        if str(kw).casefold() not in folded:
+            failures.append(f"report missing keyword {kw!r}")
+    # report_sections: regex patterns that should appear (e.g. headings)
+    for pattern in checks.get("report_sections", []):
+        if not re.search(pattern, answer, re.IGNORECASE):
+            failures.append(f"report missing section matching {pattern!r}")
+    # min_words: report must be at least N words (analyst-grade reports need substance)
+    if "min_words" in checks:
+        word_count = len(answer.split())
+        if word_count < int(checks["min_words"]):
+            failures.append(f"report too short: {word_count} words < {checks['min_words']}")
+    # Optional LLM-judge placeholder: if checks contains llm_judge_prompt, we defer to post-scoring (not failing here)
+    # Caller (run_case) will fill judge result into interaction if needed.
+
+    # ---- G2/G3: interaction & format metrics (DeepAnalyze-inspired) ----
+    interaction = _compute_s_interaction(events, checks)
+    gate_info = _classify_format_gate(events, result)
+    # Expose missing Understand as non-blocking warning in interaction, not hard fail (yet).
+    # To make it a soft signal for A/B, we add a warning failure only if explicitly requested.
+    if checks.get("require_profile_dataset") and interaction.get("missing_understand"):
+        failures.append("dataset task did not call profile_dataset() as first step (<Understand> missing)")
+
     return TurnScore(
         passed=not failures,
         failures=failures,
@@ -212,6 +326,10 @@ def score_turn(
         duration_seconds=round(duration, 3),
         status=str(result.get("status") or "unknown"),
         context_peak_tokens=peak,
+        s_interaction=float(interaction.get("s_interaction", 0.0)),
+        format_gate=str(gate_info.get("gate", "ok")),
+        format_reason=str(gate_info.get("reason", "")),
+        interaction=interaction,
     )
 
 
@@ -230,7 +348,7 @@ def run_case(
     session_id = session["id"]
     event_offset = 0
     turn_reports = []
-    setup_problems = register_datasets(session_id, case)
+    setup_problems = register_datasets(base_url, api_key, session_id, case)
 
     for turn in case["turns"]:
         started = time.perf_counter()
@@ -302,10 +420,26 @@ def main() -> None:
         mark = "PASS" if case_report["passed"] else "FAIL"
         print(f"{mark} {case['id']}", flush=True)
     passed = sum(case["passed"] for case in report["cases"])
+    # Aggregate G2/G3 metrics across all turns for A/B comparison
+    all_turn_scores = [t["score"] for c in report["cases"] for t in c.get("turns", [])]
+    avg_s = sum(s.get("s_interaction", 0) for s in all_turn_scores) / max(1, len(all_turn_scores))
+    avg_iter = sum(s.get("iterations", 0) for s in all_turn_scores) / max(1, len(all_turn_scores))
+    fmt_dist: dict[str, int] = {}
+    for s in all_turn_scores:
+        gate = s.get("format_gate", "ok")
+        fmt_dist[gate] = fmt_dist.get(gate, 0) + 1
+    # G1 adoption: how many dataset turns used profile_dataset
+    profile_used = sum(1 for s in all_turn_scores if (s.get("interaction") or {}).get("used_profile_dataset"))
+    profile_missing = sum(1 for s in all_turn_scores if (s.get("interaction") or {}).get("missing_understand"))
     report["summary"] = {
         "passed": passed,
         "total": len(report["cases"]),
         "score": passed / len(report["cases"]) if report["cases"] else 0,
+        "avg_s_interaction": round(avg_s, 3),
+        "avg_iterations": round(avg_iter, 2),
+        "format_gate_dist": fmt_dist,
+        "profile_dataset_used": profile_used,
+        "profile_dataset_missing": profile_missing,
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

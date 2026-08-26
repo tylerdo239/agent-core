@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import shutil
 import sys
 import threading
 import traceback
@@ -84,6 +85,40 @@ with redirect_stdout(sys.stderr):
 _host_call_lock = threading.Lock()
 _active_request_id = ""
 _active_session_id = ""
+
+
+def safe_session_id(value: Any) -> str:
+    safe = "".join(ch for ch in str(value or "default") if ch.isalnum() or ch in "._-")
+    return safe.strip(".-") or "default"
+
+
+def safe_relative_path(value: Any) -> Path:
+    raw = str(value or "").replace("\\", "/")
+    parts = [part for part in raw.split("/") if part and part != "."]
+    if not parts or any(part == ".." or "\x00" in part for part in parts):
+        raise ValueError("path escapes workspace")
+    return Path(*parts)
+
+
+def list_files_below(directory: Path) -> list[dict[str, Any]]:
+    if not directory.is_dir():
+        return []
+    files: list[dict[str, Any]] = []
+    for entry in directory.rglob("*"):
+        if not entry.is_file() or entry.name in {"index.json", ".manifest.json"}:
+            continue
+        try:
+            stat = entry.stat()
+            files.append({
+                "path": entry.relative_to(directory).as_posix(),
+                "size": stat.st_size,
+                "mtime": __import__("datetime").datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            })
+        except OSError:
+            continue
+        if len(files) >= 100:
+            break
+    return sorted(files, key=lambda item: item["path"])
 
 
 class HostLlmClient(BaseLM):
@@ -269,9 +304,17 @@ def handle(request_id: str, operation: str, payload: dict[str, Any]) -> None:
     _active_session_id = str(payload.get("sessionId") or workspace_root.name)
     runtime = get_agent()
     if operation == "inspect_workspace":
-        session_id = str(payload.get("sessionId") or workspace_root.name)
         with redirect_stdout(sys.stderr):
-            snapshot = runtime.context_builder.inspect_workspace(session_id)
+            snapshot = runtime.context_builder.inspect_workspace_root(workspace_root)
+        project_artifacts = [f"outputs/{item['path']}" for item in list_files_below(workspace_root / "outputs")]
+        legacy_artifacts = [f"generated/{item['path']}" for item in list_files_below(workspace_root / "generated")]
+        session_artifacts = []
+        if payload.get("sessionId"):
+            session_artifacts = [
+                f"generated/{item['path']}"
+                for item in list_files_below(workspace_root / ".sessions" / safe_session_id(payload.get("sessionId")) / "generated")
+            ]
+        snapshot.setdefault("resources", {})["artifacts"] = project_artifacts + legacy_artifacts + session_artifacts
         emit(request_id, "__result__", **snapshot)
         return
     if operation == "write_workspace_file":
@@ -281,9 +324,10 @@ def handle(request_id: str, operation: str, payload: dict[str, Any]) -> None:
         b64 = str(payload.get("content") or "")
         raw = base64.b64decode(b64) if b64 else b""
         # Route through agent workspace so index.json stays consistent
-        session_id = str(payload.get("sessionId") or _active_session_id)
-        root = runtime.context_builder.workspace_root(session_id)
-        target = root / filename
+        root = workspace_root
+        relative = Path("sources") / filename if payload.get("projectWorkspace") else Path(filename)
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(raw)
         # Register tabular files in the session index
         if target.suffix.lower() in {".csv", ".tsv", ".xlsx", ".xls", ".parquet"}:
@@ -294,36 +338,88 @@ def handle(request_id: str, operation: str, payload: dict[str, Any]) -> None:
                     index = {}
             except Exception:
                 index = {}
-            index[target.stem] = {"filename": filename, "path": filename, "created_at": __import__("datetime").datetime.now().isoformat()}
+            index[target.stem] = {"filename": filename, "path": relative.as_posix(), "created_at": __import__("datetime").datetime.now().isoformat()}
             index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
-        emit(request_id, "__result__", path=filename, size=len(raw))
+        emit(request_id, "__result__", path=relative.as_posix(), size=len(raw))
         return
     if operation == "read_workspace_file":
         import base64
 
         file_path = str(payload.get("path") or payload.get("filename") or "")
-        session_id = str(payload.get("sessionId") or _active_session_id)
-        root = runtime.context_builder.workspace_root(session_id)
+        root = workspace_root
         resolved = (root / file_path).resolve()
         if resolved != root and root not in resolved.parents:
             raise ValueError("path escapes workspace")
         emit(request_id, "__result__", content=base64.b64encode(resolved.read_bytes()).decode())
         return
     if operation == "list_workspace_files":
-        session_id = str(payload.get("sessionId") or _active_session_id)
-        root = runtime.context_builder.workspace_root(session_id)
-        files: list[dict] = []
-        for entry in root.rglob("*"):
-            if entry.is_file() and entry.name != "index.json" and "rlm_logs" not in entry.parts and ".agent" not in entry.name:
-                try:
-                    st = entry.stat()
-                    files.append({"path": str(entry.relative_to(root)), "size": st.st_size, "mtime": __import__("datetime").datetime.fromtimestamp(st.st_mtime).isoformat()})
-                except OSError:
+        root = workspace_root
+        scope = str(payload.get("scope") or "all")
+        if scope == "session_outputs":
+            files = list_files_below(root / ".sessions" / safe_session_id(payload.get("sessionId")) / "generated")
+        elif scope == "project_outputs":
+            files = list_files_below(root / "outputs")
+            files += [{**item, "path": f"legacy/{item['path']}"} for item in list_files_below(root / "generated")]
+        else:
+            files = []
+            for entry in root.rglob("*"):
+                if ".sessions" in entry.parts or "rlm_logs" in entry.parts or any(part.startswith(".agent") for part in entry.parts):
                     continue
-            if len(files) >= 100:
-                break
-        files.sort(key=lambda f: f["path"])
+                if entry.is_file() and entry.name not in {"index.json", ".manifest.json"}:
+                    relative = entry.relative_to(root).as_posix()
+                    if scope == "sources" and relative.startswith(("generated/", "outputs/")):
+                        continue
+                    try:
+                        st = entry.stat()
+                        files.append({"path": relative, "size": st.st_size, "mtime": __import__("datetime").datetime.fromtimestamp(st.st_mtime).isoformat()})
+                    except OSError:
+                        continue
+                if len(files) >= 100:
+                    break
+            files.sort(key=lambda f: f["path"])
         emit(request_id, "__result__", files=files)
+        return
+    if operation == "promote_workspace_output":
+        root = workspace_root
+        session_id = safe_session_id(payload.get("sessionId") or _active_session_id)
+        source_relative = safe_relative_path(str(payload.get("sourcePath") or "").removeprefix("generated/"))
+        session_root = (root / ".sessions" / session_id / "generated").resolve()
+        source = (session_root / source_relative).resolve()
+        if source != session_root and session_root not in source.parents:
+            raise ValueError("output path escapes session")
+        if not source.is_file():
+            raise FileNotFoundError(str(source))
+        output_relative = safe_relative_path(payload.get("outputName") or source_relative.as_posix())
+        output_root = (root / "outputs").resolve()
+        target = (output_root / output_relative).resolve()
+        if target != output_root and output_root not in target.parents:
+            raise ValueError("output path escapes project")
+        parsed = output_relative
+        version = 2
+        while target.exists():
+            parsed = output_relative.with_name(f"{output_relative.stem}-{version}{output_relative.suffix}")
+            target = (output_root / parsed).resolve()
+            version += 1
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        stat = target.stat()
+        promoted = {
+            "path": parsed.as_posix(),
+            "size": stat.st_size,
+            "mtime": __import__("datetime").datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            "sourcePath": source_relative.as_posix(),
+            "createdBySession": session_id,
+        }
+        manifest = output_root / ".manifest.json"
+        try:
+            records = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else []
+            if not isinstance(records, list):
+                records = []
+        except Exception:
+            records = []
+        records.append(promoted)
+        manifest.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+        emit(request_id, "__result__", **promoted)
         return
     if operation == "prepared_turn":
         previous_result = runtime.last_turn_result

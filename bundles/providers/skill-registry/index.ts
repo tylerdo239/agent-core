@@ -42,9 +42,14 @@ export class SkillRegistry extends SkillRegistryService {
   }
 
   match(userMessage: string) {
-    const haystack = userMessage.toLowerCase()
+    const haystack = userMessage.normalize('NFKC').toLowerCase()
     return this.list().filter((skill) =>
-      skill.triggers.some((trigger) => haystack.includes(trigger.toLowerCase())),
+      skill.triggers.some((trigger) => {
+        const needle = trigger.normalize('NFKC').trim().toLowerCase()
+        if (!needle) return false
+        const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        return new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, 'u').test(haystack)
+      }),
     )
   }
 

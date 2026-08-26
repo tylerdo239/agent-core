@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
 import '../../../seams/sandbox.ts'
 import '../../../seams/storage.ts'
@@ -5,9 +6,11 @@ import '../../../seams/skill.ts'
 import '../../../seams/prompt.ts'
 import '../../../seams/workspace.ts'
 import '../../../seams/turn-memory.ts'
-import { LoopStep, LoopTurnResult, Session, TurnInput } from '../../../seams/loop.ts'
+import '../../../seams/skill-selection.ts'
+import { assertNotCancelled, LoopStep, LoopTurnResult, Session, TurnInput } from '../../../seams/loop.ts'
 import { SandboxEvent } from '../../../seams/sandbox.ts'
 import { prepareRlmTurn, RlmSessionState } from './protocol.ts'
+import { resolveActiveSkills } from '../../../src/skill-runtime.ts'
 
 function number(value: unknown): number | undefined {
   return typeof value === 'number' ? value : undefined
@@ -40,6 +43,22 @@ function toStep(event: SandboxEvent): LoopStep | undefined {
         iteration,
         decisionSummary: typeof event.decision_summary === 'string' ? event.decision_summary : undefined,
       }
+    case 'skill_loaded':
+    case 'skill_resource':
+      return {
+        type: event.type,
+        skill: String(event.skill ?? ''),
+        path: typeof event.path === 'string' ? event.path : undefined,
+        encoding: typeof event.encoding === 'string' ? event.encoding : undefined,
+      }
+    case 'workspace_read':
+      return {
+        type: 'workspace_read',
+        action: String(event.action ?? 'read'),
+        path: typeof event.path === 'string' ? event.path : undefined,
+      }
+    case 'workspace_write':
+      return { type: 'workspace_write', path: String(event.path ?? '') }
     case 'code':
       return { type: 'code', code: String(event.code ?? ''), iteration, block }
     case 'observation':
@@ -90,11 +109,52 @@ function toStep(event: SandboxEvent): LoopStep | undefined {
   }
 }
 
+/**
+ * The notebook is intentionally a normal Python REPL, so arbitrary Python
+ * cannot be perfectly observed. The harness helpers are the supported file
+ * boundary; turn their calls into timeline events before executing the cell.
+ * The following observation event then tells the UI whether the attempt
+ * succeeded. This is much clearer than asking the UI to parse code/stdout.
+ */
+function workspaceActivities(code: string): SandboxEvent[] {
+  const activities: SandboxEvent[] = []
+  const seen = new Set<string>()
+  const add = (action: string, path?: string) => {
+    const key = `${action}:${path ?? ''}`
+    if (seen.has(key)) return
+    seen.add(key)
+    activities.push({ type: 'workspace_read', action, ...(path ? { path } : {}) })
+  }
+  const capture = (name: string, action: string) => {
+    const pattern = new RegExp(`\\b${name}\\(\\s*['"]([^'"]+)['"]`)
+    const match = pattern.exec(code)
+    if (match) add(action, match[1])
+    else if (new RegExp(`\\b${name}\\(`).test(code)) add(action)
+  }
+  capture('load_dataset', 'load dataset')
+  capture('profile_dataset', 'profile dataset')
+  capture('read_workspace_file', 'read file')
+  if (/\blist_workspace_files\s*\(/.test(code)) add('list files')
+  if (/\blist_datasets\s*\(/.test(code)) add('list datasets')
+  const saved = /\bsave_artifact\(\s*['"]([^'"]+)['"]/.exec(code)
+  if (saved) activities.push({ type: 'workspace_write', path: `generated/${saved[1].replace(/^generated\//, '')}` })
+  const directRead = /\b(?:pd\.)?read_(?:csv|tsv|excel|parquet)\(\s*['"]([^'"]+)['"]/.exec(code)
+  if (directRead) add('read file', directRead[1])
+  const openRead = /\bopen\(\s*['"]([^'"]+)['"]\s*,\s*['"][rt]/.exec(code)
+  if (openRead) add('read file', openRead[1])
+  const directWrite = /\.to_(?:csv|excel|parquet|json)\(\s*['"]([^'"]+)['"]/.exec(code)
+  if (directWrite) activities.push({ type: 'workspace_write', path: directWrite[1] })
+  const openWrite = /\bopen\(\s*['"]([^'"]+)['"]\s*,\s*['"][waxt]/.exec(code)
+  if (openWrite) activities.push({ type: 'workspace_write', path: openWrite[1] })
+  return activities
+}
+
 export const inject = ['loop']
 
 export const apply = (ctx: Context) => {
   ctx.loop.register('rlm', {
     async runTurn(runCtx: Context, session: Session, input: TurnInput): Promise<LoopTurnResult> {
+      assertNotCancelled(input)
       // sandbox/workspace chỉ bắt buộc với driver này, không phải với
       // AgentRunner/loop-default. ctx.get() giữ dependency boundary ở đúng
       // plugin cần capability và fail rõ nếu composition thiếu provider.
@@ -110,35 +170,84 @@ export const apply = (ctx: Context) => {
       if (!sandbox || !workspace || !memoryService || !prompts) {
         throw new Error('loop-rlm requires sandbox, workspace, turnMemory and prompt providers')
       }
-      const selected = input.selectedSkill ? runCtx.skills.get(input.selectedSkill) : undefined
-      if (input.selectedSkill) {
-        if (!selected || !selected.userInvocable) {
-          const available = runCtx.skills
-            .list({ userInvocableOnly: true, topLevelOnly: true })
-            .map((skill) => skill.name)
-          throw new Error(`skill "${input.selectedSkill}" is not user-invocable; available: ${available.join(', ')}`)
+      // Explicit user selection wins. Without one, a precise trigger is the
+      // deterministic fast path; semantic discovery remains available through
+      // the model-facing `skill` tool and catalog in the prepared context.
+      const activeSkills = resolveActiveSkills(runCtx.skills, input.message, input.selectedSkill)
+      const skillCatalog = runCtx.skills.list({ topLevelOnly: true })
+      let active = activeSkills[0]
+      if (!active) {
+        const selector = runCtx.get('skillSelection')
+        const semantic = await selector?.select(input.message, skillCatalog, input.signal)
+        if (selector) {
+          await runCtx.storage.appendEvent(session.id, {
+            type: 'skill_selection', source: 'rlm', strategy: 'semantic',
+            outcome: semantic?.skill ? 'selected' : 'none',
+            skill: semantic?.skill?.name, model: semantic?.model, usage: semantic?.usage,
+            decision: semantic?.decision,
+          })
+        }
+        if (semantic?.skill) {
+          active = { skill: semantic.skill, source: 'semantic' }
         }
       }
 
-      await sandbox.openSession(session.id, { cwd: workspace.root(session.id) })
+      await sandbox.openSession(session.id, {
+        cwd: workspace.root(session.workspaceId),
+        metadata: { projectId: session.projectId, workspaceId: session.workspaceId },
+      })
       const prepared = await prepareRlmTurn({
         session,
         input,
         memory: memoryService,
-        workspace: await workspace.inspect(session.id),
-        skill: selected,
+        workspace: await workspace.inspect(session.workspaceId, session.id),
+        skill: active?.skill,
+        skillCatalog,
         tools: runCtx.tools.list(),
         prompts,
       })
+      if (prepared.context.selected_skill && active) {
+        const event = { type: 'skill_loaded', source: 'rlm', activation: active.source, skill: active.skill.name }
+        await runCtx.storage.appendEvent(session.id, event)
+        runCtx.emit('agent/step', {
+          sessionId: session.id,
+          step: { type: 'skill_loaded', skill: active.skill.name, activation: active.source },
+        })
+      }
+      // H2: model-visible = logged — prompt hash for audit/replay (DSH invariant)
+      const promptHash = createHash('sha256').update(prepared.prompt).digest('hex').slice(0, 12)
+      const toolsHash = createHash('sha256').update(JSON.stringify(prepared.availableTools)).digest('hex').slice(0, 12)
+      await runCtx.storage.appendEvent(session.id, {
+        type: 'prompt_assembled',
+        source: 'rlm',
+        promptHash,
+        promptVersion: prepared.promptVersion,
+        toolsHash,
+        promptLength: prepared.prompt.length,
+        toolsCount: prepared.availableTools.length,
+      } as any)
       let result: Record<string, unknown> | undefined
       let steps = 0
       let finalContent = ''
 
       try {
-        for await (const event of sandbox.request(session.id, 'prepared_turn', prepared as unknown as Record<string, unknown>)) {
+        for await (const event of sandbox.request(
+          session.id,
+          'prepared_turn',
+          prepared as unknown as Record<string, unknown>,
+          { signal: input.signal },
+        )) {
+          assertNotCancelled(input)
           if (event.type === '__result__') {
             result = event
             continue
+          }
+          if (event.type === 'code') {
+            for (const activity of workspaceActivities(String(event.code ?? ''))) {
+              await runCtx.storage.appendEvent(session.id, { ...activity, source: 'rlm' })
+              const activityStep = toStep(activity)
+              if (activityStep) runCtx.emit('agent/step', { sessionId: session.id, step: activityStep })
+            }
           }
           await runCtx.storage.appendEvent(session.id, { ...event, source: 'rlm' })
           const step = toStep(event)

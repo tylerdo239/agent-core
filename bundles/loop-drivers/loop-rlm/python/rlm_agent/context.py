@@ -84,7 +84,11 @@ class ContextBuilder:
 
     def inspect_workspace(self, session_id: str) -> dict[str, Any]:
         """Read workspace data only; session/skill/memory ownership stays with the harness."""
-        root = self.workspace_root(session_id)
+        return self.inspect_workspace_root(self.workspace_root(session_id))
+
+    def inspect_workspace_root(self, workspace_root: str | Path) -> dict[str, Any]:
+        """Inspect an already-authorized root supplied by the host harness."""
+        root = Path(workspace_root).resolve()
         index = self._load_index(root)
         active_id, active_entry = self._active_dataset(index)
         return {

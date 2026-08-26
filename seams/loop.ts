@@ -52,6 +52,27 @@ export interface TurnInput {
   message: string
   selectedSkill?: string
   metadata?: Record<string, unknown>
+  /** Idempotency key supplied by an adapter/client. */
+  requestId?: string
+  /** Cooperative cancellation signal owned by AgentRunner. */
+  signal?: AbortSignal
+  /** Correlation id assigned by AgentRunner; callers normally omit it. */
+  runId?: string
+}
+
+export class RunCancelledError extends Error {
+  constructor(message = 'run cancelled') {
+    super(message)
+    this.name = 'RunCancelledError'
+  }
+}
+
+export function assertNotCancelled(input: TurnInput): void {
+  if (input.signal?.aborted) throw new RunCancelledError()
+}
+
+export function isCancellation(error: unknown): boolean {
+  return error instanceof RunCancelledError || (error instanceof Error && error.name === 'AbortError')
 }
 
 export function normalizeTurnInput(input: string | TurnInput): TurnInput {
@@ -78,6 +99,12 @@ export type LoopStep =
   | { type: 'turn_started'; runId: string; contextIndex?: number }
   | { type: 'iteration_started' | 'iteration_completed'; iteration: number; depth?: number; duration?: number }
   | { type: 'analysis'; content: string; iteration?: number; decisionSummary?: string }
+  /** RLM accessed a selected skill or one of its lazy resources. */
+  | { type: 'skill_loaded' | 'skill_resource'; skill: string; path?: string; encoding?: string; activation?: 'selected' | 'trigger' | 'semantic' | 'agent' }
+  /** A workspace helper is about to read/list a file or dataset. */
+  | { type: 'workspace_read'; action: string; path?: string }
+  /** A REPL helper wrote an output artifact. */
+  | { type: 'workspace_write'; path: string }
   | { type: 'code'; code: string; iteration?: number; block?: number }
   | { type: 'observation'; stdout: string; stderr: string; success: boolean; iteration?: number; block?: number }
   | { type: 'subcall_result'; data: Record<string, unknown> }
@@ -115,30 +142,6 @@ export abstract class LoopRegistryService extends Service {
 }
 
 /**
- * Follow-up (2026-08) — filter thời gian cho các skill nghiên cứu/phân tích
- * (business-case-builder...): model không có cách nào biết "hôm nay là
- * ngày nào" trừ khi được nói thẳng — không có chỗ nào trong hệ thống trước
- * đây tiêm mốc thời gian thật vào prompt. Hệ quả thật: câu hỏi kiểu "phân
- * tích tình hình ngành X" (không nêu mốc thời gian) khiến model tự chọn
- * mốc bất kỳ (có thể là dữ liệu huấn luyện cũ) khi gọi `web_search`, thay
- * vì mặc định hiểu là hỏi về HIỆN TẠI. Tiêm ngay trong `buildPrompt()`
- * (không phải ở loop-default/loop-rlm riêng lẻ) — đúng coding rule B6, và
- * tính LẠI mỗi lần gọi (không cache) để session sống lâu vẫn luôn đúng
- * ngày thật, không "đông cứng" theo lúc session được tạo.
- */
-export function currentDateNote(): string {
-  const now = new Date()
-  const formatted = now.toLocaleDateString('vi-VN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
-  return (
-    `Hôm nay là ${formatted}. Nếu người dùng không nêu rõ mốc thời gian cụ thể, ` +
-    `hãy hiểu là đang hỏi về tình hình HIỆN TẠI/GẦN ĐÂY — khi cần tra cứu thông tin ` +
-    `(vd. tool tìm kiếm web), chủ động thêm mốc thời gian hiện tại (năm/tháng) vào ` +
-    `truy vấn hoặc ưu tiên kết quả mới nhất, tránh dùng số liệu/thông tin cũ đã lỗi ` +
-    `thời mà không kiểm tra lại.`
-  )
-}
-
-/**
  * Trạng thái 1 cuộc hội thoại. KHÔNG phải service trên `ctx` — đây là domain
  * object thuần, tạo mới cho mỗi session, không cần spatial composability
  * (nó là dữ liệu, không phải capability của hệ thống).
@@ -154,6 +157,8 @@ export class Session {
   createdAt = Date.now()
   /** State có scope theo session của loop-rlm (contextIndex/historyIndex/pendingControl). */
   private extensions = new Map<string, unknown>()
+  /** Default loop bật cờ này khi ctx.contextCompactor đã nhận ownership theo token. */
+  private tokenCompactionManaged = false
 
   constructor(
     public id: string,
@@ -178,16 +183,29 @@ export class Session {
      * check, không tin dữ liệu client tự khai cho chính danh tính của họ).
      */
     public ownerId?: string,
+    /** Optional project scope. Sessions in one project share its data sources. */
+    public projectId?: string,
   ) {
     if (systemPrompt) this.history.push({ role: 'system', content: systemPrompt })
   }
 
+  /** Workspace ownership is project-first while legacy sessions stay valid. */
+  get workspaceId(): string {
+    return this.projectId ? `project:${this.projectId}` : this.id
+  }
+
   private trimHistory() {
+    if (this.tokenCompactionManaged) return
     if (this.history.length <= this.maxHistoryMessages) return
     const hasLeadingSystem = this.history[0]?.role === 'system'
     const budget = this.maxHistoryMessages - (hasLeadingSystem ? 1 : 0)
     const tail = this.history.slice(-Math.max(budget, 0))
     this.history = hasLeadingSystem ? [this.history[0], ...tail] : tail
+  }
+
+  /** Token compactor thay hard-trim theo số message cho driver hỗ trợ nó. */
+  manageHistoryByTokenCompaction() {
+    this.tokenCompactionManaged = true
   }
 
   /**
@@ -209,17 +227,26 @@ export class Session {
    * sinh message 'system' thứ 2 nữa, bất kể bao nhiêu skill/memory note khớp
    * cùng lúc.
    */
-  buildPrompt(userMessage: string, extraSystemNotes: string[] = []): LlmMessage[] {
+  buildPrompt(
+    userMessage: string,
+    extraSystemNotes: string[] = [],
+    frameworkSystemPrompt?: string,
+  ): LlmMessage[] {
     this.history.push({ role: 'user', content: userMessage })
     this.trimHistory()
-    const notes = [currentDateNote(), ...extraSystemNotes]
+    return this.currentPrompt(extraSystemNotes, frameworkSystemPrompt)
+  }
+
+  /** Rebuild the model view after a tool result without appending the user message twice. */
+  currentPrompt(extraSystemNotes: string[] = [], frameworkSystemPrompt?: string): LlmMessage[] {
     const hasLeadingSystem = this.history[0]?.role === 'system'
     const leadingContent = hasLeadingSystem ? [this.history[0].content] : []
-    const merged: LlmMessage = { role: 'system', content: [...leadingContent, ...notes].join('\n\n') }
+    const systemParts = [frameworkSystemPrompt, ...leadingContent, ...extraSystemNotes].filter(Boolean) as string[]
+    if (systemParts.length === 0) return [...this.history]
+    const merged: LlmMessage = { role: 'system', content: systemParts.join('\n\n') }
     const rest = hasLeadingSystem ? this.history.slice(1) : this.history
     return [merged, ...rest]
   }
-
   recordAssistant(content: string, toolCall?: LlmToolCall) {
     const label = toolCall ? `[tool_call:${toolCall.name}(${JSON.stringify(toolCall.args)})] ` : ''
     this.history.push({ role: 'assistant', content: label + content })
@@ -228,6 +255,12 @@ export class Session {
 
   recordToolResult(name: string, result: unknown) {
     this.history.push({ role: 'tool', content: `[${name}] ${JSON.stringify(result)}` })
+    this.trimHistory()
+  }
+
+  /** Commit một history đã compact; compactor không được sở hữu/mutate Session. */
+  replaceHistory(messages: LlmMessage[]) {
+    this.history = [...messages]
     this.trimHistory()
   }
 

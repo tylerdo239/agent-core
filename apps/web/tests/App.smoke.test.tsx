@@ -47,6 +47,9 @@ class FakeWebSocket {
   emitMessage(payload: unknown) {
     for (const cb of this.listeners.message ?? []) cb({ data: JSON.stringify(payload) })
   }
+  emit(type: string, event: unknown) {
+    for (const cb of this.listeners[type] ?? []) cb(event)
+  }
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -187,7 +190,7 @@ describe('Phase 9.4 — App smoke test', () => {
       expect(JSON.parse(String(messageCalls[0][1]?.body))).toMatchObject({ message: 'xin chào' })
     })
 
-    it('bấm "Phân tích dữ liệu" trong Sidebar -> gõ + gửi tin đầu tiên mới tạo session, đúng driver "rlm"', async () => {
+    it('bấm "Phân tích dữ liệu" -> mở project hub; chưa chọn project thì không hiện composer/workspace của một session tuỳ ý', async () => {
       await act(async () => {
         render(<App />)
         await new Promise((r) => setTimeout(r, 30))
@@ -198,17 +201,10 @@ describe('Phase 9.4 — App smoke test', () => {
         await new Promise((r) => setTimeout(r, 10))
       })
 
-      expect(postSessionCalls().length).toBe(0) // bấm nút chưa gửi gì, chỉ chọn driver cho session SẼ tạo
-
-      await act(async () => {
-        fireEvent.change(screen.getByPlaceholderText('Nhắn gì đó cho agent...'), { target: { value: 'phân tích dữ liệu này' } })
-        fireEvent.click(screen.getByText('Gửi'))
-        await new Promise((r) => setTimeout(r, 30))
-      })
-
-      const createCalls = postSessionCalls()
-      expect(createCalls.length).toBe(1)
-      expect(JSON.parse(String(createCalls[0][1]?.body))).toMatchObject({ driver: 'rlm' })
+      expect(screen.getByRole('heading', { name: 'Dự án' })).toBeTruthy()
+      expect(screen.getByPlaceholderText('Tìm dự án')).toBeTruthy()
+      expect(document.getElementById('workspace-bar')).toBeNull()
+      expect(screen.queryByPlaceholderText('Nhắn gì đó cho agent...')).toBeNull()
     })
 
     // Helper dùng chung cho 3 test render step bên dưới — gửi 1 tin nhắn để
@@ -353,6 +349,64 @@ describe('Phase 9.4 — App smoke test', () => {
       })
 
       expect(screen.getByText('câu trả lời không stream')).toBeTruthy()
+    })
+
+    // Merge feat/rlm-dev-integration: nhánh đó test resume-lúc-mount bằng
+    // 1 fetch mock riêng và bắn 'session_created' qua WS thủ công. Protocol
+    // 'session_created' đã bị retire (REST-first, xem ghi chú retire connect()
+    // ở App.tsx) — viết lại 2 test này theo đúng luồng thật hiện có: resume
+    // tự động qua useEffect([auth]) (gọi resumeSession(), xem App.tsx) và
+    // createSessionAndGetSocket() (helper có sẵn ở trên) cho phần live.
+    it('reload mở lại session gần nhất và dựng timeline từ event log thay vì tạo session trắng', async () => {
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.endsWith('/sessions')) {
+          return jsonResponse({ sessions: [{ id: 'saved-rlm', createdAt: 10, driver: 'rlm' }] })
+        }
+        if (url.endsWith('/sessions/saved-rlm/events')) {
+          return jsonResponse({ events: [
+            { type: 'analysis', content: 'Đang kiểm tra dữ liệu đã lưu' },
+            { type: 'workspace_read', action: 'list datasets' },
+            { type: 'final_answer', content: 'Đã hoàn thành' },
+          ] })
+        }
+        if (url.endsWith('/skills')) return jsonResponse({ skills: [] })
+        // Các route phụ (workspace files, projects...) gọi nền lúc resume — êm
+        // ái bỏ qua, không phải trọng tâm test này (App.tsx tự bắt lỗi network).
+        return new Response(null, { status: 404 })
+      }))
+
+      await act(async () => {
+        render(<App />)
+        await new Promise((resolve) => setTimeout(resolve, 40))
+      })
+
+      expect(screen.getByText('Đang kiểm tra dữ liệu đã lưu')).toBeTruthy()
+      expect(screen.getByText('📄 list datasets')).toBeTruthy()
+      expect(screen.getByText('Đã hoàn thành')).toBeTruthy()
+      // Resume chỉ mở downlink WS cho session ĐÃ tồn tại — không gửi gì qua
+      // WS cả (REST-first, WS chỉ nhận step/done/error).
+      expect(FakeWebSocket.instances.length).toBe(1)
+      expect(FakeWebSocket.instances[0].url).toContain('/sessions/saved-rlm/events/stream')
+    })
+
+    it('giữ nguyên timeline live sau done và tiếp tục hiện step của request sau', async () => {
+      const socket = await createSessionAndGetSocket()
+
+      await act(async () => {
+        socket.emitMessage({ type: 'step', sessionId: 's1', step: { type: 'analysis', content: 'Đang phân tích request 1' } })
+        socket.emitMessage({ type: 'done', sessionId: 's1' })
+        await new Promise((r) => setTimeout(r, 10))
+      })
+      expect(screen.getByText('Đang phân tích request 1')).toBeTruthy()
+
+      await act(async () => {
+        socket.emitMessage({ type: 'step', sessionId: 's1', step: { type: 'workspace_read', action: 'load dataset', path: 'sales' } })
+        await new Promise((r) => setTimeout(r, 10))
+      })
+      expect(screen.getByText('📄 load dataset')).toBeTruthy()
+      // Timeline không bị xoá sau 'done' -- step của request trước vẫn còn.
+      expect(screen.getByText('Đang phân tích request 1')).toBeTruthy()
     })
   })
 })
