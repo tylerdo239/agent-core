@@ -445,6 +445,8 @@ class RLMDataAgent(RLM):
             channel.emit(AgentEvent("context_usage", self.context_usage()))
             channel.close()
         except BaseException as exc:
+            import traceback
+            traceback.print_exc()
             self.last_turn_result = AgentTurnResult(status="failed", answer=str(exc))
             channel.emit(AgentEvent("error", {"message": str(exc)}))
             channel.close()
@@ -655,6 +657,75 @@ class RLMDataAgent(RLM):
             )
         return prompt
 
+    # BUG-09 (probe ch3, data/probes/ch3-hunt-*): model thỉnh thoảng ghi vào
+    # `context`/`context_N` (vd. context["secret_number"] = 42) mặc dù protocol
+    # nói rõ chúng là immutable input. Ghi đó làm lệch trạng thái kernel và có
+    # thể độc cả session — các turn SAU chết bằng KeyError trước khi kịp chạy
+    # model (không tự phục hồi). Phòng thủ tại nguồn: sau mỗi add_context,
+    # rebind mọi biến context sang một mapping "frozen" — mọi thao tác ghi
+    # raise TypeError ngay trong cell, surface như một cell error bình thường
+    # để model nhìn thấy và tự sửa (giống NameError flow đã verify là recover
+    # tốt), thay vì im lặng phá state.
+    _CONTEXT_FREEZE_SNIPPET = """
+import json as _rlm_json
+try:
+    import __main__ as _rlm_main
+    _ns = getattr(_rlm_main, '__dict__', {})
+except Exception:
+    _ns = {}
+if not _ns.get('answer') and not any(str(k).startswith('context') for k in _ns.keys()):
+    # __main__ không phải user namespace — thử IPython user_ns rồi globals().
+    try:
+        _ns = get_ipython().user_ns  # ipython kernel mode
+    except Exception:
+        _ns = globals()  # local repl / fallback
+class _RLMFrozenContext(dict):
+    def _ro(self, *args, **kwargs):
+        raise TypeError(
+            'context/context_N are READ-ONLY inputs. '
+            'Copy to your own variable first, e.g. data = dict(context).'
+        )
+    __setitem__ = _ro
+    __delitem__ = _ro
+    pop = _ro
+    popitem = _ro
+    update = _ro
+    setdefault = _ro
+    clear = _ro
+_frozen = []
+for _name in [k for k in list(_ns.keys()) if k == 'context' or (k.startswith('context_') and k[len('context_'):].isdigit())]:
+    _val = _ns.get(_name)
+    if isinstance(_val, dict) and not isinstance(_val, _RLMFrozenContext):
+        _ns[_name] = _RLMFrozenContext(_val)
+        _frozen.append(_name)
+print('CONTEXT-FREEZE ' + _rlm_json.dumps({'ns_keys_sample': sorted([str(k) for k in _ns.keys()])[:12], 'frozen': _frozen}))
+try:
+    del _ns['_RLMFrozenContext']
+    del _ns['_name']
+    del _ns['_val']
+    del _ns['_ro']
+    del _ns['_frozen']
+    del _ns['_rlm_json']
+    del _ns['_rlm_main']
+except Exception:
+    pass
+"""
+
+    def _freeze_context_variables(self, environment: Any) -> None:
+        """Rebind context/context_N as read-only mappings inside the kernel."""
+        try:
+            result = environment.execute_code(self._CONTEXT_FREEZE_SNIPPET)
+            stdout = getattr(result, 'stdout', '') or ''
+            stderr = getattr(result, 'stderr', '') or ''
+            if stdout or stderr:
+                import sys
+                print(f'[context-freeze] stdout={stdout!r} stderr={stderr[:300]!r}', file=sys.stderr)
+        except Exception as exc:
+            # Guard là phòng thủ bổ sung; lỗi cài đặt guard không được phép
+            # làm hỏng turn chính đáng.
+            import sys
+            print(f'[context-freeze] install failed: {exc}', file=sys.stderr)
+
     @contextmanager
     def _spawn_completion_context(self, prompt, *, add_context: bool = True):
         """Use the upstream lifecycle with transparent direct-call tracking."""
@@ -693,6 +764,7 @@ class RLMDataAgent(RLM):
             environment.update_handler_address(lm_handler.address)
             if add_context:
                 environment.add_context(prompt)
+                self._freeze_context_variables(environment)
         else:
             env_kwargs = self.environment_kwargs.copy()
             env_kwargs.update({
@@ -712,6 +784,12 @@ class RLMDataAgent(RLM):
             environment = get_environment(self.environment_type, env_kwargs)
             if self.persistent:
                 self._persistent_env = environment
+                # Turn đầu tiên của persistent env: context payload được nạp
+                # qua env_kwargs (context_payload) thay vì add_context, nên
+                # guard phải cài ngay tại đây — nếu chỉ cài ở nhánh if phía
+                # trên thì lượt ghi độc ĐẦU TIÊN vào context không được chặn
+                # (đúng kịch bản probe ch3).
+                self._freeze_context_variables(environment)
 
         try:
             yield lm_handler, environment

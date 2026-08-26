@@ -23,6 +23,7 @@ import { MemoryEntry } from '../../../seams/memory.ts'
 import { assertNotCancelled, LoopTurnResult, Session, TurnInput } from '../../../seams/loop.ts'
 import { ToolExecutionError } from '../../../seams/tools.ts'
 import { resolveActiveSkills, skillCatalogGuidance } from '../../../src/skill-runtime.ts'
+import { injectEnvironmentNote } from '../../../src/environment-note.ts'
 
 export const inject = ['loop']
 
@@ -36,7 +37,9 @@ export const apply = (ctx: Context) => {
         throw new Error('loop-default requires prompt and contextCompactor providers')
       }
       session.manageHistoryByTokenCompaction()
-      const frameworkPrompt = prompts.render({ driver: 'default', sessionId: session.id })
+      // Inject ngày hiện tại (BUG temporal-grounding, xem src/environment-note.ts):
+      // model không biết hôm nay là ngày nào nếu harness không nói.
+      const frameworkPrompt = injectEnvironmentNote(prompts.render({ driver: 'default', sessionId: session.id }), 'end')
       const activeSkills = resolveActiveSkills(runCtx.skills, userMessage, input.selectedSkill)
       // Memory integration: `ctx.memory` KHÔNG nằm trong `inject` (seam optional
       // -- chỉ mount khi MEMORY_CORE_URL được cấu hình, xem src/serve.ts).

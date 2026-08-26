@@ -5,6 +5,7 @@ import { SkillDefinition } from '../../../seams/skill.ts'
 import { WorkspaceSnapshot } from '../../../seams/workspace.ts'
 import { ToolDefinition } from '../../../seams/tools.ts'
 import { createContractValidator } from '../../../src/contracts.ts'
+import { injectEnvironmentNote } from '../../../src/environment-note.ts'
 
 export interface RlmSessionState {
   contextIndex: number
@@ -118,10 +119,10 @@ export async function prepareRlmTurn(options: {
   // Runtime state stays in the REPL context. It is deliberately not rendered
   // into the system prompt, keeping instruction priority and prefix stable.
   context.available_tools = availableTools
-  const prompt = prompts.render({
+  const prompt = injectEnvironmentNote(prompts.render({
     driver: 'rlm',
     sessionId: session.id,
-  })
+  }), 'identity')
   return validatePreparedTurn({
     contractVersion: 2,
     sessionId: session.id,
