@@ -348,7 +348,7 @@ describe('Phase 6.1 — REST API', () => {
       })
       expect(createRes.status).toBe(201)
       const created = await createRes.json()
-      expect(created).toEqual({ id: 'rest-1', driver: 'default', maxSteps: 8 })
+      expect(created).toEqual({ id: 'rest-1', driver: 'default', maxSteps: 25 })
 
       const msgRes = await fetch(`${base}/sessions/rest-1/messages`, {
         method: 'POST',

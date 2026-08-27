@@ -162,7 +162,16 @@ export class Session {
 
   constructor(
     public id: string,
-    public maxSteps = 8,
+    // Nâng từ 8 lên 25 (2026-08, xem docs/agent-core-skill-resource-usage-testing.md):
+    // test live 20 kịch bản cho thấy UI thật KHÔNG truyền maxSteps khi tạo
+    // session (rơi về default này), trong khi 1 skill nhiều bước hợp lệ
+    // (business-case-builder — 2-3 lượt web_search bắt buộc + tới 5 lượt đọc
+    // reference + template + checklist theo đúng SKILL.md của chính nó) cần
+    // 15+ bước mới xong — với default cũ 8, mọi yêu cầu business-case đầy đủ
+    // gần như chắc chắn bị NO_PROGRESS cắt ngang giữa chừng, đúng lúc đang
+    // làm việc nghiêm túc nhất (đọc tài liệu, tìm dữ liệu thật). 25 để có dư
+    // margin so với case đã đo được (chạy hết 15 bước vẫn còn việc dở).
+    public maxSteps = 25,
     systemPrompt?: string,
     /** Driver mặc định cho session này khi caller không chỉ định riêng (Phase 6: REST/WS không cần truyền driver mỗi request). */
     public driver = 'default',

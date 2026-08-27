@@ -194,16 +194,24 @@ async function fetchSessionEvents(restUrl: string, token: string, sessionId: str
 }
 
 function toolRowSummary(item: Extract<ChatItem, { kind: 'tool' }>): string {
-  if (item.state === 'error') return item.errorText ?? 'lỗi'
-  if (item.state === 'ok' && item.toolUi?.render === 'citations') {
+  // Follow-up (2026-08): tool lỗi không còn tô đỏ (state luôn 'ok', xem
+  // applyStep()) — nhánh `state === 'error'` cũ (dùng errorText làm tóm
+  // tắt) giờ KHÔNG BAO GIỜ chạy tới nữa, đã xoá thay vì giữ code chết. Kết
+  // quả 'citations' rỗng chỉ tính khi THẬT SỰ có mảng `results` (kể cả rỗng
+  // []) — có lỗi thì `result` không có field này, rơi xuống nhánh
+  // summaryArg bên dưới thay vì lộ JSON thô kỹ thuật (gap thật phát hiện
+  // qua headless-browser test trực tiếp: trước fix này hiện nguyên
+  // `{"query":"..."}` thay vì câu tìm kiếm đọc được).
+  if (item.toolUi?.render === 'citations') {
     const results = (item.result as { results?: unknown[] } | undefined)?.results
     if (Array.isArray(results)) return results.length ? `${results.length} nguồn` : 'không tìm thấy kết quả'
   }
-  // Đối chiếu dsh (WebBlock)/Claude: lúc tool ĐANG chạy, cả 2 hiện ngay câu
-  // tìm kiếm/tham số thật (người đọc được), không phải JSON kỹ thuật thô —
-  // tool tự khai field nào (`ToolUiHint.summaryArg`, seams/tools.ts) thay vì
-  // UI đoán tên field theo tool cụ thể.
-  if (item.state === 'running' && item.toolUi?.summaryArg) {
+  // Đối chiếu dsh (WebBlock)/Claude: hiện ngay câu tìm kiếm/tham số thật
+  // (người đọc được), không phải JSON kỹ thuật thô — áp dụng cho MỌI trạng
+  // thái (đang chạy, xong, hay lỗi) khi kết quả không phải dạng citations —
+  // tool tự khai field nào (`ToolUiHint.summaryArg`, seams/tools.ts) thay
+  // vì UI đoán tên field theo tool cụ thể.
+  if (item.toolUi?.summaryArg) {
     const value = (item.toolCall.args as Record<string, unknown> | undefined)?.[item.toolUi.summaryArg]
     if (typeof value === 'string' && value) return `"${value}"`
   }
@@ -663,6 +671,17 @@ export function App() {
           clearAuthState()
           setAuth(null)
           pushToast('Phiên đăng nhập đã hết hạn — vui lòng đăng nhập lại.', 'error')
+        } else if (settled && wsRef.current === ws) {
+          // Bug thật báo cáo trực tiếp (2026-08, xem docs/agent-core-ws-disconnect-lockout-fix.md):
+          // WS đóng GIỮA CHỪNG sau khi đã 'open' (idle timeout qua proxy/nginx,
+          // network blip...) — KHÔNG có gì tự mở lại nó (đúng tinh thần "không
+          // reconnect ngầm" đã ghi ở ensureStream() phía trên), và trước fix
+          // này composerEnabled/guard trong sendUserMessage() còn ĐÒI status
+          // 'connected' mới cho gửi -- khoá cứng composer, user gõ gì cũng vô
+          // tác dụng, KHÔNG có dòng nào giải thích lý do. Giờ gửi vẫn thử được
+          // (ensureStream() bên trong sendUserMessage tự mở lại WS), toast này
+          // chỉ để user hiểu NGAY tại sao có gián đoạn thay vì tưởng app treo.
+          pushToast('Mất kết nối tới máy chủ — gửi tin nhắn tiếp theo sẽ tự kết nối lại.', 'error')
         }
         if (!settled) {
           settled = true
@@ -783,10 +802,18 @@ export function App() {
       if (!activeId) return // không mong đợi, không để hỏng cả UI vì 1 lệch pha (đúng app.js cũ)
       const result = step.result as { error?: string } | undefined
       const errorText = result && typeof result.error === 'string' ? result.error : undefined
+      // Follow-up (2026-08): lỗi tool call KHÔNG BAO GIỜ làm dừng loop/turn
+      // (xem bundles/loop-drivers/loop-default/index.ts — tool throw bị bắt,
+      // gói thành đúng 'tool_result' này rồi loop tiếp tục cho model tự sửa;
+      // chỉ lỗi LLM call mới thật sự dừng turn, đi qua nhánh msg.type ===
+      // 'error' RIÊNG, vẫn giữ nguyên đỏ). Vì vậy state luôn 'ok' ở đây —
+      // tô đỏ trước đây gây hiểu lầm "có gì đó hỏng cả quy trình" trong khi
+      // model vẫn đang xử lý bình thường. `errorText` vẫn giữ lại để xem
+      // được lúc mở rộng card (state 'ok' mới expandable).
       setItems((prev) =>
         prev.map((it) =>
           it.kind === 'tool' && it.id === activeId
-            ? { ...it, state: errorText ? 'error' : 'ok', result: step.result, errorText }
+            ? { ...it, state: 'ok', result: step.result, errorText }
             : it,
         ),
       )
@@ -1057,8 +1084,11 @@ export function App() {
         const r = step.result as { error?: string } | undefined
         const errorText = r && typeof r.error === 'string' ? r.error : undefined
         const idx = result.findIndex((it) => it.id === id)
+        // Cùng gap đã sửa ở applyStep() (xem chú thích tại đó): lỗi tool call
+        // không dừng loop, luôn 'ok' — resume session cũ phải khớp đúng hành
+        // vi xem live, không được tô đỏ khác nhau giữa 2 đường.
         if (idx !== -1) {
-          result[idx] = { ...(result[idx] as Extract<ChatItem, { kind: 'tool' }>), state: errorText ? 'error' : 'ok', result: step.result, errorText }
+          result[idx] = { ...(result[idx] as Extract<ChatItem, { kind: 'tool' }>), state: 'ok', result: step.result, errorText }
         }
         continue
       }
@@ -1209,7 +1239,17 @@ export function App() {
   // NHẬN step/done/error, xem openStream()).
   async function sendUserMessage(rawText: string, controlItemId?: string): Promise<boolean> {
     const text = rawText.trim()
-    if (!text || turnInFlight || !auth || status !== 'connected') return false
+    // Bug thật báo cáo trực tiếp (2026-08, xem docs/agent-core-ws-disconnect-lockout-fix.md):
+    // KHÔNG còn đòi `status === 'connected'` ở đây nữa -- guard đó tạo
+    // deadlock thật với composerEnabled bên dưới (cũng đòi 'connected'):
+    // WS rớt giữa chừng (idle timeout qua proxy, network blip) sau khi turn
+    // ĐÃ xong -> status chuyển 'disconnected' -> composer bị khoá -> hàm này
+    // không bao giờ được gọi lại -> đúng chỗ DUY NHẤT có thể tự mở lại WS
+    // (ensureStream() ngay dưới) không bao giờ chạy tới. User chỉ còn cách
+    // reload trang, không có gợi ý nào tại sao. Giờ luôn cho thử gửi -- tự
+    // ensureStream() sẽ mở lại WS nếu cần, thất bại thật (server chết hẳn,
+    // mất mạng) vẫn có catch/pushToast phía dưới xử lý đúng như cũ.
+    if (!text || turnInFlight || !auth) return false
 
     setItems((prev) => [
       ...prev.map((item) =>
@@ -1305,8 +1345,15 @@ export function App() {
 
   // Follow-up (2026-08): chat MỚI (chưa gõ gì) giờ hợp lệ để gõ/gửi dù
   // `sessionId` còn null (session thật chỉ tạo lúc gửi — xem handleSubmit),
-  // nên composer không còn chờ sessionId nữa, chỉ cần WS đã 'connected'.
-  const composerEnabled = status === 'connected' && !turnInFlight
+  // nên composer không còn chờ sessionId nữa.
+  // Bug thật báo cáo trực tiếp (2026-08, xem docs/agent-core-ws-disconnect-lockout-fix.md):
+  // BỎ điều kiện `status === 'connected'` -- đây chính là nửa kia của
+  // deadlock (nửa còn lại ở sendUserMessage()): WS rớt giữa chừng sau turn
+  // -> status 'disconnected' -> composer khoá cứng ở đây -> sendUserMessage()
+  // (nơi DUY NHẤT gọi ensureStream() để tự mở lại WS) không bao giờ được gọi
+  // -> user kẹt vĩnh viễn, chỉ còn cách reload trang. Giờ luôn cho gõ/gửi;
+  // thất bại thật vẫn có toast rõ ràng (xem catch trong sendUserMessage()).
+  const composerEnabled = !turnInFlight
   const datasetPaths = new Set(workspaceDatasets.flatMap((dataset) => [dataset.path, dataset.filename].filter(Boolean) as string[]))
   const artifactPaths = new Set(workspaceArtifacts)
   const workspaceEntries = [

@@ -68,11 +68,27 @@ export class SkillRegistry extends SkillRegistryService {
   }
 
   list(options: SkillListOptions = {}) {
-    return [...this.skills.values()].map((entry) => entry.definition).filter((skill) => {
+    const visible = [...this.skills.values()].map((entry) => entry.definition).filter((skill) => {
       if (!isVisible(skill, options.visibleTo)) return false
       if (options.userInvocableOnly && !skill.userInvocable) return false
       return true
     })
+    if (!options.visibleTo) return visible
+    // Trùng tên (custom skill của user tự đặt trùng tên với 1 skill global
+    // build-time) -- 2 namespace lưu trữ khác nhau (storageKey) nên cả 2
+    // entry cùng lọt qua filter phía trên. Không dedupe ở đây thì bất kỳ
+    // consumer nào tra theo `name` (candidates.find() trong
+    // skill-selection-llm, hay JSON catalog gửi cho model) sẽ vớ phải bản
+    // global trước -- vì nó luôn được đăng ký sớm hơn trong Map -- trong khi
+    // `get()` phía trên đã đúng logic ưu tiên bản riêng của user. Giữ đúng
+    // 1 quy tắc ưu tiên xuyên suốt: bản riêng của user LUÔN thắng bản global
+    // cùng tên.
+    const byName = new Map<string, SkillDefinition>()
+    for (const skill of visible) {
+      const existing = byName.get(skill.name)
+      if (!existing || skill.ownerId === options.visibleTo) byName.set(skill.name, skill)
+    }
+    return [...byName.values()]
   }
 
   match(userMessage: string, visibleTo?: string) {
