@@ -90,15 +90,26 @@ describe('Phase 8.3 — llm-qwen retry/backoff', () => {
     await fiber.dispose()
   })
 
-  it('400 (bad request) -> throw ngay, KHÔNG retry', async () => {
+  it('400 -> throw ngay, giữ error detail rút gọn nhưng che secret', async () => {
     let calls = 0
     global.fetch = vi.fn(async () => {
       calls++
-      return new Response('bad request', { status: 400, statusText: 'Bad Request' })
+      return jsonResponse(400, {
+        error: {
+          message: `maximum context length exceeded; Bearer private-token sk-supersecret ${'x'.repeat(900)}`,
+        },
+      })
     }) as unknown as typeof fetch
 
     const { root, fiber } = await mount(BASE_CONFIG)
-    await expect(root.llm.complete([{ role: 'user', content: 'hi' }])).rejects.toThrow(/400/)
+    const error = await root.llm.complete([{ role: 'user', content: 'hi' }]).then(
+      () => { throw new Error('expected completion to reject') },
+      (reason: unknown) => reason instanceof Error ? reason : new Error(String(reason)),
+    )
+    expect(error.message).toMatch(/400.*maximum context length exceeded/)
+    expect(error.message).not.toContain('private-token')
+    expect(error.message).not.toContain('sk-supersecret')
+    expect(error.message.length).toBeLessThan(700)
     expect(calls).toBe(1)
     await fiber.dispose()
   })

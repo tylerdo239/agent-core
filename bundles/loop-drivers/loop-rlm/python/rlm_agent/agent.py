@@ -28,6 +28,7 @@ from rlm.utils.prompts import build_user_prompt
 from rlm.utils.token_utils import count_tokens
 
 from .context import ContextBuilder
+from .errors import CODE_PARSE, in_band_feedback
 from .skill_registry import load_selected_skill
 from .controls import decode_control, encode_control
 from .events import EventChannel, EventSink, TrajectoryEventLogger
@@ -127,6 +128,33 @@ class _TrackingLMHandler(LMHandler):
         return self._tracked_clients[key]
 
 
+def build_code_parse_block(response: str) -> CodeBlock | None:
+    """BUG-10: synthesize feedback block khi response KHÔNG có fenced block nào.
+
+    Trả về None nếu response thực ra chứa fence (trường hợp đó find_code_blocks
+    đã xử lý) hoặc rỗng hoàn toàn. Đây là hàm THUẦN để test trực tiếp.
+    """
+    stripped = str(response or "").strip()
+    if not stripped or "```" in stripped:
+        return None
+    looks_like_json_action = stripped.startswith("{") and '"repl"' in stripped
+    feedback = in_band_feedback(
+        CODE_PARSE,
+        "JSON-wrapped action detected; actions exist only inside fenced blocks"
+        if looks_like_json_action
+        else None,
+    )
+    return CodeBlock(
+        code="# <no executable repl block found in previous response>",
+        result=REPLResult(
+            stdout=feedback + "\n",
+            stderr="",
+            locals={},
+            final_answer=None,
+        ),
+    )
+
+
 def _extra_body_from_env() -> dict[str, Any]:
     raw = os.getenv("OPENAI_EXTRA_BODY", "").strip()
     if not raw:
@@ -156,6 +184,11 @@ class RLMDataAgent(RLM):
         self.session_memory = self.context_builder.session_memory
         self.workspace_root = self.context_builder.workspace_root("default")
         self.policy = HumanControlPolicy()
+        # BUG-10 silent-failure tracking: vấn đề của iteration gần nhất trong
+        # turn này + lỗi có cấu trúc của turn vừa kết thúc (đưa qua TS bridge
+        # trong AgentTurnResult.turn_issue).
+        self._last_iteration_issue: str | None = None
+        self._turn_issue: dict[str, Any] | None = None
         event_logger = TrajectoryEventLogger(self.workspace_root / "rlm_logs")
 
         raw = dict(config.get("rlm") or {})
@@ -356,6 +389,10 @@ class RLMDataAgent(RLM):
         root_prompt_override: str | None = None,
     ) -> None:
         try:
+            # Mỗi turn bắt đầu sạch: tracker lỗi của turn TRƯỚC đã được TS
+            # tiêu thụ qua result.turn_issue (SESSION HEALTH note).
+            self._last_iteration_issue = None
+            self._turn_issue = None
             completion_kwargs = {
                 "context_index": context_index,
                 "run_id": run_id,
@@ -405,6 +442,7 @@ class RLMDataAgent(RLM):
                     usage=usage,
                     execution_time=completion.execution_time,
                     trace_path=self.trace_path,
+                    turn_issue=self._turn_issue,
                 )
                 channel.emit(AgentEvent("human_decision", control.to_dict()))
             else:
@@ -435,6 +473,7 @@ class RLMDataAgent(RLM):
                     usage=usage,
                     execution_time=completion.execution_time,
                     trace_path=self.trace_path,
+                    turn_issue=self._turn_issue,
                 )
                 channel.emit(AgentEvent("final_answer", {
                     "content": response,
@@ -447,8 +486,17 @@ class RLMDataAgent(RLM):
         except BaseException as exc:
             import traceback
             traceback.print_exc()
-            self.last_turn_result = AgentTurnResult(status="failed", answer=str(exc))
-            channel.emit(AgentEvent("error", {"message": str(exc)}))
+            # Phân loại lỗi theo harness taxonomy để TS/UI/TURN KẾ TIẾP đều
+            # biết class lỗi thay vì một chuỗi tự do không máy đọc được.
+            from .errors import classify as _classify_error
+            error_code = _classify_error(str(exc))
+            self._turn_issue = {"code": error_code, "message": str(exc)}
+            self.last_turn_result = AgentTurnResult(
+                status="failed",
+                answer=str(exc),
+                turn_issue=self._turn_issue,
+            )
+            channel.emit(AgentEvent("error", {"message": str(exc), "error_code": error_code}))
             channel.close()
 
     def _capture_harness_memory(
@@ -874,19 +922,6 @@ except Exception:
             compaction_count = 0
             for i in range(pending.iteration_number, self.max_iterations):
                 self._check_timeout(i, time_start)
-                if self.compaction and hasattr(environment, "append_compaction_entry"):
-                    current_tokens, threshold_tokens, _max_tokens = (
-                        self._get_compaction_status(message_history)
-                    )
-                    if current_tokens >= threshold_tokens:
-                        compaction_count += 1
-                        message_history = self._compact_history(
-                            lm_handler,
-                            environment,
-                            message_history,
-                            compaction_count,
-                        )
-
                 context_count = (
                     environment.get_context_count()
                     if isinstance(environment, SupportsPersistence)
@@ -897,13 +932,21 @@ except Exception:
                     if isinstance(environment, SupportsPersistence)
                     else 0
                 )
-                message_history.append(build_user_prompt(
+                next_user_prompt = build_user_prompt(
                     None,
                     i,
                     context_count,
                     history_count,
                     max_iterations=self.max_iterations,
-                ))
+                )
+                message_history, compaction_count = self._compact_before_completion(
+                    lm_handler,
+                    environment,
+                    message_history,
+                    compaction_count,
+                    extra_messages=[next_user_prompt],
+                )
+                message_history.append(next_user_prompt)
                 iteration = self._completion_turn(
                     prompt=message_history,
                     lm_handler=lm_handler,
@@ -942,6 +985,13 @@ except Exception:
                 if self.compaction and hasattr(environment, "append_compaction_entry"):
                     environment.append_compaction_entry(new_messages)
 
+            message_history, compaction_count = self._compact_before_completion(
+                lm_handler,
+                environment,
+                message_history,
+                compaction_count,
+                extra_messages=[self._final_answer_message()],
+            )
             final_answer = self._default_answer(message_history, lm_handler)
             return self._finish_resumed_completion(
                 original_prompt=pending.message_history,
@@ -978,6 +1028,29 @@ except Exception:
             execution_time=time_end - time_start,
             metadata=self.logger.get_trajectory() if self.logger else None,
         )
+
+    def _default_answer(self, message_history: list[dict[str, Any]], lm_handler: LMHandler) -> str:
+        """Exhaustion fallback — KHÔNG được giả vờ thành công.
+
+        Vendor gọi hàm này khi cạn max_iterations mà chưa có answer["ready"].
+        Trước đây kết quả được trả về như một turn "completed" bình thường:
+        model (và user) không hề biết turn vừa thất bại về mặt cấu trúc — đúng
+        complaint "nó cứ tiếp tục làm mà không biết đang lỗi". Ở đây ta đánh
+        dấu turn_issue để TS gắn [SESSION HEALTH] cho turn kế tiếp, và bọc
+        notice nhìn thấy được vào nội dung trả về.
+        """
+        response = super()._default_answer(message_history, lm_handler)
+        from .errors import NO_PROGRESS
+        issue_message = self._last_iteration_issue or (
+            "iteration budget exhausted without a submitted answer"
+        )
+        self._turn_issue = {"code": NO_PROGRESS, "message": issue_message}
+        notice = (
+            f"[TURN INCOMPLETE — {NO_PROGRESS}] The iteration budget ran out before a "
+            f"valid repl submission. Last recorded issue: {issue_message}. "
+            "The content below is the best partial result and may be incomplete.\n\n"
+        )
+        return notice + str(response or "")
 
     def _completion_turn(self, prompt, lm_handler, environment):
         """Add policy enforcement and typed events around one upstream RLM iteration."""
@@ -1019,6 +1092,19 @@ except Exception:
                     final_answer=final_answer,
                 ),
             ))
+        elif not code_block_strs:
+            # BUG-10 (silent-failure class, complaint user + probe e1 round-1):
+            # response chỉ có prose/JSON-in-analysis → không block nào được
+            # thực thi, KHÔNG có observation nào quay lại → model không hề biết
+            # nó vừa đốt một iteration vô ích (e1: 8 lần liên tiếp như vậy rồi
+            # cạn ngân sách). Synthesize một feedback block để lỗi CODE_PARSE
+            # đi NGAY VÀO history mà model đọc ở iteration kế tiếp.
+            parse_block = build_code_parse_block(response)
+            if parse_block is not None:
+                self._last_iteration_issue = (
+                    f"CODE_PARSE: response had no repl block (iteration {iteration})"
+                )
+                code_blocks.append(parse_block)
         else:
             for code in code_block_strs:
                 code_result = self._execute_notebook_code(environment, code)

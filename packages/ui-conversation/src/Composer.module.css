@@ -5,6 +5,7 @@
    "rounded capsule card, soft shadow, auto-grow textarea"). */
 .form {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: var(--alias-space-sm);
   margin: 0 var(--alias-space-xl) var(--alias-space-xl);
@@ -14,6 +15,10 @@
   background: var(--alias-bg-base);
   box-shadow: var(--alias-shadow-raised);
   transition: border-color var(--alias-motion-base) var(--alias-motion-ease);
+  /* Neo tuyệt đối cho .skillMenu bên dưới — footer AppFrame không có
+     ancestor nào overflow:hidden cắt mất popup, nên không cần portal ra
+     document.body như Select.tsx (xem ghi chú trong Composer.tsx). */
+  position: relative;
 }
 
 .form:focus-within {
@@ -54,4 +59,81 @@
 
 .send {
   flex-shrink: 0;
+}
+
+/* flex-basis: 100% trong .form (flex-wrap: wrap) — ép chip xuống chiếm
+   TRỌN hàng riêng phía trên textarea/nút Gửi, thay vì chen ngang cùng
+   hàng (kỹ thuật flex-wrap chuẩn, không cần đổi .form sang column). */
+.skillChip {
+  flex: 1 0 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--alias-space-xs);
+  align-self: flex-start;
+  width: fit-content;
+  padding: var(--alias-space-xs) var(--alias-space-sm);
+  border: 1px solid var(--alias-border-default);
+  border-radius: var(--alias-radius-control);
+  background: var(--alias-accent-subtle-bg);
+  color: var(--alias-label-primary);
+  font-family: inherit;
+  font-size: var(--alias-font-size-body-sm);
+  cursor: pointer;
+}
+
+.skillChip:hover {
+  border-color: var(--alias-accent);
+}
+
+/* position: absolute (không fixed/portal, khác Select.tsx) — .form đã có
+   position: relative, popup neo NGAY TRÊN composer, không tràn xuống dưới
+   đè lên chính nó. */
+.skillMenu {
+  position: absolute;
+  left: var(--alias-space-lg);
+  right: var(--alias-space-sm);
+  bottom: calc(100% + var(--alias-space-sm));
+  margin: 0;
+  padding: var(--alias-space-xs);
+  list-style: none;
+  background: var(--alias-bg-base);
+  border: 1px solid var(--alias-border-default);
+  border-radius: var(--alias-radius-panel);
+  box-shadow: var(--alias-shadow-overlay);
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 10000;
+}
+
+.skillMenuEmpty {
+  padding: var(--alias-space-sm) var(--alias-space-md);
+  color: var(--alias-label-secondary);
+  font-size: var(--alias-font-size-body-sm);
+}
+
+.skillOption {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--alias-space-sm) var(--alias-space-md);
+  border-radius: var(--alias-radius-control);
+  cursor: pointer;
+}
+
+.skillOptionActive {
+  background: var(--alias-accent-subtle-bg);
+}
+
+.skillOptionName {
+  font-size: var(--alias-font-size-body-sm);
+  font-weight: var(--alias-font-weight-emphasis);
+  color: var(--alias-label-primary);
+}
+
+.skillOptionDescription {
+  font-size: var(--alias-font-size-body-sm);
+  color: var(--alias-label-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

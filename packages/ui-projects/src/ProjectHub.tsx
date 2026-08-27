@@ -27,9 +27,9 @@ export interface ProjectHubProps {
   onBack: () => void
   onStartConversation: (message?: string) => void
   onOpenConversation: (id: string) => void
-  onUpload: (file: File) => void
+  onUpload: (files: File[]) => void
   onDownloadSource: (path: string) => void
-  onDownloadOutput: (output: ProjectOutputFile) => void
+  onPreviewOutput: (output: ProjectOutputFile) => void
   onPromoteOutput: (output: ProjectOutputFile) => void
 }
 
@@ -110,7 +110,7 @@ export function ProjectHub(props: ProjectHubProps) {
         </div>
       ) : tab === 'sources' ? (
         <div className={styles.sources}>
-          <input ref={inputRef} type="file" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) props.onUpload(file); event.currentTarget.value = '' }} />
+          <input ref={inputRef} type="file" multiple hidden onChange={(event) => { const files = Array.from(event.target.files ?? []); if (files.length) props.onUpload(files); event.currentTarget.value = '' }} />
           <button type="button" className={styles.dropzone} onClick={() => inputRef.current?.click()}>
             <Paperclip size={24} /><strong>Thêm nguồn cho dự án</strong><span>CSV, Excel, Parquet, JSON hoặc tài liệu — tối đa 70 MiB</span>
             {props.uploadProgress !== undefined && <span className={styles.progress}><i style={{ width: `${props.uploadProgress}%` }} /></span>}
@@ -129,13 +129,13 @@ export function ProjectHub(props: ProjectHubProps) {
             title="Output dự án"
             description="Kết quả đã được chọn để mọi đoạn chat trong dự án sử dụng."
             files={props.outputs.filter((file) => file.scope === 'project')}
-            onDownload={props.onDownloadOutput}
+            onPreview={props.onPreviewOutput}
           />
           <OutputGroup
             title="Kết quả từ các đoạn chat"
             description="Bản nháp nằm riêng theo từng cuộc chat; đưa vào dự án khi muốn chia sẻ."
             files={props.outputs.filter((file) => file.scope === 'session')}
-            onDownload={props.onDownloadOutput}
+            onPreview={props.onPreviewOutput}
             onPromote={props.onPromoteOutput}
           />
         </div>
@@ -148,14 +148,14 @@ function OutputGroup(props: {
   title: string
   description: string
   files: ProjectOutputFile[]
-  onDownload: (output: ProjectOutputFile) => void
+  onPreview: (output: ProjectOutputFile) => void
   onPromote?: (output: ProjectOutputFile) => void
 }) {
   return <section className={styles.outputGroup}>
     <div className={styles.outputHeading}><div><h2>{props.title}</h2><p>{props.description}</p></div><span>{props.files.length}</span></div>
     <div className={styles.contentList}>
       {props.files.map((file) => <div className={styles.outputRow} key={`${file.scope}:${file.sessionId ?? 'project'}:${file.path}`}>
-        <button type="button" className={styles.outputFile} onClick={() => props.onDownload(file)}>
+        <button type="button" className={styles.outputFile} onClick={() => props.onPreview(file)}>
           <FileOutput size={18} />
           <span><strong>{file.path.replace(/^legacy\//, '')}</strong><small>{file.scope === 'project' ? 'Dùng chung trong dự án' : file.conversationTitle || `Đoạn chat ${file.sessionId?.slice(0, 8)}`} · {(file.size / 1024).toFixed(1)} KB</small></span>
         </button>

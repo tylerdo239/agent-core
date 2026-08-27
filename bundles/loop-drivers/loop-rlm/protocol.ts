@@ -6,11 +6,14 @@ import { WorkspaceSnapshot } from '../../../seams/workspace.ts'
 import { ToolDefinition } from '../../../seams/tools.ts'
 import { createContractValidator } from '../../../src/contracts.ts'
 import { injectEnvironmentNote } from '../../../src/environment-note.ts'
+import { sessionHealthNote } from '../../../src/errors.ts'
 
 export interface RlmSessionState {
   contextIndex: number
   historyIndex: number
   pendingControl?: Record<string, unknown>
+  /** BUG-10: lỗi có cấu trúc của turn trước — inject [SESSION HEALTH] vào prompt. */
+  lastError?: { code?: string; message: string }
 }
 
 export interface PreparedRlmTurn {
@@ -123,6 +126,10 @@ export async function prepareRlmTurn(options: {
     driver: 'rlm',
     sessionId: session.id,
   }), 'identity')
+  // BUG-10: nếu turn TRƯỚC trong session này crash/cạn iteration, báo cho
+  // model biết NGAY TỪ ĐẦU turn — không để nó đi tiếp như không có chuyện gì.
+  const healthNote = sessionHealthNote(state.lastError)
+  const finalPrompt = healthNote ? { ...prompt, content: prompt.content + healthNote } : prompt
   return validatePreparedTurn({
     contractVersion: 2,
     sessionId: session.id,
@@ -135,8 +142,8 @@ export async function prepareRlmTurn(options: {
     historyIndex: state.historyIndex,
     pendingControl: state.pendingControl,
     availableTools,
-    prompt: prompt.content,
-    promptVersion: prompt.version,
+    prompt: finalPrompt.content,
+    promptVersion: finalPrompt.version,
     context,
     metadata: input.metadata,
   })

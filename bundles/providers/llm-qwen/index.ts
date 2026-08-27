@@ -14,11 +14,12 @@ import { Context, Service } from "@deepseek-ai/cordis";
 import {
   LlmCompleteOptions,
   LlmCompletion,
+  LlmError,
   LlmMessage,
   LlmService,
   LlmToolCall,
 } from "../../../seams/llm.ts";
-import { postChatCompletion } from "../shared/llm-http.ts";
+import { postChatCompletion, statusError } from "../shared/llm-http.ts";
 
 export namespace LlmQwen {
   export interface Config {
@@ -278,83 +279,97 @@ export class LlmQwen extends LlmService {
     };
 
     const url = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
-    const res = await postChatCompletion({
-      url, apiKey, body,
-      timeoutMs: this.config.timeoutMs,
-      maxRetries: this.config.maxRetries,
-      retryBaseDelayMs: this.config.retryBaseDelayMs,
-      signal: options.signal,
-      deadline: options.deadline,
-      warn: (message, ...args) => this.ctx.logger('llm-qwen').warn(message, ...args),
-    }, 'llm-qwen');
-    if (!res.body) {
-      throw new Error(`llm-qwen: streaming response missing body`);
-    }
+    // Merge feat/rlm-dev-integration (round 2): feature branch tự viết lại
+    // hoàn toàn nhánh này bằng fetch() trần + AbortController riêng (bỏ
+    // postChatCompletion) — ĐƯỢC 1 điểm bản này chưa có (cancel `reader` dứt
+    // khoát trong `finally` khi bị abort/timeout giữa chừng), nhưng MẤT retry-
+    // with-backoff nhất quán với complete() (không dùng postChatCompletion
+    // nữa). Giữ postChatCompletion cho pha connect (retry đúng như trước),
+    // thêm try/catch/finally bọc NGOÀI để có cleanup reader + typed LlmError
+    // cho lỗi xảy ra TRONG lúc đọc stream (khác lỗi lúc connect,
+    // postChatCompletion đã tự phân loại đúng rồi) — lấy đủ cả 2 điểm mạnh.
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      const res = await postChatCompletion({
+        url, apiKey, body,
+        timeoutMs: this.config.timeoutMs,
+        maxRetries: this.config.maxRetries,
+        retryBaseDelayMs: this.config.retryBaseDelayMs,
+        signal: options.signal,
+        deadline: options.deadline,
+        warn: (message, ...args) => this.ctx.logger('llm-qwen').warn(message, ...args),
+      }, 'llm-qwen');
+      if (!res.body) {
+        throw new LlmError("LLM_NETWORK", "llm-qwen: streaming response has no body");
+      }
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let content = "";
-    let toolCallName: string | undefined;
-    let toolCallArgsRaw = "";
-    let responseModel: string | undefined;
-    let usage: LlmCompletion["usage"];
+      reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let content = "";
+      let toolCallName: string | undefined;
+      let toolCallArgsRaw = "";
+      let responseModel: string | undefined;
+      let usage: LlmCompletion["usage"];
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        const payload = trimmed.slice(5).trim();
-        if (payload === "[DONE]") continue;
-        let chunk: OpenAIStreamChunk;
-        try {
-          chunk = JSON.parse(payload);
-        } catch {
-          continue; // 1 dòng SSE lẻ hỏng/rỗng -- bỏ qua, không làm vỡ cả stream.
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const payload = trimmed.slice(5).trim();
+          if (payload === "[DONE]") continue;
+          let chunk: OpenAIStreamChunk;
+          try {
+            chunk = JSON.parse(payload);
+          } catch {
+            continue; // 1 dòng SSE lẻ hỏng/rỗng -- bỏ qua, không làm vỡ cả stream.
+          }
+          responseModel ??= chunk.model;
+          if (chunk.usage) {
+            usage = {
+              inputTokens: chunk.usage.prompt_tokens,
+              outputTokens: chunk.usage.completion_tokens,
+              totalTokens: chunk.usage.total_tokens,
+              cost: chunk.usage.cost,
+            };
+          }
+          const delta = chunk.choices?.[0]?.delta;
+          if (delta?.content) {
+            content += delta.content;
+            onDelta(delta.content);
+          }
+          // Chỉ giữ tool call ĐẦU TIÊN (index 0) -- khớp đúng giới hạn đã có ở
+          // complete() (LlmCompletion.toolCall là 1 field, không phải mảng --
+          // model trả nhiều tool_calls thì chỉ cái đầu được surface, xem ghi
+          // chú ở đó). Fragment của tool_call SAU (index >= 1) BỎ QUA hoàn
+          // toàn -- KHÔNG được đọc `tool_calls[0]` theo vị trí mảng rồi nối
+          // bừa vào cùng buffer, sẽ dính 2 JSON object của 2 tool_call khác
+          // nhau thành 1 chuỗi không hợp lệ (bug thật đã gặp, xem ghi chú tại
+          // khai báo OpenAIStreamChunk).
+          const toolCallDelta = delta?.tool_calls?.find((tc) => (tc.index ?? 0) === 0);
+          if (toolCallDelta?.function?.name) toolCallName = toolCallDelta.function.name;
+          if (toolCallDelta?.function?.arguments) toolCallArgsRaw += toolCallDelta.function.arguments;
         }
-        responseModel ??= chunk.model;
-        if (chunk.usage) {
-          usage = {
-            inputTokens: chunk.usage.prompt_tokens,
-            outputTokens: chunk.usage.completion_tokens,
-            totalTokens: chunk.usage.total_tokens,
-            cost: chunk.usage.cost,
-          };
-        }
-        const delta = chunk.choices?.[0]?.delta;
-        if (delta?.content) {
-          content += delta.content;
-          onDelta(delta.content);
-        }
-        // Chỉ giữ tool call ĐẦU TIÊN (index 0) -- khớp đúng giới hạn đã có ở
-        // complete() (LlmCompletion.toolCall là 1 field, không phải mảng --
-        // model trả nhiều tool_calls thì chỉ cái đầu được surface, xem ghi
-        // chú ở đó). Fragment của tool_call SAU (index >= 1) BỎ QUA hoàn
-        // toàn -- KHÔNG được đọc `tool_calls[0]` theo vị trí mảng rồi nối
-        // bừa vào cùng buffer, sẽ dính 2 JSON object của 2 tool_call khác
-        // nhau thành 1 chuỗi không hợp lệ (bug thật đã gặp, xem ghi chú tại
-        // khai báo OpenAIStreamChunk).
-        const toolCallDelta = delta?.tool_calls?.find((tc) => (tc.index ?? 0) === 0);
-        if (toolCallDelta?.function?.name) toolCallName = toolCallDelta.function.name;
-        if (toolCallDelta?.function?.arguments) toolCallArgsRaw += toolCallDelta.function.arguments;
+      }
+
+      const toolCall: LlmToolCall | undefined = toolCallName
+        ? { name: toolCallName, args: parseArgs(toolCallArgsRaw) }
+        : undefined;
+      return { content, toolCall, model: responseModel ?? model, usage };
+    } catch (error) {
+      if (error instanceof LlmError) throw error;
+      if (options.signal?.aborted) throw new LlmError("LLM_CANCELLED", "llm-qwen: cancelled");
+      throw new LlmError("LLM_NETWORK", `llm-qwen: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      if (options.signal?.aborted && reader) {
+        await reader.cancel().catch(() => undefined);
       }
     }
-
-    const toolCall: LlmToolCall | undefined = toolCallName
-      ? { name: toolCallName, args: parseArgs(toolCallArgsRaw) }
-      : undefined;
-
-    return {
-      content,
-      toolCall,
-      model: responseModel ?? model,
-      usage,
-    };
   }
 
 }

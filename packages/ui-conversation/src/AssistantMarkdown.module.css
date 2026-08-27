@@ -2,6 +2,13 @@
   line-height: var(--alias-line-height-prose);
 }
 
+/* Nhánh streaming (AssistantMarkdown.tsx, `streaming` prop) — text thô,
+   không qua react-markdown, chỉ giữ nguyên xuống dòng để không dồn cả câu
+   trả lời thành 1 dòng trong lúc đang gõ. */
+.streamingText {
+  white-space: pre-wrap;
+}
+
 .markdown > :first-child {
   margin-top: 0;
 }

@@ -48,8 +48,9 @@ import { Composer, EmptyState, GenericToolCard, HumanDecision, MessageBubble, St
 import { loadSettings, type Settings } from '@agent-core/ui-settings-general'
 import { PluginSettingsPanel } from '@agent-core/ui-plugin-settings'
 import { ProjectHub, type ProjectOutputFile, type ProjectSummary } from '@agent-core/ui-projects'
-import type { WorkspaceHeaderPanelProps, SkillComposerExtraProps } from '@agent-core/ui-rlm-workspace'
+import type { WorkspaceHeaderPanelProps } from '@agent-core/ui-rlm-workspace'
 import { createClientContext } from './client-context.ts'
+import { OutputPreviewModal, type OutputPreviewTarget } from './OutputPreviewModal.tsx'
 
 type ToolUiHint = ToolViewOwnerProps['toolUi']
 
@@ -168,6 +169,8 @@ type UploadState = {
   filename: string
   progress: number
   message?: string
+  completed?: number
+  total?: number
 }
 
 const ACTIVE_SESSION_KEY_PREFIX = 'agent-core-ui-active-session:'
@@ -269,6 +272,7 @@ export function App() {
   const [workspaceLoading, setWorkspaceLoading] = useState(false)
   const [workspaceError, setWorkspaceError] = useState('')
   const [uploadState, setUploadState] = useState<UploadState | null>(null)
+  const [outputPreview, setOutputPreview] = useState<OutputPreviewTarget | null>(null)
 
   const { toasts, push: pushToast } = useToasts()
 
@@ -327,11 +331,12 @@ export function App() {
     }
   }
 
-  // docs/agent-core-rlm-web-ui-plugin-plan.md mục 2: nhận thẳng 1 File —
+  // Workspace plugin sở hữu DOM input và chuyển một batch File[] cho App —
   // <input type="file"> giờ nằm TRONG WorkspaceHeaderPanel (ui-rlm-workspace),
   // App.tsx không còn sở hữu DOM input đó nữa, chỉ còn phần gọi API thật.
-  async function handleFileUpload(file: File) {
+  async function handleFileUpload(files: File[]) {
     if (!auth) return
+    if (!files.length) return
     let sid = sessionId
     const projectId = activeProjectId
     if (!sid && !projectId) {
@@ -342,31 +347,42 @@ export function App() {
       pushToast('Hãy tạo hoặc chọn một dự án trước khi upload nguồn.', 'error')
       return
     }
-    if (file.size > 70 * 1024 * 1024) { pushToast('File quá lớn (tối đa 70 MiB).', 'error'); return }
-    setUploadState({ phase: 'uploading', filename: file.name, progress: 0 })
+    const oversized = files.find((file) => file.size > 70 * 1024 * 1024)
+    if (oversized) { pushToast(`${oversized.name} quá lớn (tối đa 70 MiB mỗi file).`, 'error'); return }
+    const total = files.length
+    let currentFile = files[0]
+    let currentProgress = 0
     try {
-      await new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest()
-        const endpoint = projectId ? `/projects/${projectId}/sources` : `/sessions/${sid}/files`
-        xhr.open('POST', `${settings.restUrl}${endpoint}`)
-        xhr.setRequestHeader('authorization', `Bearer ${auth.token}`)
-        xhr.setRequestHeader('content-type', 'application/octet-stream')
-        xhr.setRequestHeader('x-file-name', encodeURIComponent(file.name))
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) {
-            setUploadState({ phase: 'uploading', filename: file.name, progress: Math.round((e.loaded / e.total) * 100) })
+      for (const [index, file] of files.entries()) {
+        currentFile = file
+        currentProgress = Math.round(index * 100 / total)
+        setUploadState({ phase: 'uploading', filename: file.name, progress: currentProgress, completed: index, total })
+        await new Promise<void>((resolve, reject) => {
+          const xhr = new XMLHttpRequest()
+          const endpoint = projectId ? `/projects/${projectId}/sources` : `/sessions/${sid}/files`
+          xhr.open('POST', `${settings.restUrl}${endpoint}`)
+          xhr.setRequestHeader('authorization', `Bearer ${auth.token}`)
+          xhr.setRequestHeader('content-type', 'application/octet-stream')
+          xhr.setRequestHeader('x-file-name', encodeURIComponent(file.name))
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              const progress = Math.round(((index + e.loaded / e.total) / total) * 100)
+              currentProgress = progress
+              setUploadState({ phase: 'uploading', filename: file.name, progress, completed: index, total })
+            }
           }
-        }
-        xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(xhr.responseText || `HTTP ${xhr.status}`)))
-        xhr.onerror = () => reject(new Error('Network error'))
-        xhr.send(file)
-      })
+          xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(xhr.responseText || `HTTP ${xhr.status}`)))
+          xhr.onerror = () => reject(new Error('Network error'))
+          xhr.send(file)
+        })
+      }
       await refreshWorkspaceFiles(sid ?? '', projectId ?? undefined)
-      setUploadState({ phase: 'success', filename: file.name, progress: 100, message: 'Đã upload và đăng ký trong workspace.' })
-      pushToast(`Đã tải lên ${file.name}`, 'default')
+      const label = total === 1 ? files[0].name : `${total} file`
+      setUploadState({ phase: 'success', filename: label, progress: 100, message: 'Đã upload và đăng ký trong workspace.', completed: total, total })
+      pushToast(`Đã tải lên ${label}`, 'default')
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e)
-      setUploadState({ phase: 'error', filename: file.name, progress: 0, message })
+      setUploadState({ phase: 'error', filename: currentFile.name, progress: currentProgress, message, total })
       pushToast(`Upload thất bại: ${message}`, 'error')
     }
   }
@@ -374,11 +390,9 @@ export function App() {
   async function downloadWorkspaceFile(filePath: string) {
     if ((!sessionId && !activeProjectId) || !auth) return
     try {
-      const projectId = activeProjectId ?? sessions.find((session) => session.id === sessionId)?.projectId
-      const endpoint = projectId
-        ? `/projects/${projectId}/files/${encodeURIComponent(filePath)}`
-        : `/sessions/${sessionId}/files/${encodeURIComponent(filePath)}`
-      const response = await fetch(`${settings.restUrl}${endpoint}`, {
+      const endpoint = workspaceFileEndpoint(filePath)
+      if (!endpoint) return
+      const response = await fetch(endpoint, {
         headers: { authorization: `Bearer ${auth.token}` },
       })
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`)
@@ -393,23 +407,69 @@ export function App() {
     }
   }
 
-  async function downloadProjectOutput(output: ProjectOutputFile) {
-    if (!activeProjectId || !auth) return
-    const endpoint = output.scope === 'project'
-      ? `/projects/${activeProjectId}/outputs/project/${encodeURIComponent(output.path)}`
-      : `/projects/${activeProjectId}/outputs/session/${output.sessionId}/${encodeURIComponent(output.path)}`
+  function workspaceFileEndpoint(filePath: string): string | null {
+    const projectId = activeProjectId ?? sessions.find((session) => session.id === sessionId)?.projectId
+    if (projectId) {
+      if (filePath.startsWith('generated/') && sessionId) {
+        return `${settings.restUrl}/projects/${projectId}/outputs/session/${sessionId}/${encodeURIComponent(filePath.slice('generated/'.length))}`
+      }
+      if (filePath.startsWith('outputs/')) {
+        return `${settings.restUrl}/projects/${projectId}/outputs/project/${encodeURIComponent(filePath.slice('outputs/'.length))}`
+      }
+      return `${settings.restUrl}/projects/${projectId}/files/${encodeURIComponent(filePath)}`
+    }
+    return sessionId ? `${settings.restUrl}/sessions/${sessionId}/files/${encodeURIComponent(filePath)}` : null
+  }
+
+  function projectOutputEndpoint(output: ProjectOutputFile): string | null {
+    if (!activeProjectId) return null
+    return output.scope === 'project'
+      ? `${settings.restUrl}/projects/${activeProjectId}/outputs/project/${encodeURIComponent(output.path)}`
+      : output.sessionId
+        ? `${settings.restUrl}/projects/${activeProjectId}/outputs/session/${output.sessionId}/${encodeURIComponent(output.path)}`
+        : null
+  }
+
+  function previewWorkspaceOutput(file: { path: string; size: number }) {
+    const endpoint = workspaceFileEndpoint(file.path)
+    if (endpoint) setOutputPreview({ path: file.path, size: file.size, endpoint })
+  }
+
+  function previewProjectOutput(output: ProjectOutputFile) {
+    const endpoint = projectOutputEndpoint(output)
+    if (endpoint) setOutputPreview({ path: output.path, size: output.size, endpoint })
+  }
+
+  async function downloadPreview(target: OutputPreviewTarget) {
+    if (!auth) return
     try {
-      const response = await fetch(`${settings.restUrl}${endpoint}`, { headers: { authorization: `Bearer ${auth.token}` } })
+      const response = await fetch(target.endpoint, { headers: { authorization: `Bearer ${auth.token}` } })
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`)
       const url = URL.createObjectURL(await response.blob())
       const anchor = document.createElement('a')
       anchor.href = url
-      anchor.download = output.path.split('/').pop() || 'output'
+      anchor.download = target.path.split('/').pop() || 'output'
       anchor.click()
       URL.revokeObjectURL(url)
     } catch (error: unknown) {
       pushToast(`Không tải được output: ${error instanceof Error ? error.message : String(error)}`, 'error')
     }
+  }
+
+  async function deletePreview(target: OutputPreviewTarget) {
+    if (!auth) return
+    const response = await fetch(target.endpoint, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${auth.token}` },
+    })
+    if (!response.ok) {
+      const message = `HTTP ${response.status}: ${await response.text()}`
+      pushToast(`Không xoá được output: ${message}`, 'error')
+      throw new Error(message)
+    }
+    setOutputPreview(null)
+    await refreshWorkspaceFiles(sessionId ?? '', activeProjectId ?? undefined)
+    pushToast(`Đã xoá ${target.path}`, 'default')
   }
 
   async function promoteProjectOutput(output: ProjectOutputFile) {
@@ -438,6 +498,18 @@ export function App() {
   // của 1 lượt generate tới, reset về null lúc model_message (có toolCall,
   // tool card mới sắp tạo) hoặc lúc 'final' đóng lại bubble đang stream.
   const streamingAssistantIdRef = useRef<string | null>(null)
+  // Bug thật user báo (2026-08): "đôi khi vẫn gặp lỗi markdown table" —
+  // AssistantMarkdown render lại qua react-markdown ở MỖI token; nếu turn
+  // kết thúc/lỗi/bị cắt đúng lúc dòng phân cách bảng (`| --- | --- |`) đang
+  // gõ dở thì bảng đứng yên mãi ở dạng cú pháp thô (xem chú thích đầy đủ ở
+  // AssistantMarkdown.tsx). streamingAssistantIdRef ở trên PHẢI là ref (đọc
+  // đồng bộ trong applyStep, closure của openStream() không được tạo lại
+  // mỗi render — dùng state ở đó sẽ đọc phải giá trị cũ/stale). Nhưng quyết
+  // định RENDER (bubble nào hiện text thô, bubble nào hiện markdown thật)
+  // cần trigger re-render đúng lúc — ref không tự re-render được, nên thêm
+  // state riêng, set ĐỒNG THỜI ở đúng 3 điểm ref đổi giá trị (không thay ref
+  // bằng state — hai việc khác nhau, cần cả hai).
+  const [streamingItemId, setStreamingItemId] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
@@ -516,9 +588,12 @@ export function App() {
       const url = `${current.wsUrl}/sessions/${sid}/events/stream?token=${encodeURIComponent(token)}`
       const ws = new WebSocket(url)
       let settled = false
+      // Gán NGAY lúc tạo (không đợi 'open') — 'close'/'error' bên dưới cần so
+      // sánh được `wsRef.current === ws` NGAY TỪ LÚC CONNECTING, không chỉ từ
+      // lúc OPEN (xem lý do ở guard trong 'close').
+      wsRef.current = ws
 
       ws.addEventListener('open', () => {
-        wsRef.current = ws
         wsSessionIdRef.current = sid
         setStatus('connected')
         settled = true
@@ -536,7 +611,7 @@ export function App() {
         if (msg.type === 'done') {
           setTurnInFlight(false)
           const sid = sessionIdRef.current ?? (msg as { sessionId?: string }).sessionId
-          if (sid) refreshWorkspaceFiles(String(sid))
+          if (sid) refreshWorkspaceFiles(String(sid), activeProjectId ?? undefined)
           return
         }
 
@@ -559,7 +634,18 @@ export function App() {
       })
 
       ws.addEventListener('close', (event) => {
-        setStatus('disconnected')
+        // Bug thật đã sửa (2026-08): CHỈ set 'disconnected' nếu socket đang
+        // đóng vẫn còn là socket HIỆN HÀNH (wsRef.current === ws). startNewChat()/
+        // ensureStream()/resumeSession() đều `.close()` socket CŨ rồi gán lại
+        // wsRef.current (null hoặc socket MỚI) NGAY, đồng bộ — nhưng sự kiện
+        // 'close' của socket cũ chỉ tới SAU đó, bất đồng bộ. Không guard thì
+        // 'close' trễ của socket cũ ghi đè lên đúng status vừa set cho ngữ
+        // cảnh MỚI (vd. "connected" mà startNewChat() vừa set) về lại
+        // 'disconnected', khoá cứng composer vĩnh viễn vì không còn gì mở lại
+        // WS (session mới chỉ tạo lúc gửi tin, mà gửi tin lại bị chính status
+        // này chặn) — xảy ra mỗi khi có 1 WS đang mở từ session auto-resume lúc
+        // load trang rồi user bấm "Chat mới"/đổi session ngay sau đó.
+        if (wsRef.current === ws) setStatus('disconnected')
         if (wsSessionIdRef.current === sid) wsSessionIdRef.current = null
         // Module auth: 401 giờ nghĩa là TOKEN hết hạn/bị thu hồi (không còn
         // "sai API key" — token đã được xác thực lúc mở kết nối, hết hạn/bị
@@ -578,7 +664,9 @@ export function App() {
       })
 
       ws.addEventListener('error', () => {
-        setStatus('disconnected')
+        // Cùng guard như 'close' ở trên — socket lỗi không còn là socket hiện
+        // hành thì không được phép đổi status thay cho ngữ cảnh mới.
+        if (wsRef.current === ws) setStatus('disconnected')
         if (!settled) {
           settled = true
           reject(new Error('WS connection error'))
@@ -640,6 +728,7 @@ export function App() {
       } else {
         const id = genId()
         streamingAssistantIdRef.current = id
+        setStreamingItemId(id)
         setItems((prev) => [...prev, { kind: 'assistant', id, text: delta, ts: Date.now() }])
       }
       return
@@ -649,6 +738,7 @@ export function App() {
         // Đóng bubble đang stream (nếu có — model có thể "nói" 1 đoạn ngắn
         // trước khi gọi tool) trước khi thêm tool card ngay bên dưới nó.
         streamingAssistantIdRef.current = null
+        setStreamingItemId(null)
         const id = genId()
         activeToolItemIdRef.current = id
         setItems((prev) => [...prev, { kind: 'tool', id, toolCall: step.toolCall!, toolUi: step.toolUi, state: 'running' }])
@@ -705,6 +795,7 @@ export function App() {
       // chỉ cần đóng lại, KHÔNG tạo bubble mới (tránh lặp nguyên câu trả lời).
       if (streamingAssistantIdRef.current) {
         streamingAssistantIdRef.current = null
+        setStreamingItemId(null)
         return
       }
       // Provider không hỗ trợ streaming (hoặc fake LLM trong test) — hành vi
@@ -836,16 +927,18 @@ export function App() {
     titledSessionIdsRef.current.add(created.id)
     setProjectView(false)
     setSessionDriver('rlm')
-    setItems([])
     setSessionId(created.id)
     sessionIdRef.current = created.id
-    // REST-first (openStream/ensureStream, xem ghi chú retire connect() ở
-    // trên): session đã tạo xong qua POST /projects/:id/sessions — chỉ cần
-    // mở downlink rồi POST tin nhắn đầu tiên (nếu có), không còn WS
-    // create_session/send_message của feature branch.
+    // Merge feat/rlm-dev-integration: gộp 2 lần setItems([])/setItems([user])
+    // thành 1 lần (tránh render trắng-rồi-điền lại) — giữ nguyên phần còn lại
+    // theo bản REST-first của HEAD (openStream/ensureStream, xem ghi chú
+    // retire connect() ở trên): session đã tạo xong qua POST
+    // /projects/:id/sessions — chỉ cần mở downlink rồi POST tin nhắn đầu
+    // tiên (nếu có), không còn WS create_session/send_message của feature
+    // branch.
+    setItems(initialMessage ? [{ kind: 'user', id: genId(), text: initialMessage, ts: Date.now() }] : [])
     await ensureStream(settings, auth.token, created.id)
     if (initialMessage) {
-      setItems([{ kind: 'user', id: genId(), text: initialMessage, ts: Date.now() }])
       setTurnInFlight(true)
       try {
         const msgRes = await fetch(`${settings.restUrl}/sessions/${created.id}/messages`, {
@@ -854,6 +947,8 @@ export function App() {
           body: JSON.stringify({ message: initialMessage, selectedSkill: selectedSkill || undefined }),
         })
         if (!msgRes.ok) throw new Error(await msgRes.text())
+        // Cùng lưới an toàn như sendUserMessage(): tắt turnInFlight ngay khi
+        // POST resolve, không chỉ dựa vào WS 'done' (idempotent với handler đó).
         setTurnInFlight(false)
       } catch (e: unknown) {
         setTurnInFlight(false)
@@ -995,6 +1090,7 @@ export function App() {
       }
       wsRef.current?.close()
       wsRef.current = null
+      wsSessionIdRef.current = null
       activeToolItemIdRef.current = null
       setItems(reconstructItems(events))
       rememberActiveSession(auth.user.id, id)
@@ -1031,6 +1127,7 @@ export function App() {
     // (REST-first) thay vì connect() (protocol WS create_session/
     // session_created đã bị retire, xem ghi chú ở openStream()).
     let disposed = false
+    initSession(settings, auth.token)
     void fetchSessionHistory(settings.restUrl, auth.token)
       .then((history) => {
         if (disposed) return
@@ -1047,7 +1144,11 @@ export function App() {
       .catch(() => {
         if (disposed) return
         pushToast('Không tải được danh sách cuộc trò chuyện.', 'error')
-        initSession(settings, auth.token)
+        // initSession() ở trên đã tự probe REST/set status độc lập rồi — chỉ
+        // cần đảm bảo không kẹt ở 'connecting' nếu chính lệnh gọi ĐÓ đã xong
+        // trước khi fetchSessionHistory() reject, không cần gọi lại toàn bộ
+        // initSession() (tốn thêm 1 lượt fetch /skills + reset state thừa).
+        setStatus('connected')
       })
     return () => {
       disposed = true
@@ -1101,7 +1202,7 @@ export function App() {
         // theo sẽ thấy đúng session này; thêm ngay ở đây để UI phản hồi tức
         // thời, không đợi round-trip fetch lại.
         setSessions((prev) => [{ id: sid as string, createdAt: Date.now(), title, driver: created.driver }, ...prev])
-        if (created.driver === 'rlm') refreshWorkspaceFiles(sid)
+        if (created.driver === 'rlm') refreshWorkspaceFiles(sid, activeProjectId ?? undefined)
       } else if (!titledSessionIdsRef.current.has(sid)) {
         // Chỉ đặt title 1 LẦN cho câu hỏi ĐẦU TIÊN của session (Set tránh ghi
         // đè bằng câu hỏi sau, và tránh ghi đè session đã resume có title thật).
@@ -1126,12 +1227,12 @@ export function App() {
       // toàn tắt turnInFlight nếu vì lý do gì đó WS bị rớt đúng lúc 'done'
       // phát ra (idempotent với setTurnInFlight(false) trong handler 'done').
       setTurnInFlight(false)
+      return true
     } catch (e: unknown) {
       setTurnInFlight(false)
       pushToast(`Gửi tin nhắn thất bại: ${e instanceof Error ? e.message : String(e)}`, 'error')
       return false
     }
-    return true
   }
 
   function handleSubmit(event: React.FormEvent) {
@@ -1209,6 +1310,13 @@ export function App() {
   return (
     <>
       <ToastContainer toasts={toasts} />
+      <OutputPreviewModal
+        target={outputPreview}
+        token={auth.token}
+        onClose={() => setOutputPreview(null)}
+        onDownload={downloadPreview}
+        onDelete={deletePreview}
+      />
       <AppFrame
         wide={projectView}
         sidebar={
@@ -1249,6 +1357,7 @@ export function App() {
                 onUpload: handleFileUpload,
                 onRefresh: () => sessionId && refreshWorkspaceFiles(sessionId),
                 onDownload: downloadWorkspaceFile,
+                onPreview: previewWorkspaceOutput,
                 datasetsCount: workspaceDatasets.length,
                 artifactsCount: workspaceArtifacts.length,
                 loading: workspaceLoading,
@@ -1260,24 +1369,22 @@ export function App() {
             />
           )
         }
+        // Follow-up (2026-08): chọn skill kiểu slash-command ("/" mở popup lọc
+        // tên/mô tả) giờ nằm THẲNG trong Composer, dùng CHUNG cho mọi driver —
+        // thay cho RenderSlot 'session.chrome.composer' (SkillComposerExtra,
+        // dropdown riêng chỉ hiện cho entryKey='rlm' cũ) vốn khiến chat thường
+        // (driver 'default') không có cách nào chọn skill dù backend đã hỗ trợ
+        // sẵn (loop-default gọi resolveActiveSkills(..., input.selectedSkill)).
         footer={projectView ? null : (
-          <>
-            {clientCtx && (
-              <RenderSlot<SkillComposerExtraProps>
-                ctx={clientCtx}
-                name="session.chrome.composer"
-                entryKey={sessionDriver}
-                owner={{
-                  skills,
-                  selectedSkill,
-                  disabled: !composerEnabled,
-                  onSelectSkill: setSelectedSkill,
-                }}
-                fallback={() => null}
-              />
-            )}
-            <Composer value={composerText} onChange={setComposerText} onSubmit={handleSubmit} disabled={!composerEnabled} />
-          </>
+          <Composer
+            value={composerText}
+            onChange={setComposerText}
+            onSubmit={handleSubmit}
+            disabled={!composerEnabled}
+            skills={skills}
+            selectedSkill={selectedSkill}
+            onSelectSkill={setSelectedSkill}
+          />
         )}
       >
         {projectView ? (
@@ -1297,7 +1404,7 @@ export function App() {
             onOpenConversation={resumeSession}
             onUpload={handleFileUpload}
             onDownloadSource={downloadWorkspaceFile}
-            onDownloadOutput={downloadProjectOutput}
+            onPreviewOutput={previewProjectOutput}
             onPromoteOutput={promoteProjectOutput}
           />
         ) : <>
@@ -1348,6 +1455,7 @@ export function App() {
               text={item.text}
               description={item.description}
               ts={item.ts}
+              streaming={item.kind === 'assistant' && item.id === streamingItemId}
               onCopied={() => pushToast('Đã sao chép')}
             />
           )

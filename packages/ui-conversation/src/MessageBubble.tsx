@@ -17,6 +17,11 @@ export interface MessageBubbleProps {
   text: string
   description?: string
   ts?: number
+  /** Bubble assistant NÀY đang nhận token 'stream' dở dang — App.tsx truyền
+   * theo đúng id đang stream (xem AssistantMarkdown.tsx cho lý do: tránh
+   * react-markdown parse 1 bảng/cú pháp GFM đang gõ dở, có thể đứng yên mãi
+   * ở dạng thô nếu turn kết thúc/lỗi đúng lúc đó). */
+  streaming?: boolean
   /** Gọi SAU KHI đã copy vào clipboard thành công — App.tsx dùng để push toast xác nhận. */
   onCopied?: () => void
 }
@@ -25,7 +30,7 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
 }
 
-export function MessageBubble({ kind, text, description, ts, onCopied }: MessageBubbleProps) {
+export function MessageBubble({ kind, text, description, ts, streaming, onCopied }: MessageBubbleProps) {
   const cssKind = kind === 'critic' ? 'step' : kind
 
   if (kind !== 'user' && kind !== 'assistant') {
@@ -45,7 +50,7 @@ export function MessageBubble({ kind, text, description, ts, onCopied }: Message
 
   return (
     <div className={`${styles.wrapper} ${kind === 'user' ? styles.wrapperUser : styles.wrapperAssistant}`}>
-      <div className={`${styles.msg} ${styles[cssKind]}`}>{kind === 'assistant' ? <AssistantMarkdown content={text} /> : text}</div>
+      <div className={`${styles.msg} ${styles[cssKind]}`}>{kind === 'assistant' ? <AssistantMarkdown content={text} streaming={streaming} /> : text}</div>
       <div className={styles.actions}>
         {ts !== undefined && <span className={styles.timestamp}>{formatTime(ts)}</span>}
         <button type="button" className={styles.copyBtn} onClick={handleCopy} aria-label="Sao chép">

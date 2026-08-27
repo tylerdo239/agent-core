@@ -9,6 +9,7 @@ import '../../../seams/turn-memory.ts'
 import '../../../seams/skill-selection.ts'
 import { assertNotCancelled, LoopStep, LoopTurnResult, Session, TurnInput } from '../../../seams/loop.ts'
 import { SandboxEvent } from '../../../seams/sandbox.ts'
+import { classifyError, isHarnessErrorCode } from '../../../src/errors.ts'
 import { prepareRlmTurn, RlmSessionState } from './protocol.ts'
 import { resolveActiveSkills } from '../../../src/skill-runtime.ts'
 
@@ -257,7 +258,13 @@ export const apply = (ctx: Context) => {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        await runCtx.storage.appendEvent(session.id, { type: 'error', source: 'rlm', message })
+        // BUG-10 silent-failure: lỗi bridge/worker phải được phân loại theo
+        // taxonomy VÀ ghi vào session state để TURN KẾ TIẾP nhận [SESSION
+        // HEALTH] note thay vì đi tiếp như không có chuyện gì.
+        const errorCode = classifyError(message)
+        const state = session.extension<RlmSessionState>('loop:rlm', () => ({ contextIndex: 0, historyIndex: 0 }))
+        state.lastError = { code: errorCode, message }
+        await runCtx.storage.appendEvent(session.id, { type: 'error', source: 'rlm', message, error_code: errorCode })
         runCtx.emit('agent/step', { sessionId: session.id, step: { type: 'error', message } })
         throw error
       }
@@ -267,6 +274,17 @@ export const apply = (ctx: Context) => {
       const content = String(result.answer ?? finalContent ?? '')
       const memory = record(result.memory)
       const state = session.extension<RlmSessionState>('loop:rlm', () => ({ contextIndex: 0, historyIndex: 0 }))
+      // BUG-10: turn_issue từ python (crash đã classify / cạn iteration /
+      // CODE_PARSE...) → lưu cho turn kế tiếp; turn sạch thì xoá.
+      const turnIssue = record(result.turn_issue)
+      if (status === 'failed') {
+        const message = String(turnIssue.message ?? result.answer ?? 'turn failed')
+        state.lastError = { code: isHarnessErrorCode(turnIssue.code) ? turnIssue.code : classifyError(message), message }
+      } else if (Object.keys(turnIssue).length) {
+        state.lastError = { code: isHarnessErrorCode(turnIssue.code) ? turnIssue.code : undefined, message: String(turnIssue.message ?? '') }
+      } else {
+        state.lastError = undefined
+      }
       const contextIndex = number(memory.context_index)
       const historyIndex = number(memory.history_index)
       if (contextIndex !== undefined) await memoryService.recordContext(session.id, contextIndex)
