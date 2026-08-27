@@ -1,7 +1,7 @@
 export { MessageBubble } from './MessageBubble.tsx'
 export type { MessageBubbleKind, MessageBubbleProps } from './MessageBubble.tsx'
 export { Composer } from './Composer.tsx'
-export type { ComposerProps } from './Composer.tsx'
+export type { ComposerProps, SkillOption } from './Composer.tsx'
 export { ToolRow } from './ToolRow.tsx'
 export type { ToolRowProps } from './ToolRow.tsx'
 export { GenericToolCard } from './GenericToolCard.tsx'

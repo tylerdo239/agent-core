@@ -158,6 +158,22 @@ async function handleWorkspaceFiles(
       return sendJson(res, 404, { error: error instanceof Error ? error.message : String(error) })
     }
   }
+  if (req.method === 'DELETE' && subPath) {
+    // User-facing delete is intentionally output-only. Source datasets are
+    // project inputs and must not disappear because of a misplaced UI click.
+    const outputPath = subPath.startsWith('generated/')
+      || subPath.startsWith('outputs/')
+      || /^\.sessions\/[^/]+\/generated\//.test(subPath)
+    if (!outputPath) return sendJson(res, 403, { error: 'only output files can be deleted' })
+    try {
+      const deleted = await ctx.workspace.deleteFile(workspaceId, subPath)
+      if (!deleted) return sendJson(res, 404, { error: 'output file not found' })
+      res.writeHead(204)
+      return res.end()
+    } catch (error) {
+      return sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
   if (req.method === 'POST' && !subPath) {
     let filename = ''
     if ((req.headers['content-type'] ?? '').split(';', 1)[0].trim().toLowerCase() === 'application/octet-stream') {
@@ -438,7 +454,7 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse, m
         return sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
       }
     }
-    if (req.method === 'GET' && scope && projectOutputsMatch[3]) {
+    if ((req.method === 'GET' || req.method === 'DELETE') && scope && projectOutputsMatch[3]) {
       const owner = decodeURIComponent(projectOutputsMatch[3])
       const rawPath = scope === 'project'
         ? decodeURIComponent([projectOutputsMatch[3], projectOutputsMatch[4]].filter(Boolean).join('/'))
@@ -454,7 +470,9 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse, m
         }
         storedPath = `.sessions/${session.id}/generated/${rawPath.replace(/^generated\//, '')}`
       }
-      return handleWorkspaceFiles(ctx, req, res, workspaceId, storedPath)
+      const result = await handleWorkspaceFiles(ctx, req, res, workspaceId, storedPath)
+      if (req.method === 'DELETE' && res.statusCode < 400) ctx.projects.touch(project.id)
+      return result
     }
     return sendJson(res, 405, { error: 'method not allowed' })
   }

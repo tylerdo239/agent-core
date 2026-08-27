@@ -80,6 +80,9 @@ export abstract class WorkspaceService extends Service {
   /** Đọc nội dung file trong workspace (kể cả generated artifacts). */
   abstract readFile(sessionId: string, filePath: string): Promise<Buffer>
 
+  /** Xoá đúng một file trong workspace. Policy endpoint quyết định loại file nào user được xoá. */
+  abstract deleteFile(sessionId: string, filePath: string): Promise<boolean>
+
   /** Liệt kê mọi file trong workspace (datasets + artifacts + file thường). */
   abstract listFiles(sessionId: string): Promise<WorkspaceFile[]>
 

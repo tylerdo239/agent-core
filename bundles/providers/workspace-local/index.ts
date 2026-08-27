@@ -184,6 +184,35 @@ export class WorkspaceLocal extends WorkspaceService {
     return readFile(resolved)
   }
 
+  async deleteFile(sessionId: string, filePath: string): Promise<boolean> {
+    const root = this.root(sessionId)
+    const parts = String(filePath).split('/').filter((part) => part && part !== '.')
+    if (!parts.length || parts.some((part) => part === '..' || part.includes('\0'))) {
+      throw new Error('path escapes workspace')
+    }
+    const relative = parts.join('/')
+    const resolved = path.resolve(root, relative)
+    if (resolved === root || !resolved.startsWith(root + path.sep)) throw new Error('path escapes workspace')
+    if (!existsSync(resolved)) return false
+    const stat = lstatSync(resolved)
+    if (!stat.isFile() && !stat.isSymbolicLink()) throw new Error('workspace path is not a file')
+    await unlink(resolved)
+
+    // Published outputs have provenance metadata. Keep that manifest aligned
+    // with the files visible to the UI instead of leaving stale records.
+    if (relative.startsWith('outputs/')) {
+      const outputPath = relative.slice('outputs/'.length)
+      const manifestPath = path.join(root, 'outputs', '.manifest.json')
+      try {
+        const parsed = JSON.parse(readFileSync(manifestPath, 'utf8'))
+        if (Array.isArray(parsed)) {
+          writeFileSync(manifestPath, JSON.stringify(parsed.filter((item) => item?.path !== outputPath), null, 2))
+        }
+      } catch { /* legacy output or no manifest */ }
+    }
+    return true
+  }
+
   async listFiles(sessionId: string): Promise<WorkspaceFile[]> {
     const root = this.root(sessionId)
     const out: WorkspaceFile[] = []

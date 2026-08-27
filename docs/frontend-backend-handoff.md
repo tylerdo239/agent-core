@@ -387,6 +387,11 @@ Refresh danh sách tại bốn thời điểm:
 Giới hạn file đã decode là `70 MiB`. Gửi binary trực tiếp, không chuyển file
 thành base64 trong browser:
 
+UI cho phép chọn nhiều file trong một lần. Backend vẫn nhận **mỗi request một
+file**, nên frontend upload tuần tự và tính tiến độ tổng theo
+`(số file xong + tiến độ file hiện tại) / tổng số file`. Sau khi cả batch xong
+mới refresh danh sách một lần; nếu lỗi thì giữ tên file đang lỗi trên màn hình.
+
 ```http
 POST /projects/:projectId/sources
 Content-Type: application/octet-stream
@@ -424,7 +429,7 @@ Giữ một success/error banner sau upload; đừng chỉ dùng toast biến m�
 Server vẫn hỗ trợ JSON base64 cho client cũ, nhưng frontend mới không nên dùng
 vì tốn thêm khoảng 33% payload và dễ gây lỗi memory/call-stack.
 
-### Download source/output
+### Preview, download và xoá output
 
 ```http
 GET /projects/:projectId/files/:encodedPath
@@ -435,6 +440,23 @@ Authorization: Bearer ...
 
 Route `files` dùng cho source. Hai route `outputs` lần lượt tải output đã
 publish và draft thuộc một session cụ thể.
+
+Click source tải file như trước. Click output mở preview bằng authenticated
+`fetch`: ảnh/PDF dùng object URL, text/JSON hiển thị trong `<pre>`; HTML được
+hiển thị như text, không inject vào DOM. Màn hình preview có nút **Tải xuống**
+và xác nhận **Xoá output**.
+
+Xoá dùng đúng URL output ở trên với method `DELETE`:
+
+```http
+DELETE /projects/:projectId/outputs/project/:encodedPath
+DELETE /projects/:projectId/outputs/session/:sessionId/:encodedPath
+Authorization: Bearer ...
+```
+
+Thành công trả `204`; không tồn tại trả `404`. Backend chỉ cho xoá đường dẫn
+output (`generated/`, `outputs/`, hoặc output session), không cho endpoint này
+xoá source dataset.
 
 Không dùng `<a href="...">` trực tiếp vì browser không tự thêm Bearer token.
 Dùng authenticated `fetch`, đổi response thành `Blob`, rồi tạo object URL để
@@ -529,7 +551,9 @@ Composition root:
 - [ ] Skill selector lấy dữ liệu từ `/skills`.
 - [ ] Upload gửi raw binary và có progress/success/error state.
 - [ ] Workspace refresh sau upload và sau `done`.
+- [ ] Chọn nhiều source gửi đủ từng file và progress thể hiện toàn batch.
 - [ ] Dataset và output được hợp nhất theo path, không render trùng.
+- [ ] Click output mở preview; tải và xoá dùng Bearer token; xoá xong refresh list.
 - [ ] Download dùng authenticated fetch.
 - [ ] Resume xử lý được session đã hết TTL/backend restart.
 - [ ] Có UI cho run/job đang chạy và nút cancel khi state cho phép.

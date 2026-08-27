@@ -138,9 +138,7 @@ export class AgentRunner extends AgentRunnerService {
       // giả thuyết). KHÔNG await remember(): ghi nền, không chặn latency của
       // turn; `.catch()` vẫn cần vì serve.ts có process.on('unhandledRejection').
       this.ctx.get('memory')?.remember(session.id, entry.input.message, { userId: session.ownerId }).catch(() => {})
-      const result = await driver.runTurn(this.ctx, session, {
-        ...entry.input, runId, signal: controller.signal,
-      })
+      const result = await driver.runTurn(this.ctx, session, { ...entry.input, runId, signal: controller.signal })
       if (controller.signal.aborted) throw new RunCancelledError()
       // Preserve the driver's public result shape. Older drivers omit
       // `status`; RunRecord still treats that as completed internally.
@@ -153,6 +151,13 @@ export class AgentRunner extends AgentRunnerService {
       // trả về của chính lệnh POST /sessions/:id/messages, nhưng KHÔNG có gì
       // báo cho client đang nghe WS biết turn xong — gap thật phát hiện lúc
       // merge, seams/loop.ts vẫn khai 2 event này và api-rest.ts vẫn nghe).
+      // Merge round 2: feature branch tự thêm LẠI 1 emit 'agent/turn-done'
+      // sớm (trước finish()) + 1 emit 'agent/turn-error' vô điều kiện đầu
+      // catch, độc lập không biết bản fix này đã tồn tại — gộp bằng git
+      // auto-merge KHÔNG báo conflict (2 đoạn nằm NGOÀI vùng conflict thật),
+      // để lại DUPLICATE: client WS nhận 'done'/'error' 2 LẦN mỗi turn (xác
+      // nhận qua đọc thẳng bundles/adapters/api-rest — `ctx.on('agent/turn-done', onDone)`
+      // chỉ nên fire 1 lần). Xoá bản trùng, giữ đúng 1 emit mỗi nhánh.
       this.ctx.emit('agent/turn-done', { sessionId: session.id, result })
       entry.resolve(result)
     } catch (error) {

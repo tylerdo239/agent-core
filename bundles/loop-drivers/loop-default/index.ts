@@ -24,6 +24,17 @@ import { assertNotCancelled, LoopTurnResult, Session, TurnInput } from '../../..
 import { ToolExecutionError } from '../../../seams/tools.ts'
 import { resolveActiveSkills, skillCatalogGuidance } from '../../../src/skill-runtime.ts'
 import { injectEnvironmentNote } from '../../../src/environment-note.ts'
+import { classifyError } from '../../../src/errors.ts'
+
+/** Map mã ToolExecutionError nội bộ sang harness taxonomy chuẩn (src/errors.ts). */
+const TOOL_CODE_TO_TAXONOMY: Record<string, string> = {
+  TOOL_NOT_FOUND: 'TOOL_NOT_FOUND',
+  TOOL_ARGS_INVALID: 'TOOL_ARGS',
+  TOOL_PERMISSION_DENIED: 'TOOL_EXEC',
+  TOOL_TIMEOUT: 'TOOL_EXEC',
+  TOOL_CANCELLED: 'CANCELLED',
+  TOOL_HANDLER_ERROR: 'TOOL_EXEC',
+}
 
 export const inject = ['loop']
 
@@ -166,12 +177,26 @@ export const apply = (ctx: Context) => {
         // step), KHÔNG ghi storage -- đúng 1 'model_message' hoàn chỉnh vẫn
         // được ghi & phát như cũ ngay dưới đây sau khi response resolve.
         // `signal: input.signal` truyền cho CẢ 2 nhánh -- streaming lẫn
-        // non-streaming đều phải cancel được giữa chừng như nhau.
-        const response = runCtx.llm.completeStream
-          ? await runCtx.llm.completeStream(messages, { tools: toolSpecs, signal: input.signal }, (contentDelta) => {
-              runCtx.emit('agent/step', { sessionId: session.id, step: { type: 'token', content: contentDelta } })
+        // non-streaming đều phải cancel được giữa chừng như nhau. BUG-10 (merge
+        // feat/rlm-dev-integration): bọc try/catch — provider error phải mang
+        // taxonomy code, turn fail là đúng nhưng UI/event consumer cần biết
+        // LỚP lỗi để xử lý.
+        const response = await (async () => {
+          try {
+            return runCtx.llm.completeStream
+              ? await runCtx.llm.completeStream(messages, { tools: toolSpecs, signal: input.signal }, (contentDelta) => {
+                  runCtx.emit('agent/step', { sessionId: session.id, step: { type: 'token', content: contentDelta } })
+                })
+              : await runCtx.llm.complete(messages, { tools: toolSpecs, signal: input.signal })
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            await runCtx.storage.appendEvent(session.id, {
+              type: 'error', source: 'default-loop', message, error_code: classifyError(message),
             })
-          : await runCtx.llm.complete(messages, { tools: toolSpecs, signal: input.signal })
+            runCtx.emit('agent/step', { sessionId: session.id, step: { type: 'error', message } })
+            throw error
+          }
+        })()
         assertNotCancelled(input)
         if (response.usage) {
           usage ??= { inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0 }
@@ -220,8 +245,17 @@ export const apply = (ctx: Context) => {
           // the whole turn. The model may repair its arguments or choose a
           // different path on the next step.
           result = error instanceof ToolExecutionError
-            ? { error: error.message, code: error.code }
-            : { error: error instanceof Error ? error.message : String(error), code: 'TOOL_HANDLER_ERROR' }
+            ? {
+                error: error.message,
+                code: error.code,
+                // BUG-10: gắn class taxonomy để model/UI phân biệt lớp lỗi.
+                error_class: TOOL_CODE_TO_TAXONOMY[error.code] ?? classifyError(error.message),
+              }
+            : {
+                error: error instanceof Error ? error.message : String(error),
+                code: 'TOOL_HANDLER_ERROR',
+                error_class: classifyError(error instanceof Error ? error.message : String(error)),
+              }
         }
         assertNotCancelled(input)
 
@@ -244,7 +278,9 @@ export const apply = (ctx: Context) => {
       }
 
       const message = `session "${session.id}" exceeded maxSteps (${session.maxSteps})`
-      await runCtx.storage.appendEvent(session.id, { type: 'error', source: 'default-loop', message })
+      // Cạn ngân sách step mà chưa xong = NO_PROGRESS trong taxonomy — không
+      // được nhãn chung chung làm người đọc/UI tưởng lỗi hạ tầng.
+      await runCtx.storage.appendEvent(session.id, { type: 'error', source: 'default-loop', message, error_code: 'NO_PROGRESS' })
       runCtx.emit('agent/step', { sessionId: session.id, step: { type: 'error', message } })
       throw new Error(message)
     },

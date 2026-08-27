@@ -352,6 +352,31 @@ def handle(request_id: str, operation: str, payload: dict[str, Any]) -> None:
             raise ValueError("path escapes workspace")
         emit(request_id, "__result__", content=base64.b64encode(resolved.read_bytes()).decode())
         return
+    if operation == "delete_workspace_file":
+        file_path = str(payload.get("path") or "")
+        root = workspace_root.resolve()
+        candidate = root / file_path
+        resolved = candidate.resolve()
+        if resolved == root or root not in resolved.parents:
+            raise ValueError("path escapes workspace")
+        if not candidate.exists() and not candidate.is_symlink():
+            emit(request_id, "__result__", deleted=False)
+            return
+        if not candidate.is_symlink() and not resolved.is_file():
+            raise ValueError("workspace path is not a file")
+        candidate.unlink()
+        if file_path.startswith("outputs/"):
+            manifest = root / "outputs" / ".manifest.json"
+            try:
+                records = json.loads(manifest.read_text(encoding="utf-8"))
+                if isinstance(records, list):
+                    output_path = file_path.removeprefix("outputs/")
+                    records = [item for item in records if not isinstance(item, dict) or item.get("path") != output_path]
+                    manifest.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+        emit(request_id, "__result__", deleted=True)
+        return
     if operation == "list_workspace_files":
         root = workspace_root
         scope = str(payload.get("scope") or "all")

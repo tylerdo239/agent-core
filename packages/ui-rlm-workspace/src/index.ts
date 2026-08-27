@@ -9,10 +9,8 @@
 import { Context } from '@deepseek-ai/cordis'
 import '@agent-core/ui-slots'
 import { WorkspaceHeaderPanel } from './WorkspaceHeaderPanel.tsx'
-import { SkillComposerExtra } from './SkillComposerExtra.tsx'
 
 export { WorkspaceHeaderPanel, type WorkspaceEntry, type WorkspaceHeaderPanelProps, type WorkspaceUploadState } from './WorkspaceHeaderPanel.tsx'
-export { SkillComposerExtra, type SkillComposerExtraProps, type SkillOption } from './SkillComposerExtra.tsx'
 
 export const inject = ['slots']
 
@@ -20,17 +18,18 @@ export const apply = (ctx: Context) => {
   // Coding rule A15 (giống ui-tool-web-search): disposer từ ctx.slots.register()
   // PHẢI bọc qua ctx.effect() — fiber này unmount thì entry tự rút, session
   // rlm tự rơi về fallback (không hiện gì), không crash trang.
+  //
+  // Follow-up (2026-08): SkillComposerExtra (dropdown chọn skill riêng, chỉ
+  // hiện qua slot 'session.chrome.composer' entryKey='rlm') đã bị XOÁ — chọn
+  // skill giờ nằm THẲNG trong Composer dùng chung (packages/ui-conversation,
+  // gõ "/" mở popup), áp dụng cho mọi driver thay vì chỉ rlm. Slot
+  // 'session.chrome.composer' (khai ở apps/web/src/client-context.ts) không
+  // còn registrant nào — vẫn giữ khai báo, chưa xoá, để chỗ cho UI-plugin
+  // khác trong tương lai nếu cần mở rộng riêng theo driver.
   ctx.effect(() => {
     return ctx.slots.register('session.chrome.header', {
       key: 'rlm',
       component: WorkspaceHeaderPanel,
-      registrant: 'ui-rlm-workspace',
-    })
-  })
-  ctx.effect(() => {
-    return ctx.slots.register('session.chrome.composer', {
-      key: 'rlm',
-      component: SkillComposerExtra,
       registrant: 'ui-rlm-workspace',
     })
   })

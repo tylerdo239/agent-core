@@ -11,7 +11,7 @@ function props(overrides: Partial<ProjectHubProps> = {}): ProjectHubProps {
     conversations: [], sources: [], outputs: [],
     onCreateProject: vi.fn(), onOpenProject: vi.fn(), onBack: vi.fn(),
     onStartConversation: vi.fn(), onOpenConversation: vi.fn(), onUpload: vi.fn(),
-    onDownloadSource: vi.fn(), onDownloadOutput: vi.fn(), onPromoteOutput: vi.fn(),
+    onDownloadSource: vi.fn(), onPreviewOutput: vi.fn(), onPromoteOutput: vi.fn(),
     ...overrides,
   }
 }
@@ -41,6 +41,7 @@ describe('ProjectHub', () => {
 
   it('separates session drafts from shared project outputs and promotes drafts explicitly', () => {
     const onPromoteOutput = vi.fn()
+    const onPreviewOutput = vi.fn()
     render(<ProjectHub {...props({
       activeProject: { id: 'p1', name: 'Revenue 2026', createdAt: 1, updatedAt: 2 },
       outputs: [
@@ -48,11 +49,27 @@ describe('ProjectHub', () => {
         { path: 'draft-chart.png', size: 1024, mtime: '', scope: 'session', sessionId: 's1', conversationTitle: 'Phân tích churn' },
       ],
       onPromoteOutput,
+      onPreviewOutput,
     })} />)
     fireEvent.click(screen.getByText('Output', { exact: false }))
     expect(screen.getByText('Output dự án')).toBeTruthy()
     expect(screen.getByText('Kết quả từ các đoạn chat')).toBeTruthy()
+    fireEvent.click(screen.getByText('final-report.pdf'))
+    expect(onPreviewOutput).toHaveBeenCalledWith(expect.objectContaining({ path: 'final-report.pdf', scope: 'project' }))
     fireEvent.click(screen.getByText('Đưa vào dự án'))
     expect(onPromoteOutput).toHaveBeenCalledWith(expect.objectContaining({ path: 'draft-chart.png', sessionId: 's1' }))
+  })
+
+  it('gửi nhiều source trong một lần chọn file', () => {
+    const onUpload = vi.fn()
+    const { container } = render(<ProjectHub {...props({
+      activeProject: { id: 'p1', name: 'Revenue 2026', createdAt: 1, updatedAt: 2 },
+      onUpload,
+    })} />)
+    fireEvent.click(screen.getByText('Nguồn', { exact: false }))
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement
+    const files = [new File(['a'], 'sales.csv'), new File(['b'], 'cost.csv')]
+    fireEvent.change(input, { target: { files } })
+    expect(onUpload).toHaveBeenCalledWith(files)
   })
 })
