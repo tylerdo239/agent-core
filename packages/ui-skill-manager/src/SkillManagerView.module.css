@@ -1,0 +1,102 @@
+/* Cùng ngôn ngữ thị giác với packages/ui-projects/src/ProjectHub.module.css
+   (pill button/search, list row border-bottom, hero header) — panel này
+   thay chỗ khung chat giống hệt ProjectHub, không phải Modal. */
+.hub { width: 100%; max-width: 760px; margin: 0 auto; padding: 34px 18px 56px; color: var(--alias-label-primary); }
+
+.hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 10px; }
+.hero h1 { margin: 0; font-size: 30px; letter-spacing: -0.03em; }
+.eyebrow { margin: 0 0 5px; color: var(--alias-label-secondary); font-size: 13px; }
+
+.hint { margin: 0 0 28px; color: var(--alias-label-secondary); font-size: 13px; max-width: 60ch; }
+
+.error { margin: 0 0 16px; color: var(--alias-state-error); font-size: var(--alias-font-size-body-sm); }
+
+.primary, .secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 17px;
+  border-radius: 999px;
+  border: 1px solid var(--alias-border-default);
+  font-weight: 650;
+  cursor: pointer;
+}
+.primary { background: var(--alias-label-primary); color: var(--alias-bg-base); border-color: var(--alias-label-primary); }
+.primary:disabled { opacity: 0.45; cursor: default; }
+.secondary { background: transparent; color: inherit; }
+
+.list { display: flex; flex-direction: column; }
+
+.row { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--alias-border-default); }
+
+.rowButton {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  padding: 15px 8px;
+  font: inherit;
+  color: inherit;
+}
+.rowButton:hover { background: var(--alias-bg-subtle); }
+
+.skillIcon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border: 1px solid var(--alias-border-default);
+  border-radius: 10px;
+  background: var(--alias-bg-subtle);
+}
+
+.rowText { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.rowName { font-weight: 650; }
+.rowDescription {
+  color: var(--alias-label-secondary);
+  font-size: var(--alias-font-size-body-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deleteBtn {
+  flex-shrink: 0;
+  min-height: 34px;
+  padding: 0 14px;
+  margin-right: 6px;
+  border: 1px solid var(--alias-border-default);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.deleteBtn:hover { background: var(--alias-bg-subtle); }
+.deleteBtn:disabled { opacity: 0.45; cursor: default; }
+
+.empty { padding: 44px 12px; text-align: center; color: var(--alias-label-secondary); }
+
+.detailHeader { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+.detailHeader h1 { margin: 0; font-size: 24px; letter-spacing: -0.02em; }
+.back { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 999px; background: transparent; cursor: pointer; }
+.back:hover { background: var(--alias-bg-subtle); }
+
+.form { display: flex; flex-direction: column; gap: var(--alias-space-sm); }
+
+.fileRow { display: flex; align-items: center; gap: var(--alias-space-sm); }
+.fileInput { font-size: var(--alias-font-size-caption); }
+.fileHint { color: var(--alias-label-secondary); font-size: var(--alias-font-size-caption); }
+
+.formActions { display: flex; justify-content: flex-end; gap: var(--alias-space-xs); margin-top: 8px; }
+
+@media (max-width: 720px) {
+  .hero { align-items: stretch; flex-direction: column; }
+}

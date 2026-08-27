@@ -53,6 +53,7 @@ import '../../../seams/auth.ts'
 import { AuthIdentity } from '../../../seams/auth.ts'
 import { LoopStep, LoopTurnResult, Session } from '../../../seams/loop.ts'
 import '../../../seams/skill.ts'
+import '../../../seams/custom-skills.ts'
 import '../../../seams/workspace.ts'
 import '../../../seams/jobs.ts'
 import '../../../seams/artifacts.ts'
@@ -74,7 +75,7 @@ export namespace ApiRest {
   }
 }
 
-export const inject = ['sessions', 'projects', 'agent', 'storage', 'auth', 'permission', 'skills', 'workspace', 'pluginInventory', 'pluginConfig', 'tools']
+export const inject = ['sessions', 'projects', 'agent', 'storage', 'auth', 'permission', 'skills', 'customSkills', 'workspace', 'pluginInventory', 'pluginConfig', 'tools']
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024 // 1 MiB
 const FILE_MAX_BODY_BYTES = 70 * 1024 * 1024 // 70 MiB for uploads
@@ -604,9 +605,67 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse, m
 
   if (req.method === 'GET' && pathname === '/skills') {
     const skills = ctx.skills
-      .list({ userInvocableOnly: true, topLevelOnly: true })
+      .list({ userInvocableOnly: true, topLevelOnly: true, visibleTo: identity!.userId })
       .map(({ name, description }) => ({ name, description }))
     return sendJson(res, 200, { skills })
+  }
+
+  // docs: docs/agent-core-user-custom-skill-plan.md — skill riêng do user tự
+  // thêm (ctx.customSkills, Postgres, không cần restart). Sở hữu chính mình:
+  // check identity.userId === owner trên URL, KHÔNG dùng ctx.permission (khác
+  // /plugin-settings — đó là cấu hình DÙNG CHUNG toàn hệ thống, đây là dữ
+  // liệu CỦA CHÍNH caller, cùng kiểu ownership-check như /sessions//projects).
+  if (req.method === 'GET' && pathname === '/custom-skills') {
+    return sendJson(res, 200, { skills: await ctx.customSkills.listByOwner(identity!.userId) })
+  }
+
+  if (req.method === 'POST' && pathname === '/custom-skills') {
+    const body = await readJsonBody(req, maxBodyBytes)
+    if (typeof body.name !== 'string' || typeof body.description !== 'string' || typeof body.instructions !== 'string' || !Array.isArray(body.triggers)) {
+      return sendJson(res, 400, { error: '"name"/"description"/"instructions" (string) và "triggers" (string[]) là bắt buộc' })
+    }
+    const record = await ctx.customSkills.create(identity!.userId, {
+      name: body.name,
+      description: body.description,
+      instructions: body.instructions,
+      triggers: body.triggers,
+    })
+    return sendJson(res, 201, record)
+  }
+
+  const customSkillMatch = pathname.match(/^\/custom-skills\/([^/]+)$/)
+  if (req.method === 'PUT' && customSkillMatch) {
+    const body = await readJsonBody(req, maxBodyBytes)
+    if (typeof body.description !== 'string' || typeof body.instructions !== 'string' || !Array.isArray(body.triggers)) {
+      return sendJson(res, 400, { error: '"description"/"instructions" (string) và "triggers" (string[]) là bắt buộc' })
+    }
+    const record = await ctx.customSkills.update(identity!.userId, customSkillMatch[1], {
+      name: customSkillMatch[1],
+      description: body.description,
+      instructions: body.instructions,
+      triggers: body.triggers,
+    })
+    return sendJson(res, 200, record)
+  }
+  if (req.method === 'DELETE' && customSkillMatch) {
+    await ctx.customSkills.delete(identity!.userId, customSkillMatch[1])
+    res.writeHead(204)
+    return res.end()
+  }
+
+  // Admin moderation — action riêng 'admin:skills:manage', cùng pattern
+  // admin:plugins:configure. Không dùng cho CRUD-own ở trên (đó là ownership
+  // check thường, không phải RBAC).
+  if (req.method === 'GET' && pathname === '/admin/custom-skills') {
+    if (!(await ctx.permission.check(identity!.role, 'admin:skills:manage'))) return sendJson(res, 403, { error: 'forbidden' })
+    return sendJson(res, 200, { skills: await ctx.customSkills.listAll() })
+  }
+  const adminCustomSkillMatch = pathname.match(/^\/admin\/custom-skills\/([^/]+)\/([^/]+)$/)
+  if (req.method === 'DELETE' && adminCustomSkillMatch) {
+    if (!(await ctx.permission.check(identity!.role, 'admin:skills:manage'))) return sendJson(res, 403, { error: 'forbidden' })
+    await ctx.customSkills.delete(decodeURIComponent(adminCustomSkillMatch[1]), decodeURIComponent(adminCustomSkillMatch[2]))
+    res.writeHead(204)
+    return res.end()
   }
 
   if (req.method === 'POST' && pathname === '/sessions') {

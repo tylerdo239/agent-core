@@ -72,6 +72,50 @@ describe('skill-registry — match()', () => {
   })
 })
 
+describe('skill-registry — ownership (skill riêng do user tự thêm)', () => {
+  it('2 user khác nhau đặt trùng tên skill -> không ghi đè lẫn nhau (composite key)', async () => {
+    const root = new Context()
+    root.plugin(skillRegistry)
+    await settle()
+
+    root.skills.upsert({ name: 'research', description: 'của A', triggers: [], instructions: 'A', ownerId: 'user-a' })
+    root.skills.upsert({ name: 'research', description: 'của B', triggers: [], instructions: 'B', ownerId: 'user-b' })
+
+    expect(root.skills.get('research', 'user-a')?.instructions).toBe('A')
+    expect(root.skills.get('research', 'user-b')?.instructions).toBe('B')
+  })
+
+  it('list()/get()/match() ẩn skill riêng của người khác, luôn thấy skill global', async () => {
+    const root = new Context()
+    root.plugin(skillRegistry)
+    await settle()
+
+    root.skills.register({ name: 'global-one', description: '', triggers: [], instructions: 'g' })
+    root.skills.upsert({ name: 'private-a', description: '', triggers: ['sờ dít'], instructions: 'p', ownerId: 'user-a', userInvocable: true })
+
+    expect(root.skills.list({ visibleTo: 'user-b' }).map((s) => s.name).sort()).toEqual(['global-one'])
+    expect(root.skills.list({ visibleTo: 'user-a' }).map((s) => s.name).sort()).toEqual(['global-one', 'private-a'])
+    expect(root.skills.get('private-a', 'user-b')).toBeUndefined()
+    expect(root.skills.get('private-a', 'user-a')?.name).toBe('private-a')
+    expect(root.skills.match('sờ dít', 'user-b')).toEqual([])
+    expect(root.skills.match('sờ dít', 'user-a').map((s) => s.name)).toEqual(['private-a'])
+  })
+
+  it('upsert() ghi đè đúng bản của cùng owner (edit), remove() xoá đúng owner', async () => {
+    const root = new Context()
+    root.plugin(skillRegistry)
+    await settle()
+
+    root.skills.upsert({ name: 'edit-me', description: 'v1', triggers: [], instructions: 'v1', ownerId: 'user-a' })
+    root.skills.upsert({ name: 'edit-me', description: 'v2', triggers: [], instructions: 'v2', ownerId: 'user-a' })
+    expect(root.skills.get('edit-me', 'user-a')?.instructions).toBe('v2')
+
+    expect(root.skills.remove('edit-me', 'user-a')).toBe(true)
+    expect(root.skills.get('edit-me', 'user-a')).toBeUndefined()
+    expect(root.skills.remove('edit-me', 'user-a')).toBe(false)
+  })
+})
+
 describe('spatial composability — skill ↔ skill-registry', () => {
   it('skill tự suspend khi skill-registry bị gỡ, tự resume khi quay lại', async () => {
     const root = new Context()

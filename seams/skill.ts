@@ -25,6 +25,8 @@ export interface SkillDefinition {
   userInvocable?: boolean
   /** Resource thuộc package; resource không bị đăng ký giả thành skill con. */
   resources?: SkillResource[]
+  /** undefined = skill global (built-in, mọi user thấy). Có giá trị = skill riêng do 1 user tự thêm — chỉ user đó (và admin) thấy được, xem SkillListOptions.visibleTo. */
+  ownerId?: string
 }
 
 export type SkillResourceKind = 'asset' | 'reference' | 'checklist' | 'script' | 'template'
@@ -44,6 +46,8 @@ export type SkillResourceReader = (path: string) => Promise<SkillResourceContent
 export interface SkillListOptions {
   userInvocableOnly?: boolean
   topLevelOnly?: boolean
+  /** userId của caller. Khi set: ẩn skill có `ownerId` khác giá trị này (skill global — `ownerId` undefined — luôn hiện). Không set = chỉ thấy skill global. */
+  visibleTo?: string
 }
 
 export abstract class SkillRegistryService extends Service {
@@ -52,15 +56,26 @@ export abstract class SkillRegistryService extends Service {
   }
 
   /**
-   * Đăng ký 1 skill. Cùng ràng buộc effect-scoping như
+   * Đăng ký 1 skill BUILD-TIME (global, `ownerId` không được set ở đây — dùng
+   * `upsert()` cho skill có chủ). Cùng ràng buộc effect-scoping như
    * ToolRegistryService.add/SubagentRegistryService.register — implementation
    * PHẢI gắn disposer qua `ctx.effect()` để tự gỡ đúng fiber gọi.
    */
   abstract register(def: SkillDefinition, readResource?: SkillResourceReader): void
-  abstract get(name: string): SkillDefinition | undefined
-  abstract has(name: string): boolean
+  /**
+   * Thêm/ghi đè 1 skill có `ownerId` — KHÔNG effect-scoped (vòng đời do caller
+   * tự quản lý qua CRUD riêng, vd. ctx.customSkills — xem
+   * seams/custom-skills.ts), khác hẳn `register()`. Dùng khi caller không
+   * chạy trong 1 fiber plugin sống lâu dài (vd. handler REST). Ghi đè nếu
+   * cùng `(ownerId, name)` đã tồn tại (edit).
+   */
+  abstract upsert(def: SkillDefinition, readResource?: SkillResourceReader): void
+  /** Gỡ 1 skill có chủ theo đúng `(ownerId, name)`. Trả `true` nếu đã xoá, `false` nếu không tìm thấy. Không dùng để gỡ skill global (không có ownerId). */
+  abstract remove(name: string, ownerId: string): boolean
+  abstract get(name: string, visibleTo?: string): SkillDefinition | undefined
+  abstract has(name: string, ownerId?: string): boolean
   abstract list(options?: SkillListOptions): SkillDefinition[]
   /** Trả về các skill có ≥1 trigger khớp userMessage; semantic discovery do model + tool `skill` thực hiện. */
-  abstract match(userMessage: string): SkillDefinition[]
-  abstract readResource(skillName: string, resourcePath: string): Promise<SkillResourceContent>
+  abstract match(userMessage: string, visibleTo?: string): SkillDefinition[]
+  abstract readResource(skillName: string, resourcePath: string, visibleTo?: string): Promise<SkillResourceContent>
 }

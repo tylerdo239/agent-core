@@ -42,7 +42,7 @@
 // biệt rõ với nút cũ, nhưng nút cũ đã xoá hẳn nên không còn nhập nhằng —
 // rút gọn lại "Cấu hình" cho gọn.
 import { useState } from 'react'
-import { Database, FolderKanban, KeyRound, LogOut, PanelLeftClose, PanelLeftOpen, Puzzle, Search, Users } from 'lucide-react'
+import { Database, FolderKanban, KeyRound, LogOut, PanelLeftClose, PanelLeftOpen, Puzzle, Search, Sparkles, Users } from 'lucide-react'
 import { Button, Tooltip } from '@agent-core/ui-primitives'
 import { loadSidebarCollapsed, saveSidebarCollapsed } from './sidebarState.ts'
 import { groupSessionsByDate } from './groupSessionsByDate.ts'
@@ -71,6 +71,11 @@ export interface SidebarProps {
    * serperApiKey), admin-only, xem packages/ui-plugin-settings. Thay thế nút
    * "Cấu hình" restUrl/wsUrl cũ (tên nút trùng nhưng nội dung khác hẳn). */
   onOpenPluginSettings: () => void
+  /** Mở panel "Kỹ năng" — skill riêng do CHÍNH user tự thêm (upload file
+   * .md), quản lý qua packages/ui-skill-manager. KHÔNG admin-only (khác 3
+   * trigger phía trên) — tính năng cá nhân, mọi user đều thấy. Xem
+   * docs/agent-core-user-custom-skill-plan.md. */
+  onOpenSkillManager: () => void
   currentUsername: string
   onLogout: () => void
 }
@@ -85,6 +90,7 @@ export function Sidebar({
   onOpenAdminPanel,
   onOpenPluginInventory,
   onOpenPluginSettings,
+  onOpenSkillManager,
   currentUsername,
   onLogout,
 }: SidebarProps) {
@@ -164,6 +170,30 @@ export function Sidebar({
         <button type="button" onClick={onNewDataSession} className={styles.settingsTrigger}>
           <FolderKanban size={16} aria-hidden="true" />
           <span className={styles.settingsLabel}>Phân tích dữ liệu</span>
+        </button>
+      )}
+
+      {/* Skill riêng do CHÍNH user tự thêm — entry point CÙNG CẤP với "Phân
+          tích dữ liệu" ở trên (KHÔNG đặt ở footer cùng 3 trigger admin-only
+          phía dưới: đây là tính năng cá nhân của MỌI user, không phải cấu
+          hình hệ thống). Mở panel SkillManagerView thế chỗ khung chat, cùng
+          cơ chế "Phân tích dữ liệu" mở ProjectHub — KHÔNG phải Modal, xem
+          docs/agent-core-user-custom-skill-plan.md. */}
+      {collapsed ? (
+        <Tooltip label="Kỹ năng">
+          <button
+            type="button"
+            onClick={onOpenSkillManager}
+            className={`${styles.settingsTrigger} ${styles.settingsTriggerCollapsed}`}
+            aria-label="Kỹ năng"
+          >
+            <Sparkles size={16} aria-hidden="true" />
+          </button>
+        </Tooltip>
+      ) : (
+        <button type="button" onClick={onOpenSkillManager} className={styles.settingsTrigger}>
+          <Sparkles size={16} aria-hidden="true" />
+          <span className={styles.settingsLabel}>Kỹ năng</span>
         </button>
       )}
 

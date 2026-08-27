@@ -51,7 +51,7 @@ export const apply = (ctx: Context) => {
       // Inject ngày hiện tại (BUG temporal-grounding, xem src/environment-note.ts):
       // model không biết hôm nay là ngày nào nếu harness không nói.
       const frameworkPrompt = injectEnvironmentNote(prompts.render({ driver: 'default', sessionId: session.id }), 'end')
-      const activeSkills = resolveActiveSkills(runCtx.skills, userMessage, input.selectedSkill)
+      const activeSkills = resolveActiveSkills(runCtx.skills, userMessage, input.selectedSkill, session.ownerId)
       // Memory integration: `ctx.memory` KHÔNG nằm trong `inject` (seam optional
       // -- chỉ mount khi MEMORY_CORE_URL được cấu hình, xem src/serve.ts).
       // Dùng `ctx.get('memory')` (API chính thức Cordis, đọc service KHÔNG
@@ -70,7 +70,7 @@ export const apply = (ctx: Context) => {
       const memoryNotes = recalled.map((m) => `Đã ghi nhớ trước đó: ${m.text}`)
       const turnNotes = () => [
         skillCatalogGuidance(
-          runCtx.skills.list({ topLevelOnly: true }),
+          runCtx.skills.list({ topLevelOnly: true, visibleTo: session.ownerId }),
           input.selectedSkill,
           runCtx.tools.has('skill'),
         ),

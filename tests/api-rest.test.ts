@@ -23,6 +23,7 @@ import * as projectRegistry from '../bundles/providers/project-registry/index.ts
 import * as authUsers from '../bundles/providers/auth-users/index.ts'
 import * as pluginInventory from '../bundles/providers/plugin-inventory/index.ts'
 import * as pluginConfigPostgres from '../bundles/providers/plugin-config-postgres/index.ts'
+import * as customSkillStorePostgres from '../bundles/providers/custom-skill-store-postgres/index.ts'
 import * as apiRest from '../bundles/adapters/api-rest/index.ts'
 import * as promptRegistry from '../bundles/providers/prompt-registry/index.ts'
 import * as promptDefaultAgent from '../bundles/prompts/prompt-default-agent/index.ts'
@@ -204,6 +205,7 @@ async function bootApp(databaseUrl: string, port = 0, extraConfig: Partial<apiRe
   root.plugin(authUsers, { connectionString: databaseUrl })
   root.plugin(pluginInventory, [{ name: 'tool-registry', category: 'provider', fiber: { state: 2 } }])
   root.plugin(pluginConfigPostgres, { connectionString: databaseUrl })
+  root.plugin(customSkillStorePostgres, { connectionString: databaseUrl })
   root.plugin(fakeWorkspace)
   const config: apiRest.ApiRest.Config = { port, ...extraConfig }
   const fiber = root.plugin(apiRest, config)
@@ -248,6 +250,7 @@ async function bootAppForStreaming(databaseUrl: string) {
   root.plugin(authUsers, { connectionString: databaseUrl })
   root.plugin(pluginInventory, [{ name: 'tool-registry', category: 'provider', fiber: { state: 2 } }])
   root.plugin(pluginConfigPostgres, { connectionString: databaseUrl })
+  root.plugin(customSkillStorePostgres, { connectionString: databaseUrl })
   root.plugin(fakeWorkspace)
   const config: apiRest.ApiRest.Config = { port: 0 }
   const fiber = root.plugin(apiRest, config)

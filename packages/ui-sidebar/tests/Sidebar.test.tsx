@@ -44,6 +44,7 @@ function renderSidebar(overrides: Partial<ComponentProps<typeof Sidebar>> = {}) 
       onOpenAdminPanel={vi.fn()}
       onOpenPluginInventory={vi.fn()}
       onOpenPluginSettings={vi.fn()}
+      onOpenSkillManager={vi.fn()}
       currentUsername="alice"
       onLogout={vi.fn()}
       {...overrides}
@@ -130,6 +131,16 @@ describe('Sidebar — module auth: username/đăng xuất/admin panel', () => {
     renderSidebar({ isAdmin: true, onOpenPluginSettings })
     fireEvent.click(screen.getByText('Cấu hình', { selector: 'span' }))
     expect(onOpenPluginSettings).toHaveBeenCalled()
+  })
+
+  // Skill riêng do user tự thêm (docs/agent-core-user-custom-skill-plan.md)
+  // — KHÁC 3 trigger admin-only phía trên: tính năng cá nhân, hiện với MỌI
+  // user, kể cả isAdmin=false.
+  it('isAdmin=false -> VẪN hiện trigger "Kỹ năng", bấm gọi onOpenSkillManager', () => {
+    const onOpenSkillManager = vi.fn()
+    renderSidebar({ isAdmin: false, onOpenSkillManager })
+    fireEvent.click(screen.getByText('Kỹ năng', { selector: 'span' }))
+    expect(onOpenSkillManager).toHaveBeenCalled()
   })
 })
 

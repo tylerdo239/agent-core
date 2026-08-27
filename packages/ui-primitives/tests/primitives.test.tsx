@@ -13,6 +13,7 @@ import { useToasts, ToastContainer } from '../src/Toast.tsx'
 import { SourceList } from '../src/SourceList.tsx'
 import { Skeleton } from '../src/Skeleton.tsx'
 import { TextField } from '../src/TextField.tsx'
+import { Textarea } from '../src/Textarea.tsx'
 import { Select } from '../src/Select.tsx'
 
 // jsdom không implement HTMLDialogElement.showModal()/close() -- cùng giới
@@ -260,6 +261,21 @@ describe('TextField', () => {
   it('không có error -> KHÔNG có aria-invalid', () => {
     render(<TextField label="Mật khẩu" value="" onChange={vi.fn()} />)
     expect(screen.getByLabelText('Mật khẩu').getAttribute('aria-invalid')).toBeNull()
+  })
+})
+
+describe('Textarea', () => {
+  it('gõ vào textarea -> onChange nhận đúng giá trị', () => {
+    const onChange = vi.fn()
+    render(<Textarea label="Nội dung" value="" onChange={onChange} />)
+    fireEvent.change(screen.getByLabelText('Nội dung'), { target: { value: '# Hello' } })
+    expect(onChange).toHaveBeenCalledWith('# Hello')
+  })
+
+  it('có error -> hiện dòng lỗi + aria-invalid', () => {
+    render(<Textarea label="Nội dung" value="" onChange={vi.fn()} error="không được rỗng" />)
+    expect(screen.getByText('không được rỗng')).toBeTruthy()
+    expect(screen.getByLabelText('Nội dung').getAttribute('aria-invalid')).toBe('true')
   })
 })
 

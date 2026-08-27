@@ -12,18 +12,19 @@ export function resolveActiveSkills(
   registry: SkillRegistryService,
   message: string,
   selectedSkill?: string,
+  visibleTo?: string,
 ): ActiveSkill[] {
   if (selectedSkill) {
-    const selected = registry.get(selectedSkill)
+    const selected = registry.get(selectedSkill, visibleTo)
     if (!selected || !selected.userInvocable) {
       const available = registry
-        .list({ userInvocableOnly: true, topLevelOnly: true })
+        .list({ userInvocableOnly: true, topLevelOnly: true, visibleTo })
         .map((skill) => skill.name)
       throw new Error(`skill "${selectedSkill}" is not user-invocable; available: ${available.join(', ')}`)
     }
     return [{ skill: selected, source: 'selected' }]
   }
-  return registry.match(message).map((skill) => ({ skill, source: 'trigger' }))
+  return registry.match(message, visibleTo).map((skill) => ({ skill, source: 'trigger' }))
 }
 
 /**

@@ -47,6 +47,7 @@ import { cacheSessionTitle, fetchSessionHistory, Sidebar, type SessionSummary } 
 import { Composer, EmptyState, GenericToolCard, HumanDecision, MessageBubble, StreamingRow, ToolRow } from '@agent-core/ui-conversation'
 import { loadSettings, type Settings } from '@agent-core/ui-settings-general'
 import { PluginSettingsPanel } from '@agent-core/ui-plugin-settings'
+import { SkillManagerView } from '@agent-core/ui-skill-manager'
 import { ProjectHub, type ProjectOutputFile, type ProjectSummary } from '@agent-core/ui-projects'
 import type { WorkspaceHeaderPanelProps } from '@agent-core/ui-rlm-workspace'
 import { createClientContext } from './client-context.ts'
@@ -255,6 +256,12 @@ export function App() {
   // sang panel cấu hình PLUGIN (vd. serperApiKey), admin-only, lưu DB thay
   // vì .env — xem packages/ui-plugin-settings.
   const [pluginSettingsOpen, setPluginSettingsOpen] = useState(false)
+  // Nút "Kỹ năng" — skill riêng do CHÍNH user tự thêm, KHÔNG admin-only
+  // (khác pluginSettingsOpen ở trên). CÙNG CƠ CHẾ projectView bên dưới: panel
+  // thế chỗ khung chat trong AppFrame (KHÔNG phải Modal — sửa lại theo yêu
+  // cầu user, bản đầu dùng Modal là sai). Xem
+  // docs/agent-core-user-custom-skill-plan.md.
+  const [skillManagerView, setSkillManagerView] = useState(false)
   // Module auth (Phase 24): server GET /sessions là nguồn sự thật, KHÔNG
   // phải localStorage nữa (loadSessionHistory() cũ) — xem
   // packages/ui-sidebar/src/sessionHistory.ts.
@@ -854,6 +861,7 @@ export function App() {
     pendingSessionDriverRef.current = driver
     setStatus('connected')
     setProjectView(false)
+    setSkillManagerView(false)
     if (driver !== 'rlm') setActiveProjectId(null)
   }
 
@@ -876,6 +884,7 @@ export function App() {
     wsRef.current?.close()
     wsRef.current = null
     setProjectView(true)
+    setSkillManagerView(false)
     setActiveProjectId(projectId ?? null)
     setSessionId(null)
     setItems([])
@@ -887,6 +896,37 @@ export function App() {
     setUploadState(null)
     void loadProjects()
     if (projectId) void refreshWorkspaceFiles('', projectId)
+  }
+
+  // Kỹ năng — CÙNG PATTERN openProjects() ở trên (panel thế chỗ khung chat),
+  // nhưng KHÔNG đụng session/workspace/websocket đang chạy: quản lý skill là
+  // việc trực giao với session đang mở, user quay lại đúng session cũ khi
+  // thoát (khác Projects — vốn LÀ 1 chế độ chat khác hẳn, driver 'rlm').
+  function openSkillManager() {
+    setSkillManagerView(true)
+    setProjectView(false)
+  }
+
+  // Gap thật phát hiện: `skills` (dropdown "Chọn skill" trong Composer) chỉ
+  // fetch ĐÚNG 1 LẦN lúc initSession() (mount/đăng nhập) — tạo/sửa/xoá skill
+  // riêng trong SkillManagerView không tự cập nhật state này, dropdown sẽ
+  // "không thấy" skill vừa thêm cho tới khi reload trang. Trigger tự động
+  // khớp từ khoá khi CHAT (server đọc thẳng ctx.skills mỗi turn) KHÔNG bị ảnh
+  // hưởng — chỉ đường lựa chọn TƯỜNG MINH qua dropdown mới cần refetch này.
+  // Gọi lại sau mỗi lần tạo/sửa/xoá thành công (SkillManagerView.onChanged),
+  // không đợi tới lúc thoát panel.
+  function refreshSkills() {
+    if (!auth) return
+    fetch(`${settings.restUrl}/skills`, { headers: { authorization: `Bearer ${auth.token}` } })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        return res.json() as Promise<{ skills: SkillOption[] }>
+      })
+      .then((payload) => setSkills(payload.skills))
+      .catch(() => {
+        // best-effort — dropdown giữ nguyên danh sách cũ nếu refetch lỗi,
+        // không phải lỗi nghiêm trọng (khác initSession(), không đổi `status`).
+      })
   }
 
   async function createProject(name: string) {
@@ -1073,6 +1113,7 @@ export function App() {
     const driver = selected?.driver ?? 'default'
     const projectId = selected?.projectId
     setProjectView(false)
+    setSkillManagerView(false)
     setActiveProjectId(projectId ?? null)
     setSessionDriver(driver)
     if (driver === 'rlm') refreshWorkspaceFiles(id, projectId)
@@ -1330,6 +1371,7 @@ export function App() {
             onOpenAdminPanel={() => setAdminPanelOpen(true)}
             onOpenPluginInventory={() => setPluginInventoryOpen(true)}
             onOpenPluginSettings={() => setPluginSettingsOpen(true)}
+            onOpenSkillManager={openSkillManager}
             currentUsername={auth.user.username}
             onLogout={handleLogout}
           />
@@ -1346,7 +1388,7 @@ export function App() {
         // báo lại. Dùng `subHeader` (mới thêm vào AppFrame cho đúng việc
         // này) thay vì `header` — xuống hàng riêng, tách bạch khỏi tiêu đề.
         subHeader={
-          !projectView && clientCtx && (
+          !projectView && !skillManagerView && clientCtx && (
             <RenderSlot<WorkspaceHeaderPanelProps>
               ctx={clientCtx}
               name="session.chrome.header"
@@ -1375,7 +1417,7 @@ export function App() {
         // dropdown riêng chỉ hiện cho entryKey='rlm' cũ) vốn khiến chat thường
         // (driver 'default') không có cách nào chọn skill dù backend đã hỗ trợ
         // sẵn (loop-default gọi resolveActiveSkills(..., input.selectedSkill)).
-        footer={projectView ? null : (
+        footer={projectView || skillManagerView ? null : (
           <Composer
             value={composerText}
             onChange={setComposerText}
@@ -1387,7 +1429,9 @@ export function App() {
           />
         )}
       >
-        {projectView ? (
+        {skillManagerView ? (
+          <SkillManagerView restUrl={settings.restUrl} token={auth.token} onChanged={refreshSkills} />
+        ) : projectView ? (
           <ProjectHub
             key={activeProjectId ?? 'project-list'}
             projects={projects}

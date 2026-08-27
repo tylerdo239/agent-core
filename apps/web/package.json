@@ -15,6 +15,7 @@
     "@agent-core/ui-rlm-workspace": "*",
     "@agent-core/ui-settings-general": "*",
     "@agent-core/ui-sidebar": "*",
+    "@agent-core/ui-skill-manager": "*",
     "@agent-core/ui-slots": "*",
     "@agent-core/ui-theme": "*",
     "@agent-core/ui-tool-web-search": "*",

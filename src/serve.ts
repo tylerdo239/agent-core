@@ -86,6 +86,7 @@ import * as sessionRegistry from '../bundles/providers/session-registry/index.ts
 import * as projectRegistry from '../bundles/providers/project-registry/index.ts'
 import * as authUsers from '../bundles/providers/auth-users/index.ts'
 import * as pluginConfigPostgres from '../bundles/providers/plugin-config-postgres/index.ts'
+import * as customSkillStorePostgres from '../bundles/providers/custom-skill-store-postgres/index.ts'
 import * as memoryTencentdb from '../bundles/providers/memory-tencentdb/index.ts'
 import * as apiRest from '../bundles/adapters/api-rest/index.ts'
 import * as apiGrpc from '../bundles/adapters/api-grpc/index.ts'
@@ -318,7 +319,7 @@ async function main() {
   // — tách riêng action view vs configure dù cùng role, để sau này có thể
   // cấp lẻ (vd. 1 role chỉ xem, không sửa được secret).
   mount('permission-rbac', 'provider', permissionRbac, {
-    rules: { 'web-search': ['search'], admin: ['admin:users:manage', 'admin:plugins:view', 'admin:plugins:configure'] },
+    rules: { 'web-search': ['search'], admin: ['admin:users:manage', 'admin:plugins:view', 'admin:plugins:configure', 'admin:skills:manage'] },
   })
   mount('llm-qwen', 'provider', llmQwen, {
     apiKey: openaiApiKey,
@@ -393,6 +394,10 @@ async function main() {
   // restart), vd. serperApiKey cho tool-web-search. Cùng DATABASE_URL đã
   // bắt buộc cho ctx.auth, không thêm biến môi trường bắt buộc mới.
   mount('plugin-config-postgres', 'provider', pluginConfigPostgres, { connectionString: databaseUrl })
+  // ctx.customSkills — skill riêng do user tự thêm qua UI (nút "Kỹ năng"),
+  // Postgres (cùng DATABASE_URL), warm vào ctx.skills lúc boot + đồng bộ
+  // ngay mỗi lần CRUD, không cần restart. Xem docs/agent-core-user-custom-skill-plan.md.
+  mount('custom-skill-store-postgres', 'provider', customSkillStorePostgres, { connectionString: databaseUrl })
 
   // Module memory (ctx.memory, TÙY CHỌN) — xem chú thích tại
   // tryBootstrapMemoryCoreAdmin ở trên. Không set MEMORY_CORE_API_KEY = bỏ

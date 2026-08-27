@@ -174,8 +174,8 @@ export const apply = (ctx: Context) => {
       // Explicit user selection wins. Without one, a precise trigger is the
       // deterministic fast path; semantic discovery remains available through
       // the model-facing `skill` tool and catalog in the prepared context.
-      const activeSkills = resolveActiveSkills(runCtx.skills, input.message, input.selectedSkill)
-      const skillCatalog = runCtx.skills.list({ topLevelOnly: true })
+      const activeSkills = resolveActiveSkills(runCtx.skills, input.message, input.selectedSkill, session.ownerId)
+      const skillCatalog = runCtx.skills.list({ topLevelOnly: true, visibleTo: session.ownerId })
       let active = activeSkills[0]
       if (!active) {
         const selector = runCtx.get('skillSelection')
