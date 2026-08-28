@@ -231,10 +231,7 @@ export class LlmQwen extends LlmService {
     // template's rule on simplifications (section 4).
     const rawCall = message?.tool_calls?.[0];
     const toolCall: LlmToolCall | undefined = rawCall
-      ? {
-          name: rawCall.function.name,
-          args: parseArgs(rawCall.function.arguments),
-        }
+      ? repairToolCall(rawCall.function.name, rawCall.function.arguments)
       : undefined;
 
     return {
@@ -356,9 +353,8 @@ export class LlmQwen extends LlmService {
           if (toolCallDelta?.function?.arguments) toolCallArgsRaw += toolCallDelta.function.arguments;
         }
       }
-
       const toolCall: LlmToolCall | undefined = toolCallName
-        ? { name: toolCallName, args: parseArgs(toolCallArgsRaw) }
+        ? repairToolCall(toolCallName, toolCallArgsRaw)
         : undefined;
       return { content, toolCall, model: responseModel ?? model, usage };
     } catch (error) {
@@ -392,6 +388,53 @@ function parseArgs(raw: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+// Gap thật phát hiện qua log production + hunt trực tiếp trên hệ thống
+// đang chạy (không phải giả thuyết): model đôi lúc nhét CẢ tên tool + JSON
+// args + "đuôi rác" kiểu leak ChatML ("<tool_call>"/"<parameter>") vào field
+// `name` -- ví dụ thật:
+//   name = 'web_search({"query":"...","limit":10})]\n</tool_call'
+// Hậu quả: tool KHÔNG chạy (TOOL_NOT_FOUND), search bị bỏ lỡ hoàn toàn lượt
+// đó -- verify log thật: model luôn tự retry đúng NGAY BƯỚC SAU với cùng
+// query (loop-default không dừng vì lỗi tool), nhưng tốn oan 1 step + hiện
+// lỗi kỹ thuật xấu ra UI cho lượt hỏng.
+//
+// Bản đầu của fix này gate theo "arguments gốc RỖNG" -- SAI, verify lại
+// bằng debug log trực tiếp trên hệ thống đang chạy phát hiện: field
+// `arguments` không hẳn rỗng, đôi khi có 1 fragment RÁC LẺ (vd. đúng 1 ký
+// tự "{" từ 1 delta stream lạc, không phải JSON hợp lệ) -- `.trim()` vẫn
+// coi là "có nội dung", chặn nhầm không cho sửa. Điều kiện ĐÚNG: `arguments`
+// tự nó có parse được thành 1 object JSON hợp lệ hay không -- rỗng, thiếu,
+// hay rác lẻ đều KHÔNG parse được, đều cho phép thử sửa; chỉ khi
+// `arguments` TỰ NÓ đã là JSON object hợp lệ (model dùng đúng field) mới bỏ
+// qua, không đè lên dữ liệu tốt.
+const MALFORMED_TOOL_CALL_NAME = /^([a-zA-Z_][a-zA-Z0-9_]*)\((.*)\)[^)]*$/s;
+
+function isValidJsonObject(raw: string): boolean {
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "object" && parsed !== null;
+  } catch {
+    return false;
+  }
+}
+
+function repairToolCall(name: string, argumentsRaw: string): LlmToolCall {
+  if (!isValidJsonObject(argumentsRaw)) {
+    const match = name.match(MALFORMED_TOOL_CALL_NAME);
+    if (match) {
+      try {
+        const parsed = JSON.parse(match[2]);
+        if (typeof parsed === "object" && parsed !== null) {
+          return { name: match[1], args: parsed as Record<string, unknown> };
+        }
+      } catch {
+        // JSON hỏng -- rơi xuống fallback, giữ nguyên hành vi cũ (TOOL_NOT_FOUND).
+      }
+    }
+  }
+  return { name, args: parseArgs(argumentsRaw) };
 }
 
 export const apply = async (ctx: Context, config: LlmQwen.Config = {}) => {

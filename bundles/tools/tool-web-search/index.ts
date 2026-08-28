@@ -65,10 +65,22 @@ export namespace ToolWebSearch {
   }
 }
 
-const DEFAULT_LIMIT = 5
-const MAX_LIMIT = 10
+const DEFAULT_LIMIT = 10
+const MAX_LIMIT = 30
 const DEFAULT_TIMEOUT_MS = 10_000
 const DEFAULT_SERPER_BASE_URL = 'https://google.serper.dev/search'
+// Retry CHỈ khi CẢ 2 provider (Serper lẫn DuckDuckGo) đều lỗi trong cùng 1
+// lượt — Serper lỗi nhưng DuckDuckGo chạy được (trường hợp phổ biến nhất,
+// vd. hết quota Serper) đã trả kết quả ngay, không cần retry. Chỉ khi
+// TOÀN BỘ lượt search thất bại (network chập chờn thoáng qua ở cả 2 phía)
+// mới đáng thử lại nguyên chuỗi Serper→DuckDuckGo, thay vì trả lỗi ngay
+// lần đầu — giảm số lần model phải tự thấy lỗi/tự retry thủ công.
+const MAX_SEARCH_ATTEMPTS = 3
+const RETRY_BASE_DELAY_MS = 400
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 function decodeEntities(s: string): string {
   return s
@@ -202,7 +214,7 @@ export const apply = (ctx: Context, config: ToolWebSearch.Config = {}) => {
     order: 110,
     text: [
       'Web-search guidance:',
-      '- Use `web_search(query, limit=5)` for current or externally verifiable information; `limit` is capped at 10.',
+      '- Use `web_search(query, limit=10)` for current or externally verifiable information; `limit` is capped at 30.',
       '- The result contains `query` and `results`, where each result has `title`, `url`, and `snippet`.',
       '- Treat snippets as leads, not complete evidence. Do not claim details absent from the returned text.',
       '- Cite relevant returned URLs as Markdown links in the final answer.',
@@ -255,20 +267,35 @@ export const apply = (ctx: Context, config: ToolWebSearch.Config = {}) => {
       // nào đó ctx.pluginConfig chưa mount (test cô lập, deployment tối giản).
       const serperApiKey = (await ctx.get('pluginConfig')?.get('serperApiKey')) ?? config.serperApiKey
 
-      if (serperApiKey) {
+      let lastError: unknown
+      for (let attempt = 1; attempt <= MAX_SEARCH_ATTEMPTS; attempt++) {
+        if (serperApiKey) {
+          try {
+            const results = await searchSerper(query, limit, serperApiKey, timeoutMs, serperBaseUrl)
+            return { query, results, provider: 'serper' }
+          } catch (err) {
+            ctx.logger('tool-web-search').warn(
+              'Serper thất bại (%s) — fallback DuckDuckGo cho lượt search này',
+              err instanceof Error ? err.message : String(err),
+            )
+          }
+        }
+
         try {
-          const results = await searchSerper(query, limit, serperApiKey, timeoutMs, serperBaseUrl)
-          return { query, results, provider: 'serper' }
+          const results = await searchDuckDuckGo(query, limit, timeoutMs)
+          return { query, results, provider: 'duckduckgo' }
         } catch (err) {
-          ctx.logger('tool-web-search').warn(
-            'Serper thất bại (%s) — fallback DuckDuckGo cho lượt search này',
-            err instanceof Error ? err.message : String(err),
-          )
+          lastError = err
+          if (attempt < MAX_SEARCH_ATTEMPTS) {
+            ctx.logger('tool-web-search').warn(
+              'lượt %d/%d: cả Serper lẫn DuckDuckGo đều lỗi (%s) — thử lại',
+              attempt, MAX_SEARCH_ATTEMPTS, err instanceof Error ? err.message : String(err),
+            )
+            await sleep(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1))
+          }
         }
       }
-
-      const results = await searchDuckDuckGo(query, limit, timeoutMs)
-      return { query, results, provider: 'duckduckgo' }
+      throw lastError
     },
   })
 

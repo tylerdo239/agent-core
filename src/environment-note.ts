@@ -14,14 +14,28 @@ export interface RenderedWithEnv {
   version: string
 }
 
+// Follow-up (2026-08, live-test tìm thấy bug thật qua 16 turn thật, xem
+// docs/agent-core-web-search-year-testing.md): bản gốc chỉ cho ISO date +
+// 1 câu chung "dùng THIS year" — model vẫn tự SUY ra năm từ chuỗi ngày,
+// và với 2 cách hỏi cụ thể ("Tìm báo cáo mới nhất", "so sánh năm nay với
+// năm ngoái") suy sai lệch đúng 1 năm CẢ 2/2 LẦN THỬ (không phải nhiễu
+// ngẫu nhiên — lệch có hệ thống, thiên về năm hay gặp nhiều trong dữ liệu
+// huấn luyện). Sửa bằng 2 việc: (1) tính sẵn currentYear/lastYear thành số
+// nguyên, model KHÔNG cần tự parse chuỗi ISO nữa; (2) liệt kê tường minh
+// đúng các cụm tiếng Việt đã fail thật ("mới nhất", "năm nay", "năm
+// ngoái", "gần đây") thay vì chỉ có "hôm nay" — 3 cụm còn thiếu chính là
+// nguyên nhân model không nối được chúng với ghi chú ngày ở trên.
 export function environmentNote(now: Date = new Date()): string {
   const iso = now.toISOString()
+  const currentYear = now.getUTCFullYear()
+  const lastYear = currentYear - 1
   return [
     '',
     '## Environment',
-    `- Current date: ${iso.slice(0, 10)} (${iso.slice(11, 16)} UTC). This IS "today".`,
+    `- Current date: ${iso.slice(0, 10)} (${iso.slice(11, 16)} UTC). This IS "today" — current year is ${currentYear}, last year is ${lastYear}.`,
     '- Your training data ends BEFORE this date, so anything time-sensitive (versions, prices, officeholders, rankings, recent events) may have changed.',
-    '- When constructing search queries or reasoning about "current"/"latest"/"hôm nay", use THIS year, never a year recalled from training data.',
+    `- Any phrase meaning "now"/"current"/"latest"/"recent" — including Vietnamese "hôm nay", "năm nay" (this year), "mới nhất" (latest), "gần đây" (recently), "năm ngoái" (last year) — means ${currentYear} (or ${lastYear} for "last year"). NEVER reason from a year recalled from training data.`,
+    `- When a request has no year specified and implies "latest"/"current"/"recent" data, your search query MUST explicitly include ${currentYear} — do not rely on your own sense of what year is "recent".`,
   ].join('\n')
 }
 

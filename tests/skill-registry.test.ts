@@ -101,6 +101,51 @@ describe('skill-registry — ownership (skill riêng do user tự thêm)', () =>
     expect(root.skills.match('sờ dít', 'user-a').map((s) => s.name)).toEqual(['private-a'])
   })
 
+  it('1 user tự thêm nhiều custom skill (vd 20) -> list() thấy đủ, không bị cắt bớt/trộn lẫn owner khác', async () => {
+    const root = new Context()
+    root.plugin(skillRegistry)
+    await settle()
+
+    for (let i = 0; i < 20; i++) {
+      root.skills.upsert({ name: `custom-${i}`, description: `skill số ${i}`, triggers: [], instructions: `x${i}`, ownerId: 'user-a', userInvocable: true })
+    }
+    // Nhiễu: 1 skill của owner khác + 1 skill global -- không được lẫn vào.
+    root.skills.upsert({ name: 'custom-9', description: 'của owner khác, trùng tên', triggers: [], instructions: 'other', ownerId: 'user-b' })
+    root.skills.register({ name: 'global-noise', description: '', triggers: [], instructions: 'g' })
+
+    const list = root.skills.list({ visibleTo: 'user-a' })
+    expect(list.map((s) => s.name).sort()).toEqual([
+      'custom-0', 'custom-1', 'custom-10', 'custom-11', 'custom-12', 'custom-13', 'custom-14', 'custom-15',
+      'custom-16', 'custom-17', 'custom-18', 'custom-19', 'custom-2', 'custom-3', 'custom-4', 'custom-5',
+      'custom-6', 'custom-7', 'custom-8', 'custom-9', 'global-noise',
+    ])
+    // Đúng bản của user-a, không phải bản trùng tên của user-b.
+    expect(list.find((s) => s.name === 'custom-9')?.instructions).toBe('x9')
+  })
+
+  it('custom skill trùng TÊN với 1 skill global -> list()/dedupe ưu tiên bản riêng của user (khớp đúng logic get())', async () => {
+    const root = new Context()
+    root.plugin(skillRegistry)
+    await settle()
+
+    root.skills.register({ name: 'my-workflow', description: 'GLOBAL builtin', triggers: [], instructions: 'global instr' })
+    root.skills.upsert({ name: 'my-workflow', description: 'CUSTOM của user-abc', triggers: [], instructions: 'custom instr', ownerId: 'user-abc', userInvocable: true })
+
+    const list = root.skills.list({ visibleTo: 'user-abc' })
+    // Không được có 2 entry cùng tên "my-workflow" lọt ra ngoài -- mọi
+    // consumer tra theo tên (router LLM, catalog gửi cho model) chỉ nên
+    // thấy đúng 1 bản, và phải là bản của chính user (giống get()).
+    expect(list.filter((s) => s.name === 'my-workflow')).toHaveLength(1)
+    const resolved = list.find((s) => s.name === 'my-workflow')
+    expect(resolved?.ownerId).toBe('user-abc')
+    expect(resolved?.description).toBe('CUSTOM của user-abc')
+
+    // Người khác (không sở hữu bản custom) vẫn thấy đúng bản global.
+    const listOther = root.skills.list({ visibleTo: 'user-other' })
+    expect(listOther.filter((s) => s.name === 'my-workflow')).toHaveLength(1)
+    expect(listOther.find((s) => s.name === 'my-workflow')?.ownerId).toBeUndefined()
+  })
+
   it('upsert() ghi đè đúng bản của cùng owner (edit), remove() xoá đúng owner', async () => {
     const root = new Context()
     root.plugin(skillRegistry)

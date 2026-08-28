@@ -136,7 +136,7 @@ describe('Phase 6.3 — gRPC', () => {
       const created = await unary<any>((cb) => client.createSession({ system_prompt: 'bạn là trợ lý' }, authMeta(token), cb))
       expect(created.id).toBeTruthy()
       expect(created.driver).toBe('default')
-      expect(created.max_steps).toBe(8)
+      expect(created.max_steps).toBe(25)
 
       // SendMessage (unary) trả kết quả CUỐI CÙNG của cả turn (sau khi tool đã
       // chạy xong), không phải phản hồi đầu tiên của model — cùng ngữ nghĩa

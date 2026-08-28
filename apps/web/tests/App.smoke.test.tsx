@@ -408,5 +408,47 @@ describe('Phase 9.4 — App smoke test', () => {
       // Timeline không bị xoá sau 'done' -- step của request trước vẫn còn.
       expect(screen.getByText('Đang phân tích request 1')).toBeTruthy()
     })
+
+    // Bug thật user báo trực tiếp (2026-08, xem docs/agent-core-ws-disconnect-lockout-fix.md):
+    // "khi tôi hỏi và nó report ra báo cáo xong rồi, thì không có khả năng
+    // chat tiếp theo". Root cause xác nhận qua production DB + đọc code:
+    // WS đóng GIỮA CHỪNG sau 1 turn (idle timeout qua proxy, network blip) ->
+    // status 'disconnected' -> composerEnabled (đòi 'connected') khoá cứng
+    // input -> sendUserMessage() (nơi DUY NHẤT gọi ensureStream() để tự mở
+    // lại WS) không bao giờ được gọi lại -> deadlock vĩnh viễn, chỉ còn cách
+    // reload trang. Test verify: sau khi WS đóng bất ngờ, composer VẪN gõ/gửi
+    // được, và gửi lại tự mở 1 WS mới (không cần reload).
+    it('WS đóng bất ngờ giữa chừng sau khi turn xong -> composer KHÔNG bị khoá cứng, gửi tiếp tự mở lại WS', async () => {
+      const socket = await createSessionAndGetSocket()
+
+      await act(async () => {
+        socket.emitMessage({ type: 'step', sessionId: 's1', step: { type: 'final', content: 'Báo cáo đã xong.' } })
+        socket.emitMessage({ type: 'done', sessionId: 's1' })
+        await new Promise((r) => setTimeout(r, 10))
+      })
+
+      // Mô phỏng đúng kịch bản báo cáo: WS đóng bất ngờ SAU khi đã 'open' và
+      // đã xử lý xong 1 turn -- không phải do App tự đóng để chuyển session.
+      await act(async () => {
+        socket.close()
+        await new Promise((r) => setTimeout(r, 10))
+      })
+
+      const textarea = screen.getByPlaceholderText('Nhắn gì đó cho agent...') as HTMLTextAreaElement
+      expect(textarea.disabled).toBe(false) // KHÔNG bị khoá cứng chỉ vì WS rớt
+
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'còn hỏi tiếp được không' } })
+        fireEvent.click(screen.getByText('Gửi'))
+        await new Promise((r) => setTimeout(r, 30))
+      })
+
+      // Gửi tiếp thành công: 1 lượt /messages MỚI, và ensureStream() tự mở
+      // 1 WebSocket MỚI thay cho cái vừa rớt (không cần reload trang).
+      const messageCalls = fetchMock.mock.calls.filter(([url]) => /\/sessions\/[^/]+\/messages$/.test(String(url)))
+      expect(messageCalls.length).toBe(2)
+      expect(JSON.parse(String(messageCalls[1][1]?.body))).toMatchObject({ message: 'còn hỏi tiếp được không' })
+      expect(FakeWebSocket.instances.length).toBe(2)
+    })
   })
 })

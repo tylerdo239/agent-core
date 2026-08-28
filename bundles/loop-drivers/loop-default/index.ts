@@ -17,6 +17,7 @@ import '../../../seams/storage.ts'
 import '../../../seams/tools.ts'
 import '../../../seams/loop.ts'
 import '../../../seams/skill.ts'
+import '../../../seams/skill-selection.ts'
 import '../../../seams/prompt.ts'
 import '../../../seams/context-compactor.ts'
 import { MemoryEntry } from '../../../seams/memory.ts'
@@ -25,6 +26,7 @@ import { ToolExecutionError } from '../../../seams/tools.ts'
 import { resolveActiveSkills, skillCatalogGuidance } from '../../../src/skill-runtime.ts'
 import { injectEnvironmentNote } from '../../../src/environment-note.ts'
 import { classifyError } from '../../../src/errors.ts'
+import { repairLeakedToolCallLabel } from '../../../src/leaked-tool-call-label.ts'
 
 /** Map mã ToolExecutionError nội bộ sang harness taxonomy chuẩn (src/errors.ts). */
 const TOOL_CODE_TO_TAXONOMY: Record<string, string> = {
@@ -51,7 +53,30 @@ export const apply = (ctx: Context) => {
       // Inject ngày hiện tại (BUG temporal-grounding, xem src/environment-note.ts):
       // model không biết hôm nay là ngày nào nếu harness không nói.
       const frameworkPrompt = injectEnvironmentNote(prompts.render({ driver: 'default', sessionId: session.id }), 'end')
-      const activeSkills = resolveActiveSkills(runCtx.skills, userMessage, input.selectedSkill, session.ownerId)
+      let activeSkills = resolveActiveSkills(runCtx.skills, userMessage, input.selectedSkill, session.ownerId)
+      const skillCatalog = runCtx.skills.list({ topLevelOnly: true, visibleTo: session.ownerId })
+      // Semantic router fallback (chuyển từ loop-rlm sang: cùng seam
+      // `skillSelection`, cùng logic — không có explicit selection lẫn
+      // trigger nào khớp thì hỏi 1 lượt LLM router rẻ tiền trước khi vào
+      // turn chính, thay vì trông chờ hoàn toàn vào việc model tự gọi tool
+      // `skill` giữa chừng (không phải model nào cũng tool-call đáng tin cậy
+      // ngay bước đầu — xem seams/skill-selection.ts). `ctx.get()` giữ
+      // provider optional: không mount thì bỏ qua êm, không throw.
+      if (!activeSkills.length) {
+        const selector = runCtx.get('skillSelection')
+        const semantic = await selector?.select(userMessage, skillCatalog, input.signal)
+        if (selector) {
+          await runCtx.storage.appendEvent(session.id, {
+            type: 'skill_selection', source: 'default-loop', strategy: 'semantic',
+            outcome: semantic?.skill ? 'selected' : 'none',
+            skill: semantic?.skill?.name, model: semantic?.model, usage: semantic?.usage,
+            decision: semantic?.decision,
+          })
+        }
+        if (semantic?.skill) {
+          activeSkills = [{ skill: semantic.skill, source: 'semantic' }]
+        }
+      }
       // Memory integration: `ctx.memory` KHÔNG nằm trong `inject` (seam optional
       // -- chỉ mount khi MEMORY_CORE_URL được cấu hình, xem src/serve.ts).
       // Dùng `ctx.get('memory')` (API chính thức Cordis, đọc service KHÔNG
@@ -70,7 +95,7 @@ export const apply = (ctx: Context) => {
       const memoryNotes = recalled.map((m) => `Đã ghi nhớ trước đó: ${m.text}`)
       const turnNotes = () => [
         skillCatalogGuidance(
-          runCtx.skills.list({ topLevelOnly: true, visibleTo: session.ownerId }),
+          skillCatalog,
           input.selectedSkill,
           runCtx.tools.has('skill'),
         ),
@@ -198,6 +223,12 @@ export const apply = (ctx: Context) => {
           }
         })()
         assertNotCancelled(input)
+        // Bug thật production (2026-08, xem src/leaked-tool-call-label.ts):
+        // model đôi lúc bắt chước lại nhãn nội bộ `[tool_call:name(args)]`
+        // (do chính history của nó chứa nhãn này -- xem Session.recordAssistant)
+        // như plain text content thay vì gọi tool thật. Khôi phục đúng ý định
+        // trước khi ghi/emit -- không để lượt đó trôi qua như rác hiển thị.
+        Object.assign(response, repairLeakedToolCallLabel(response, (name) => runCtx.tools.has(name)))
         if (response.usage) {
           usage ??= { inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0 }
           usage.inputTokens += response.usage.inputTokens ?? 0

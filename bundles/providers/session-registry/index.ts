@@ -97,7 +97,13 @@ export class SessionRegistry extends SessionRegistryService {
   create(options: CreateSessionOptions = {}) {
     const id = options.id ?? randomUUID()
     if (this.entries.has(id)) throw new Error(`session "${id}" already exists`)
-    const session = new Session(id, options.maxSteps ?? 8, options.systemPrompt, options.driver ?? 'default', options.maxHistoryMessages, options.ownerId, options.projectId)
+    // "?? 8" trước đây ĐÈ LÊN default 25 của chính class Session (seams/loop.ts)
+    // -- truyền literal 8 vào constructor bất cứ khi nào options.maxSteps không
+    // set, nên default thật của toàn hệ thống luôn là 8 dù constructor nói 25.
+    // Xác nhận thật qua REST live sau khi deploy fix maxSteps: POST /sessions
+    // rỗng vẫn trả về maxSteps:8. Không hard-code lại giá trị default ở đây
+    // nữa -- để `undefined` truyền thẳng, đúng 1 nguồn sự thật duy nhất.
+    const session = new Session(id, options.maxSteps, options.systemPrompt, options.driver ?? 'default', options.maxHistoryMessages, options.ownerId, options.projectId)
     const now = Date.now()
     const entry = { session, createdAt: now, lastActiveAt: now, lastPersistedAt: now }
     this.entries.set(id, entry)

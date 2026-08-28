@@ -19,7 +19,14 @@ seaborn
 pillow
 scikit-learn
 scipy
-statsmodels
+# Gap thật gặp lúc build image (2026-08): thiếu ghim version, pip kéo về
+# 0.15.0 (bản mới publish, chưa có wheel sẵn cho python:3.11-slim-bookworm)
+# — pip fallback build từ source qua meson, nhưng stage rlm-python trong
+# Dockerfile không có gcc/compiler nào, build fail thẳng (không phải lỗi
+# code/merge). Ghim <0.15 để pip luôn chọn nhánh 0.14.x (có wheel sẵn,
+# verify build thật thành công) — tránh phải cài thêm toolchain build nặng
+# (gcc+gfortran+blas) chỉ để build 1 package.
+statsmodels<0.15
 openpyxl
 PyYAML
 nbformat
