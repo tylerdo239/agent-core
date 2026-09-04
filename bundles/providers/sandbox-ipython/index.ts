@@ -316,9 +316,9 @@ export class SandboxIpython extends SandboxService {
   private async completeToolCall(state: WorkerState, event: SandboxEvent) {
     const callId = String(event.callId ?? '')
     const requestId = String(event.requestId ?? '')
-    // name do model đặt — sanitize field hiển thị (label nội bộ nhúng trong
-    // tên sẽ hiện rác ra UI); args giữ nguyên verbatim cho tool semantics.
-    const name = sanitizeEventField(event.name ?? '')
+    // Chuẩn hoá TRƯỚC khi tra cứu/thực thi (xem sanitizeEventField): chuỗi
+    // hiện ra UI và chuỗi thật sự invoke phải là một. args giữ verbatim.
+    const name = sanitizeEventField(event.name)
     const args = isRecord(event.args) ? event.args : {}
     const queue = state.requests.get(requestId)
     const tool = this.ctx.tools.get(name)
@@ -349,14 +349,13 @@ export class SandboxIpython extends SandboxService {
   private async completeSkillRead(state: WorkerState, event: SandboxEvent) {
     const callId = String(event.callId ?? '')
     const requestId = String(event.requestId ?? '')
-    const skill = String(event.skill ?? '')
-    const resourcePath = String(event.path ?? '')
+    // Chuẩn hoá trước khi đọc — cùng luật completeToolCall.
+    const skill = sanitizeEventField(event.skill)
+    const resourcePath = sanitizeEventField(event.path)
     const queue = state.requests.get(requestId)
     try {
       const result = await this.ctx.skills.readResource(skill, resourcePath)
-      // Event hiển thị — sanitize như tool-skill (bug user báo). Lookup giữ
-      // raw để exact-match registry không đổi nghĩa.
-      queue?.push({ type: 'skill_resource', skill: sanitizeEventField(skill), path: sanitizeEventField(resourcePath), encoding: result.encoding })
+      queue?.push({ type: 'skill_resource', skill, path: resourcePath, encoding: result.encoding })
       state.process.stdin.write(JSON.stringify({
         requestId,
         operation: '__host_skill_result__',

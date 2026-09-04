@@ -128,6 +128,11 @@ function findLabelEnd(text: string, from: number): number {
  * strip nhãn + ép 1 dòng + trim. Path/name hợp lệ không bao giờ chứa newline;
  * cắt dòng đầu để arg bẩn kiểu `path + "\\n" + label` không lọt rác xuống UI
  * ngay cả khi label vì lý do nào đó không well-formed (không strip được).
+ *
+ * Gọi hàm này NGAY KHI nhận arg từ model, TRƯỚC khi tra cứu/thực thi — không
+ * phải lúc dựng event. Chuỗi hiển thị ra UI và chuỗi thật sự dùng để invoke/
+ * readResource phải là một, nếu không UI ghi `web_search` trong khi harness
+ * gọi `web_search\n[tool_call:...]` rồi fail TOOL_NOT_FOUND.
  */
 export function sanitizeEventField(value: unknown): string {
   const stripped = stripLeakedToolCallLabels(String(value ?? ''))
