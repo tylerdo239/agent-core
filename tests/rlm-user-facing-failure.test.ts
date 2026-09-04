@@ -21,7 +21,7 @@ import { LlmCompletion, LlmService } from '../seams/llm.ts'
 import { Session } from '../seams/loop.ts'
 import { SandboxEvent, SandboxRunResult, SandboxService } from '../seams/sandbox.ts'
 import { WorkspaceService } from '../seams/workspace.ts'
-import { turnFailureText } from '../src/user-facing-error.ts'
+import { turnFailureText } from '../bundles/loop-drivers/loop-rlm/user-facing-error.ts'
 
 const RAW = 'Error threshold exceeded: 3 consecutive errors (limit: 3)'
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20))

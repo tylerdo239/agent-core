@@ -11,7 +11,7 @@ import { assertNotCancelled, LoopStep, LoopTurnResult, Session, TurnInput } from
 import { SandboxEvent } from '../../../seams/sandbox.ts'
 import { classifyError, isHarnessErrorCode } from '../../../src/errors.ts'
 import { sanitizeEventField, stripLeakedToolCallLabels } from '../../../src/leaked-tool-call-label.ts'
-import { turnFailureText } from '../../../src/user-facing-error.ts'
+import { turnFailureText } from './user-facing-error.ts'
 import { prepareRlmTurn, RlmSessionState } from './protocol.ts'
 import { resolveActiveSkills, buildSkillRouterQuery } from '../../../src/skill-runtime.ts'
 

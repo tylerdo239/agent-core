@@ -10,7 +10,12 @@
 // Khác default-loop ở chỗ nào: default-loop đưa lỗi tool vào history rồi MODEL
 // tự diễn giải lại trong cùng turn; RLM thì exception cắt ngang trước khi model
 // kịp nói gì, nên harness phải tự lo phần diễn giải.
-import type { HarnessErrorCode } from './errors.ts'
+// Đặt TRONG bundle chứ không ở src/: chỉ loop-rlm dùng. `src/` dành cho thứ
+// từ 2 bundle trở lên cùng cần (leaked-tool-call-label, skill-runtime,
+// environment-note...) — không phải để chứa mọi hàm thuần. Bundle nào tự dùng
+// một mình thì giữ trong bundle đó, gỡ bundle là gỡ luôn, không để lại file
+// mồ côi ở src/.
+import type { HarnessErrorCode } from '../../../src/errors.ts'
 
 /** Một câu tiếng Việt: chuyện gì đã xảy ra + nên làm gì tiếp. */
 const USER_MESSAGE: Partial<Record<HarnessErrorCode, string>> = {
