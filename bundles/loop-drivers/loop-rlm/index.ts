@@ -314,6 +314,12 @@ export const apply = (ctx: Context, config: LoopRlm.Config = {}) => {
       // Abort signal này đi thẳng vào `sandbox.request`, nơi handler abort có
       // sẵn vừa fail queue vừa `closeSession()` để GIẾT worker — không để lại
       // process zombie giữ session.
+      // Nhịp tim từ worker: KHÔNG lưu vào storage (mỗi turn có thể có hàng
+      // chục mốc, lưu hết là phình event vô ích) — chỉ giữ mốc gần nhất để
+      // thông điệp hết-hạn-chót nói được KẸT Ở ĐÂU, thay vì chỉ "nó treo".
+      let lastHeartbeat: string | undefined
+      const turnStartedAt = Date.now()
+
       const watchdog = new AbortController()
       let deadlineExceeded = false
       const watchdogTimer = setTimeout(() => {
@@ -335,6 +341,12 @@ export const apply = (ctx: Context, config: LoopRlm.Config = {}) => {
           assertNotCancelled(input)
           if (event.type === '__result__') {
             result = event
+            continue
+          }
+          if (event.type === 'heartbeat') {
+            const detail = [event.phase, event.bridge && `bridge=${event.bridge}`, event.operation && `op=${event.operation}`]
+              .filter(Boolean).join(' ')
+            lastHeartbeat = `${detail} (+${Math.round((Date.now() - turnStartedAt) / 1000)}s)`
             continue
           }
           if (event.type === 'code') {
@@ -360,6 +372,7 @@ export const apply = (ctx: Context, config: LoopRlm.Config = {}) => {
         // do caller vẫn đi đường cũ.
         const message = deadlineExceeded
           ? `RLM turn bị cắt vì quá hạn chót ${turnDeadlineMs}ms (worker đã bị đóng)`
+            + (lastHeartbeat ? `. Mốc cuối worker báo: ${lastHeartbeat}` : '. Worker không báo mốc nào — kẹt trước cả lệnh đầu tiên')
           : error instanceof Error ? error.message : String(error)
         // BUG-10 silent-failure: lỗi bridge/worker phải được phân loại theo
         // taxonomy VÀ ghi vào session state để TURN KẾ TIẾP nhận [SESSION

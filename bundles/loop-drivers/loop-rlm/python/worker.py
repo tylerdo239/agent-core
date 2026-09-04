@@ -12,12 +12,15 @@ import signal
 import shutil
 import sys
 import threading
+import time
 import traceback
 import uuid
 from contextlib import redirect_stdout
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
+
+from line_reader import LineReader, LineReaderTimeout
 
 _stdout_lock = threading.Lock()
 _protocol_stdout = sys.stdout
@@ -85,6 +88,49 @@ with redirect_stdout(sys.stderr):
 _host_call_lock = threading.Lock()
 _active_request_id = ""
 _active_session_id = ""
+
+# MỘT đường đọc stdin duy nhất cho cả vòng lặp lệnh lẫn cầu nối host. Trước
+# đây cả hai chỗ gọi `sys.stdin.readline()` CHẶN VÔ HẠN — turn treo 25+ phút
+# không throw, không event, worker utime=0 chính là cảnh worker nằm chờ một
+# dòng không bao giờ tới. Xem line_reader.py để biết vì sao không dùng
+# select() trần được.
+_reader = LineReader(sys.stdin.buffer)
+
+# Trần chờ host trả lời một lời gọi cầu nối. Phải LỚN HƠN timeout của host khi
+# gọi model (mặc định 60s + retry) để không cắt oan lời gọi chậm nhưng vẫn
+# sống, và NHỎ HƠN hạn chót turn phía TS (RLM_TURN_DEADLINE_MS, mặc định 600s)
+# để worker tự báo lỗi rõ ràng trước khi bị giết từ bên ngoài.
+BRIDGE_TIMEOUT_S = float(os.environ.get("RLM_BRIDGE_TIMEOUT_S", "300"))
+
+
+def heartbeat(phase: str, **payload: Any) -> None:
+    """Nhịp tim: cho host biết worker đang ở BƯỚC NÀO.
+
+    Watchdog phía TS cắt được turn treo, nhưng chỉ biết "nó treo" chứ không
+    biết treo ở đâu. Các mốc này để lần treo sau chỉ mặt được ngay: đang chờ
+    model? đang chạy ô REPL? hay giao thức hỏng. Host KHÔNG lưu heartbeat vào
+    storage (tránh phình event), chỉ giữ mốc gần nhất để đưa vào thông điệp
+    lỗi khi hết hạn chót.
+    """
+    emit(_active_request_id, "heartbeat", phase=phase, **payload)
+
+
+def await_host_reply(call_id: str, what: str) -> dict[str, Any]:
+    """Chờ host trả lời một lời gọi cầu nối, CÓ hạn giờ."""
+    heartbeat("bridge_wait", bridge=what, callId=call_id)
+    started = time.monotonic()
+    response_line = _reader.read_line(timeout=BRIDGE_TIMEOUT_S, what=f"host {what} reply")
+    if response_line is None:
+        raise RuntimeError(f"host {what} bridge closed")
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    heartbeat("bridge_reply", bridge=what, callId=call_id, elapsedMs=elapsed_ms)
+    response = json.loads(response_line)
+    payload = dict(response.get("payload") or {})
+    if payload.get("callId") != call_id:
+        raise RuntimeError(f"host {what} bridge returned a mismatched call id")
+    if payload.get("error"):
+        raise RuntimeError(str(payload["error"]))
+    return payload
 
 
 def safe_session_id(value: Any) -> str:
@@ -174,15 +220,7 @@ class HostLlmClient(BaseLM):
                 extra_body=self.sampling_args.get("extra_body") or {},
                 purpose=purpose,
             )
-            response_line = sys.stdin.readline()
-            if not response_line:
-                raise RuntimeError("host LLM bridge closed")
-            response = json.loads(response_line)
-            payload = dict(response.get("payload") or {})
-            if payload.get("callId") != call_id:
-                raise RuntimeError("host LLM bridge returned a mismatched call id")
-            if payload.get("error"):
-                raise RuntimeError(str(payload["error"]))
+            payload = await_host_reply(call_id, "LLM")
         usage = dict(payload.get("usage") or {})
         input_tokens = int(usage.get("inputTokens") or 0)
         output_tokens = int(usage.get("outputTokens") or 0)
@@ -229,16 +267,7 @@ def host_tool_call(name: str, args: dict[str, Any]) -> Any:
             args=args,
             sessionId=_active_session_id,
         )
-        response_line = sys.stdin.readline()
-        if not response_line:
-            raise RuntimeError("host tool bridge closed")
-        response = json.loads(response_line)
-        response_payload = dict(response.get("payload") or {})
-        if response_payload.get("callId") != call_id:
-            raise RuntimeError("host tool bridge returned a mismatched call id")
-        if response_payload.get("error"):
-            raise RuntimeError(str(response_payload["error"]))
-        return response_payload.get("result")
+        return await_host_reply(call_id, f"tool:{name}").get("result")
 
 
 def host_skill_read(skill_name: str, resource_path: str) -> Any:
@@ -252,16 +281,7 @@ def host_skill_read(skill_name: str, resource_path: str) -> Any:
             path=resource_path,
             sessionId=_active_session_id,
         )
-        response_line = sys.stdin.readline()
-        if not response_line:
-            raise RuntimeError("host skill bridge closed")
-        response = json.loads(response_line)
-        response_payload = dict(response.get("payload") or {})
-        if response_payload.get("callId") != call_id:
-            raise RuntimeError("host skill bridge returned a mismatched call id")
-        if response_payload.get("error"):
-            raise RuntimeError(str(response_payload["error"]))
-        return response_payload.get("result")
+        return await_host_reply(call_id, f"skill:{skill_name}").get("result")
 
 
 # Both modules imported get_client by value, so patch the two call sites used
@@ -484,16 +504,31 @@ def handle(request_id: str, operation: str, payload: dict[str, Any]) -> None:
 
 
 print(json.dumps({"type": "__ready__"}), flush=True)
-for line in sys.stdin:
+while True:
+    # Chờ vô hạn ở ĐÂY là đúng: giữa hai turn worker rảnh, nằm chờ lệnh mới.
+    # Chỉ cầu nối host mới bắt buộc có hạn giờ (xem await_host_reply).
+    line = _reader.read_line()
+    if line is None:
+        break
     request_id = ""
     try:
         message = json.loads(line)
         request_id = str(message.get("requestId") or "")
+        operation = str(message.get("operation") or "")
+        heartbeat("operation_start", operation=operation)
         handle(
             request_id,
-            str(message.get("operation") or ""),
+            operation,
             dict(message.get("payload") or {}),
         )
+        heartbeat("operation_end", operation=operation)
+    except LineReaderTimeout as exc:
+        # Worker TỰ báo cáo thay vì nằm im chờ bị giết từ bên ngoài: thông điệp
+        # nói rõ đang chờ cầu nối nào, đủ để chỉ mặt chỗ kẹt.
+        traceback.print_exc(file=sys.stderr)
+        emit(request_id, "error", message=str(exc), error_code="TIMEOUT")
+        emit(request_id, "__result__", status="failed", answer=str(exc),
+             turn_issue={"code": "TIMEOUT", "message": str(exc)})
     except BaseException as exc:
         traceback.print_exc(file=sys.stderr)
         emit(request_id, "error", message=str(exc))

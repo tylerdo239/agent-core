@@ -75,6 +75,9 @@ export function buildDockerWorkerArgs(options: DockerWorkerArgs): string[] {
     '--env', `PYTHONPATH=${RLM_PYTHON_ROOT}/vendor/rlm:${RLM_PYTHON_ROOT}`,
     '--env', `RLM_RUNTIME_ROOT=${RLM_PYTHON_ROOT}`,
     '--env', `RLM_WORKSPACE_ROOT=${containerWorkspace}`,
+    // Container KHÔNG kế thừa process.env của host (khác sandbox-ipython) —
+    // không chuyển tiếp thì núm này im lặng không có tác dụng ở chế độ docker.
+    ...(process.env.RLM_BRIDGE_TIMEOUT_S ? ['--env', `RLM_BRIDGE_TIMEOUT_S=${process.env.RLM_BRIDGE_TIMEOUT_S}`] : []),
     '--env', `RLM_AGENT_CONFIG_JSON=${JSON.stringify(options.agentConfig)}`,
   ]
   if (options.networkDisabled ?? true) args.push('--network', 'none')

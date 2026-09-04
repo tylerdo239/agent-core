@@ -71,6 +71,22 @@ class HangingSandbox extends SandboxService {
   }
 }
 
+/** Kẹt, nhưng CÓ báo nhịp tim trước khi kẹt — mô phỏng worker đứng chờ model. */
+class HeartbeatThenHangSandbox extends SandboxService {
+  async run(): Promise<SandboxRunResult> { return { stdout: '', stderr: '', exitCode: 0 } }
+  async openSession() {}
+  async closeSession() {}
+  async *request(_s: string, _o: string, _p: Record<string, unknown>, options: { signal?: AbortSignal } = {}) {
+    yield { type: 'heartbeat', phase: 'operation_start', operation: 'prepared_turn' } as SandboxEvent
+    yield { type: 'heartbeat', phase: 'bridge_wait', bridge: 'LLM', callId: 'abc123' } as SandboxEvent
+    await new Promise((_resolve, reject) => {
+      const abort = () => reject(Object.assign(new Error('sandbox request cancelled'), { name: 'AbortError' }))
+      if (options.signal?.aborted) abort()
+      else options.signal?.addEventListener('abort', abort, { once: true })
+    })
+  }
+}
+
 class QuickSandbox extends SandboxService {
   async run(): Promise<SandboxRunResult> { return { stdout: '', stderr: '', exitCode: 0 } }
   async openSession() {}
@@ -141,6 +157,36 @@ describe('loop-rlm — hạn chót tuyệt đối cho một turn', () => {
     // Trước khi có watchdog, turn này xếp hàng sau một promise không bao giờ
     // settle -> kẹt vĩnh viễn, không lỗi, không log.
     await expect(root.agent.runTurn('rlm', session, { message: 'kẹt lần 2' })).rejects.toThrow(/hạn chót/)
+    await root.fiber.dispose()
+  })
+
+  it('nhịp tim chỉ mặt chỗ kẹt: thông điệp hết hạn nói rõ đang chờ cầu nối LLM', async () => {
+    const { root } = stack(HeartbeatThenHangSandbox, 150)
+    await settle()
+    const session = new Session('deadline-heartbeat', 8, undefined, 'rlm')
+    await expect(root.agent.runTurn('rlm', session, { message: 'x' }))
+      .rejects.toThrow(/Mốc cuối worker báo: bridge_wait bridge=LLM/)
+    await root.fiber.dispose()
+  })
+
+  it('nhịp tim KHÔNG bị lưu vào storage (tránh phình event vô ích)', async () => {
+    const { root } = stack(HeartbeatThenHangSandbox, 150)
+    await settle()
+    const session = new Session('deadline-hb-storage', 8, undefined, 'rlm')
+    await expect(root.agent.runTurn('rlm', session, { message: 'x' })).rejects.toThrow()
+    const events = (await root.storage.readEvents(session.id)) as Array<Record<string, unknown>>
+    expect(events.some((e) => e.type === 'heartbeat')).toBe(false)
+    // Nhưng thông tin của nó KHÔNG mất — nằm trong thông điệp lỗi.
+    expect(String(events.find((e) => e.type === 'error')?.message)).toMatch(/bridge=LLM/)
+    await root.fiber.dispose()
+  })
+
+  it('worker kẹt trước khi kịp báo mốc nào -> nói thẳng là không có mốc', async () => {
+    const { root } = stack(HangingSandbox, 120)
+    await settle()
+    const session = new Session('deadline-no-hb', 8, undefined, 'rlm')
+    await expect(root.agent.runTurn('rlm', session, { message: 'x' }))
+      .rejects.toThrow(/không báo mốc nào/)
     await root.fiber.dispose()
   })
 
