@@ -377,7 +377,11 @@ async function main() {
   mount('pipeline-registry', 'provider', pipelineRegistry)
   mount('loop-registry', 'provider', loopRegistry)
   mount('loop-default', 'loop-driver', loopDefault)
-  mount('loop-rlm', 'loop-driver', loopRlm)
+  mount('loop-rlm', 'loop-driver', loopRlm, {
+    // Lưới an toàn chống turn treo (không phải hạn mức vận hành) — xem
+    // watchdog trong bundles/loop-drivers/loop-rlm/index.ts.
+    turnDeadlineMs: optionalNumber('RLM_TURN_DEADLINE_MS'),
+  })
   // Muốn hot-swap sang loop-planner-critic khi đang chạy: KHÔNG mount cả 2
   // cùng lúc (cùng đăng ký tên 'default', mount lần 2 sẽ throw "already
   // registered") — dispose fiber loop-default trước, đúng pattern

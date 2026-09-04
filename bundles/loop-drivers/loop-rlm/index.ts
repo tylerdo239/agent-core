@@ -174,12 +174,30 @@ function workspaceActivities(code: string): SandboxEvent[] {
   return activities
 }
 
+export namespace LoopRlm {
+  export interface Config {
+    /**
+     * Hạn chót TUYỆT ĐỐI cho một turn RLM, tính từ lúc gửi `prepared_turn`.
+     * Xem chú thích ở watchdog trong runTurn để biết vì sao phải có lớp này.
+     */
+    turnDeadlineMs?: number
+  }
+}
+
+/**
+ * 10 phút: dài hơn hẳn `RLM_MAX_TIMEOUT` (mặc định 300s) cộng dư địa cho
+ * compaction/subcall, nên turn chạy đàng hoàng không bao giờ chạm tới. Đây là
+ * lưới an toàn cho trường hợp KẸT, không phải hạn mức vận hành.
+ */
+const DEFAULT_TURN_DEADLINE_MS = 600_000
+
 export const inject = ['loop']
 
 /** Tên driver đăng ký với ctx.loop; cũng là khoá lọc SkillDefinition.drivers. */
 const DRIVER = 'rlm'
 
-export const apply = (ctx: Context) => {
+export const apply = (ctx: Context, config: LoopRlm.Config = {}) => {
+  const turnDeadlineMs = config.turnDeadlineMs ?? DEFAULT_TURN_DEADLINE_MS
   ctx.loop.register(DRIVER, {
     async runTurn(runCtx: Context, session: Session, input: TurnInput): Promise<LoopTurnResult> {
       assertNotCancelled(input)
@@ -278,12 +296,41 @@ export const apply = (ctx: Context) => {
       let steps = 0
       let finalContent = ''
 
+      // Watchdog phía TS — lớp timeout DUY NHẤT phủ được mọi kiểu kẹt của
+      // worker Python, vì nó không phụ thuộc worker còn sống hay không.
+      //
+      // Bug thật (user báo: turn chạy 25+ phút, không throw, không event, worker
+      // utime=0). Ba lớp timeout tưởng là có đều KHÔNG nằm trên đường bị kẹt:
+      //   - `max_timeout` chỉ là câu `if` ở ĐẦU mỗi vòng lặp iteration
+      //     (vendor/rlm/rlm/core/rlm.py: `_check_timeout(i, time_start)`), nên
+      //     kẹt BÊN TRONG một iteration thì nó không bao giờ được chạy tới;
+      //   - `cell_timeout` chỉ phủ ô REPL, không biết gì về cầu nối host;
+      //   - cầu nối host trong python/worker.py chờ `sys.stdin.readline()`
+      //     CHẶN VÔ HẠN, không có deadline nào cả.
+      // Hệ quả kèm theo: agent-runner xâu chuỗi turn theo session, nên một
+      // driver treo làm mọi turn sau của session đó kẹt vĩnh viễn — không lỗi,
+      // không log, user chỉ thấy loading.
+      //
+      // Abort signal này đi thẳng vào `sandbox.request`, nơi handler abort có
+      // sẵn vừa fail queue vừa `closeSession()` để GIẾT worker — không để lại
+      // process zombie giữ session.
+      const watchdog = new AbortController()
+      let deadlineExceeded = false
+      const watchdogTimer = setTimeout(() => {
+        deadlineExceeded = true
+        watchdog.abort(new Error(`rlm turn exceeded ${turnDeadlineMs}ms deadline`))
+      }, turnDeadlineMs)
+      watchdogTimer.unref?.()
+      const turnSignal = input.signal
+        ? AbortSignal.any([input.signal, watchdog.signal])
+        : watchdog.signal
+
       try {
         for await (const event of sandbox.request(
           session.id,
           'prepared_turn',
           prepared as unknown as Record<string, unknown>,
-          { signal: input.signal },
+          { signal: turnSignal },
         )) {
           assertNotCancelled(input)
           if (event.type === '__result__') {
@@ -307,16 +354,24 @@ export const apply = (ctx: Context) => {
           if (event.type === 'final_answer') finalContent = stripLeakedToolCallLabels(String(event.content ?? ''))
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
+        // Hết hạn chót nổi lên ở đây dưới dạng AbortError của sandbox ("sandbox
+        // request cancelled") — nuốt nguyên chuỗi đó thì log/UI đọc như user tự
+        // bấm huỷ. Thay bằng thông điệp và mã TIMEOUT đúng bản chất; huỷ thật
+        // do caller vẫn đi đường cũ.
+        const message = deadlineExceeded
+          ? `RLM turn bị cắt vì quá hạn chót ${turnDeadlineMs}ms (worker đã bị đóng)`
+          : error instanceof Error ? error.message : String(error)
         // BUG-10 silent-failure: lỗi bridge/worker phải được phân loại theo
         // taxonomy VÀ ghi vào session state để TURN KẾ TIẾP nhận [SESSION
         // HEALTH] note thay vì đi tiếp như không có chuyện gì.
-        const errorCode = classifyError(message)
+        const errorCode = deadlineExceeded ? 'TIMEOUT' : classifyError(message)
         const state = session.extension<RlmSessionState>('loop:rlm', () => ({ contextIndex: 0, historyIndex: 0 }))
         state.lastError = { code: errorCode, message }
         await runCtx.storage.appendEvent(session.id, { type: 'error', source: 'rlm', message, error_code: errorCode })
         runCtx.emit('agent/step', { sessionId: session.id, step: { type: 'error', message } })
-        throw error
+        throw deadlineExceeded ? Object.assign(new Error(message), { code: errorCode }) : error
+      } finally {
+        clearTimeout(watchdogTimer)
       }
 
       if (!result) throw new Error('RLM worker ended without a turn result')
