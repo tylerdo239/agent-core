@@ -30,6 +30,8 @@ const MAX_SKILLS_PER_OWNER = 50
 export namespace CustomSkillStorePostgres {
   export interface Config {
     connectionString: string
+    /** Xem AuthUsers.Config.poolMax — cùng lý do giới hạn tài nguyên. */
+    poolMax?: number
   }
 }
 
@@ -93,7 +95,7 @@ export class CustomSkillStorePostgres extends CustomSkillStoreService {
   }
 
   async [Service.init]() {
-    this.pool = new Pool({ connectionString: this.config.connectionString })
+    this.pool = new Pool({ connectionString: this.config.connectionString, max: this.config.poolMax ?? 10 })
 
     // Boot resilience — cùng pattern retry đã có ở auth-users/plugin-config-postgres.
     for (let attempt = 1; ; attempt++) {

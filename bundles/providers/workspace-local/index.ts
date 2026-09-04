@@ -112,7 +112,14 @@ export class WorkspaceLocal extends WorkspaceService {
   private safeRelativePath(filename: string) {
     const parts = String(filename).split('/').filter((part) => part && part !== '.')
     if (!parts.length || parts.some((part) => part === '..' || part.includes('\0'))) throw new Error('filename escapes workspace')
-    const safe = parts.map((part) => part.replace(/[^a-zA-Z0-9._-]/g, '_')).join('/')
+    // User báo file tiếng Việt ("báo cáo.pdf", "dữ liệu quý 1.csv") bị xén
+    // thành "b_o_c_o.pdf": whitelist ASCII cũ thay mọi chữ có dấu/khoảng trắng
+    // bằng '_'. Giữ an toàn traversal (đã chặn '..', '\0', absolute + kiểm tra
+    // containment ở writeFile) nhưng cho phép chữ/số Unicode: NFC trước để
+    // macOS NFD (a + dấu tổ hợp rời, thuộc \p{M}) không bị xén oan, rồi chỉ
+    // thay những gì KHÔNG phải chữ/số/dấu câu tên file. Space vẫn -> '_' (tránh
+    // rắc rối shell/Python khi model gọi tool với path thô).
+    const safe = parts.map((part) => part.normalize('NFC').replace(/[^\p{L}\p{N}._-]+/gu, '_')).join('/')
     if (!safe) throw new Error('filename escapes workspace')
     return safe
   }

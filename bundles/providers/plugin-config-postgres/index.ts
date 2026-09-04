@@ -15,6 +15,8 @@ const CONNECT_RETRY_BASE_DELAY_MS = 500
 export namespace PluginConfigPostgres {
   export interface Config {
     connectionString: string
+    /** Xem AuthUsers.Config.poolMax — cùng lý do giới hạn tài nguyên. */
+    poolMax?: number
   }
 }
 
@@ -30,7 +32,7 @@ export class PluginConfigPostgres extends PluginConfigService {
   }
 
   async [Service.init]() {
-    this.pool = new Pool({ connectionString: this.config.connectionString })
+    this.pool = new Pool({ connectionString: this.config.connectionString, max: this.config.poolMax ?? 10 })
 
     // Boot resilience — cùng lý do/pattern retry đã có ở auth-users
     // (pg_isready healthy không đảm bảo connection đầu tiên luôn thành công

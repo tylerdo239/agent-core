@@ -3,6 +3,7 @@ import '../../../seams/skill.ts'
 import '../../../seams/storage.ts'
 import '../../../seams/tools.ts'
 import '../../../seams/sessions.ts'
+import { sanitizeEventField } from '../../../src/leaked-tool-call-label.ts'
 
 function requiredString(args: Record<string, unknown>, key: string): string {
   const value = args[key]
@@ -77,14 +78,16 @@ export const apply = (ctx: Context) => {
       const resourcePath = requiredString(args, 'path')
       const ownerId = ctx.get('sessions')?.get(invocation.sessionId)?.ownerId
       const resource = await ctx.skills.readResource(name, resourcePath, ownerId)
+      // Event hiển thị ra UI — sanitize vì arg model truyền có thể nhúng nhãn
+      // nội bộ (bug user báo). Lookup phía trên dùng raw để giữ exact-match.
       const event = {
         type: 'skill_resource', source: invocation.source,
-        skill: name, path: resourcePath, encoding: resource.encoding,
+        skill: sanitizeEventField(name), path: sanitizeEventField(resourcePath), encoding: resource.encoding,
       }
       await ctx.storage.appendEvent(invocation.sessionId, event)
       ctx.emit('agent/step', {
         sessionId: invocation.sessionId,
-        step: { type: 'skill_resource', skill: name, path: resourcePath, encoding: resource.encoding },
+        step: { type: 'skill_resource', skill: sanitizeEventField(name), path: sanitizeEventField(resourcePath), encoding: resource.encoding },
       })
       return resource
     },

@@ -10,8 +10,9 @@ import '../../../seams/skill-selection.ts'
 import { assertNotCancelled, LoopStep, LoopTurnResult, Session, TurnInput } from '../../../seams/loop.ts'
 import { SandboxEvent } from '../../../seams/sandbox.ts'
 import { classifyError, isHarnessErrorCode } from '../../../src/errors.ts'
+import { sanitizeEventField, stripLeakedToolCallLabels } from '../../../src/leaked-tool-call-label.ts'
 import { prepareRlmTurn, RlmSessionState } from './protocol.ts'
-import { resolveActiveSkills } from '../../../src/skill-runtime.ts'
+import { resolveActiveSkills, buildSkillRouterQuery } from '../../../src/skill-runtime.ts'
 
 function number(value: unknown): number | undefined {
   return typeof value === 'number' ? value : undefined
@@ -40,7 +41,9 @@ function toStep(event: SandboxEvent): LoopStep | undefined {
     case 'analysis':
       return {
         type: 'analysis',
-        content: String(event.content ?? ''),
+        // analysis render thẳng ra UI ('🧠 Think') — strip nhãn nội bộ model
+        // vô tình nhúng giữa text (bug user báo ở skill_resource, cùng họ).
+        content: stripLeakedToolCallLabels(String(event.content ?? '')),
         iteration,
         decisionSummary: typeof event.decision_summary === 'string' ? event.decision_summary : undefined,
       }
@@ -48,18 +51,21 @@ function toStep(event: SandboxEvent): LoopStep | undefined {
     case 'skill_resource':
       return {
         type: event.type,
-        skill: String(event.skill ?? ''),
-        path: typeof event.path === 'string' ? event.path : undefined,
+        // skill/path do model truyền (arg của skill_resource()) — sanitize để
+        // path bẩn kiểu `refs/a.md.\n[tool_call:web_search({...})]` không chảy
+        // verbatim ra UI (bug user báo) lẫn storage/resume.
+        skill: sanitizeEventField(event.skill),
+        path: typeof event.path === 'string' ? sanitizeEventField(event.path) : undefined,
         encoding: typeof event.encoding === 'string' ? event.encoding : undefined,
       }
     case 'workspace_read':
       return {
         type: 'workspace_read',
-        action: String(event.action ?? 'read'),
-        path: typeof event.path === 'string' ? event.path : undefined,
+        action: sanitizeEventField(event.action ?? 'read'),
+        path: typeof event.path === 'string' ? sanitizeEventField(event.path) : undefined,
       }
     case 'workspace_write':
-      return { type: 'workspace_write', path: String(event.path ?? '') }
+      return { type: 'workspace_write', path: sanitizeEventField(event.path ?? '') }
     case 'code':
       return { type: 'code', code: String(event.code ?? ''), iteration, block }
     case 'observation':
@@ -74,14 +80,14 @@ function toStep(event: SandboxEvent): LoopStep | undefined {
     case 'tool_call':
       return {
         type: 'tool_call',
-        name: String(event.name ?? ''),
+        name: sanitizeEventField(event.name ?? ''),
         args: record(event.args),
         toolUi: record(event.toolUi),
       }
     case 'tool_result':
       return {
         type: 'tool_result',
-        name: String(event.name ?? ''),
+        name: sanitizeEventField(event.name ?? ''),
         result: event.result,
         toolUi: record(event.toolUi),
       }
@@ -102,12 +108,30 @@ function toStep(event: SandboxEvent): LoopStep | undefined {
       return { type: 'human_decision', control }
     }
     case 'final_answer':
-      return { type: 'final', content: String(event.content ?? '') }
+      return { type: 'final', content: stripLeakedToolCallLabels(String(event.content ?? '')) }
     case 'error':
-      return { type: 'error', message: String(event.message ?? 'RLM worker failed') }
+      return { type: 'error', message: stripLeakedToolCallLabels(String(event.message ?? 'RLM worker failed')) }
     default:
       return undefined
   }
+}
+
+/**
+ * Nhãn nội bộ `[tool_call:...]` do model nhúng vào field hiển thị (skill/path/
+ * action/name/content/message) phải được lột TRƯỚC KHI lưu storage — nếu chỉ
+ * sanitize ở toStep (live emit), resume session cũ qua GET /events vẫn đọc
+ * event thô và hiện rác (đúng bug user báo). `code`/`observation`/`args` giữ
+ * nguyên verbatim để bảo toàn audit fidelity (đó là data, không phải descriptor).
+ */
+function sanitizeRlmEvent(event: SandboxEvent): SandboxEvent {
+  const clean: SandboxEvent = { ...event }
+  if (typeof clean.skill === 'string') clean.skill = sanitizeEventField(clean.skill)
+  if (typeof clean.path === 'string') clean.path = sanitizeEventField(clean.path)
+  if (typeof clean.action === 'string') clean.action = sanitizeEventField(clean.action)
+  if (typeof clean.name === 'string') clean.name = sanitizeEventField(clean.name)
+  if (typeof clean.content === 'string') clean.content = stripLeakedToolCallLabels(clean.content)
+  if (typeof clean.message === 'string') clean.message = stripLeakedToolCallLabels(clean.message)
+  return clean
 }
 
 /**
@@ -179,13 +203,33 @@ export const apply = (ctx: Context) => {
       let active = activeSkills[0]
       if (!active) {
         const selector = runCtx.get('skillSelection')
-        const semantic = await selector?.select(input.message, skillCatalog, input.signal)
+        // Như loop-default: enrich router query bằng rolling summary có sẵn
+        // của turnMemory (best-effort — summary rỗng/lỗi thì query nguyên
+        // message). Không thêm seam/provider mới.
+        let routerQuery = input.message
+        try {
+          const memSummary = await memoryService.summary(session.id)
+          if (memSummary?.trim()) routerQuery = buildSkillRouterQuery(input.message, { summary: memSummary })
+        } catch {
+          // summary lỗi -> router chạy mù như cũ, turn không ảnh hưởng
+        }
+        // Như loop-default: router sập không được sập turn — catalog vẫn nằm
+        // trong prepared context để model tự gọi tool `skill`.
+        let semantic: Awaited<ReturnType<NonNullable<typeof selector>['select']>> | undefined
+        let selectorError: string | undefined
+        try {
+          semantic = await selector?.select(routerQuery, skillCatalog, input.signal)
+        } catch (error) {
+          selectorError = error instanceof Error ? error.message : String(error)
+          runCtx.logger('loop-rlm').warn('skill router failed, continuing without semantic skill: %s', selectorError)
+        }
         if (selector) {
           await runCtx.storage.appendEvent(session.id, {
             type: 'skill_selection', source: 'rlm', strategy: 'semantic',
-            outcome: semantic?.skill ? 'selected' : 'none',
+            outcome: selectorError ? 'error' : semantic?.skill ? 'selected' : 'none',
             skill: semantic?.skill?.name, model: semantic?.model, usage: semantic?.usage,
             decision: semantic?.decision,
+            ...(selectorError ? { error: selectorError } : {}),
           })
         }
         if (semantic?.skill) {
@@ -250,11 +294,14 @@ export const apply = (ctx: Context) => {
               if (activityStep) runCtx.emit('agent/step', { sessionId: session.id, step: activityStep })
             }
           }
-          await runCtx.storage.appendEvent(session.id, { ...event, source: 'rlm' })
-          const step = toStep(event)
+          // Sanitize TRƯỚC KHI lưu (xem sanitizeRlmEvent): storage là nguồn
+          // sự thật cho resume — event bẩn lọt vào đây là UI hiện rác vĩnh viễn.
+          const cleanEvent = sanitizeRlmEvent(event)
+          await runCtx.storage.appendEvent(session.id, { ...cleanEvent, source: 'rlm' })
+          const step = toStep(cleanEvent)
           if (step) runCtx.emit('agent/step', { sessionId: session.id, step })
           if (event.type === 'iteration_completed') steps++
-          if (event.type === 'final_answer') finalContent = String(event.content ?? '')
+          if (event.type === 'final_answer') finalContent = stripLeakedToolCallLabels(String(event.content ?? ''))
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -271,7 +318,9 @@ export const apply = (ctx: Context) => {
 
       if (!result) throw new Error('RLM worker ended without a turn result')
       const status = String(result.status ?? 'failed') as LoopTurnResult['status']
-      const content = String(result.answer ?? finalContent ?? '')
+      // answer từ Python có thể nhúng nhãn nội bộ model echo — strip trước
+      // khi trả về caller (REST/WS/gRPC) lẫn recordAssistant ngay dưới.
+      const content = stripLeakedToolCallLabels(String(result.answer ?? finalContent ?? ''))
       const memory = record(result.memory)
       const state = session.extension<RlmSessionState>('loop:rlm', () => ({ contextIndex: 0, historyIndex: 0 }))
       // BUG-10: turn_issue từ python (crash đã classify / cạn iteration /

@@ -84,13 +84,24 @@ const DEFAULT_WS_MAX_PAYLOAD_BYTES = 1024 * 1024 // 1 MiB
 async function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
   const chunks: Buffer[] = []
   let total = 0
+  let overflow = false
+  // Deploy thật: khi vượt giới hạn VẪN PHẢI đọc nốt phần body còn lại (bỏ đi,
+  // không buffer) rồi mới throw — throw giữa chừng để lại dữ liệu dở trên
+  // socket, Node không tái dùng được connection cho keep-alive nên reset nó,
+  // khiến request KẾ TIẾP của client trên cùng connection dính ECONNRESET oan
+  // (đo được qua test: sau 1 request 2MiB bị 413, signup ngay sau đó fail).
+  // (Không dùng req.resume() ở đây: xung đột với `for await` đang giữ stream.)
   for await (const chunk of req) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
     total += buffer.length
     if (total > maxBytes) {
-      throw Object.assign(new Error(`request body exceeds ${maxBytes} bytes`), { status: 413 })
+      overflow = true
+      continue
     }
-    chunks.push(buffer)
+    if (!overflow) chunks.push(buffer)
+  }
+  if (overflow) {
+    throw Object.assign(new Error(`request body exceeds ${maxBytes} bytes`), { status: 413 })
   }
   return Buffer.concat(chunks)
 }

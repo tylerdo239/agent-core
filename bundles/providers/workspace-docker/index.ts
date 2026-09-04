@@ -65,7 +65,8 @@ export class WorkspaceDocker extends WorkspaceService {
   }
 
   async writeFile(sessionId: string, filename: string, content: Buffer): Promise<{ path: string; size: number }> {
-    const safe = filename.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/^[.-]+|[.-]+$/g, '') || 'upload'
+    // Cùng fix Unicode như workspace-local (giữ chữ Việt, chỉ thay ký tự lạ).
+    const safe = filename.normalize('NFC').replace(/[^\p{L}\p{N}._-]+/gu, '_').replace(/^[.-]+|[.-]+$/g, '') || 'upload'
     const sandbox = this.ctx.get('sandbox') as { request?: (id: string, op: string, p: Record<string, unknown>) => AsyncIterable<Record<string, unknown>>; openSession?: (id: string, o: { cwd: string }) => Promise<void> } | undefined
     if (!sandbox?.request) throw new Error('workspace-docker requires a sandbox provider')
     await sandbox.openSession!(sessionId, { cwd: this.root(sessionId) })

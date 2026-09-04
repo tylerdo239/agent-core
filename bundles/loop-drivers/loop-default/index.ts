@@ -23,17 +23,25 @@ import '../../../seams/context-compactor.ts'
 import { MemoryEntry } from '../../../seams/memory.ts'
 import { assertNotCancelled, LoopTurnResult, Session, TurnInput } from '../../../seams/loop.ts'
 import { ToolExecutionError } from '../../../seams/tools.ts'
-import { resolveActiveSkills, skillCatalogGuidance } from '../../../src/skill-runtime.ts'
+import { resolveActiveSkills, skillCatalogGuidance, buildSkillRouterQuery } from '../../../src/skill-runtime.ts'
 import { injectEnvironmentNote } from '../../../src/environment-note.ts'
 import { classifyError } from '../../../src/errors.ts'
-import { repairLeakedToolCallLabel } from '../../../src/leaked-tool-call-label.ts'
+import { repairLeakedToolCallLabel, stripLeakedToolCallLabels } from '../../../src/leaked-tool-call-label.ts'
 
-/** Map mã ToolExecutionError nội bộ sang harness taxonomy chuẩn (src/errors.ts). */
+/**
+ * Map mã ToolExecutionError nội bộ sang harness taxonomy chuẩn (src/errors.ts).
+ * Self-improve (deploy): TOOL_TIMEOUT tách riêng thành TIMEOUT thay vì gộp
+ * chung TOOL_EXEC — timeout là hết giờ (model nên chốt partial answer, không
+ * retry mù), còn TOOL_EXEC là handler lỗi logic (đáng retry/sửa args). Gộp
+ * chung làm model không phân biệt được 2 chiến lược phục hồi khác nhau.
+ * TOOL_PERMISSION_DENIED giữ TOOL_EXEC: guidance của nó ("retry nếu transient,
+ * không thì đường khác") vẫn đúng cho policy-deny.
+ */
 const TOOL_CODE_TO_TAXONOMY: Record<string, string> = {
   TOOL_NOT_FOUND: 'TOOL_NOT_FOUND',
   TOOL_ARGS_INVALID: 'TOOL_ARGS',
   TOOL_PERMISSION_DENIED: 'TOOL_EXEC',
-  TOOL_TIMEOUT: 'TOOL_EXEC',
+  TOOL_TIMEOUT: 'TIMEOUT',
   TOOL_CANCELLED: 'CANCELLED',
   TOOL_HANDLER_ERROR: 'TOOL_EXEC',
 }
@@ -64,13 +72,29 @@ export const apply = (ctx: Context) => {
       // provider optional: không mount thì bỏ qua êm, không throw.
       if (!activeSkills.length) {
         const selector = runCtx.get('skillSelection')
-        const semantic = await selector?.select(userMessage, skillCatalog, input.signal)
+        // Router query enrich bằng history ĐÃ CÓ trong Session (lúc này chưa
+        // chứa message hiện tại — buildPrompt chạy sau) để turn "làm tiếp như
+        // trên" vẫn định tuyến đúng; turn đầu không history thì query nguyên
+        // message. Không đổi seam/provider: chỉ là chuỗi text đầu vào select().
+        const routerQuery = buildSkillRouterQuery(userMessage, { history: session.history })
+        // Deploy thật: router LLM có thể sập (provider 5xx/timeout) — đây chỉ
+        // là gợi ý tối ưu, không phải lý do để sập cả turn. Catch, ghi event
+        // observable rồi đi tiếp không skill (model vẫn còn tool `skill`).
+        let semantic: Awaited<ReturnType<NonNullable<typeof selector>['select']>> | undefined
+        let selectorError: string | undefined
+        try {
+          semantic = await selector?.select(routerQuery, skillCatalog, input.signal)
+        } catch (error) {
+          selectorError = error instanceof Error ? error.message : String(error)
+          runCtx.logger('loop-default').warn('skill router failed, continuing without semantic skill: %s', selectorError)
+        }
         if (selector) {
           await runCtx.storage.appendEvent(session.id, {
             type: 'skill_selection', source: 'default-loop', strategy: 'semantic',
-            outcome: semantic?.skill ? 'selected' : 'none',
+            outcome: selectorError ? 'error' : semantic?.skill ? 'selected' : 'none',
             skill: semantic?.skill?.name, model: semantic?.model, usage: semantic?.usage,
             decision: semantic?.decision,
+            ...(selectorError ? { error: selectorError } : {}),
           })
         }
         if (semantic?.skill) {
@@ -88,10 +112,16 @@ export const apply = (ctx: Context) => {
       // memory-tencentdb mount thành công nhưng recall() không bao giờ tới
       // được provider khi còn dùng optional-chaining + try/catch quanh
       // property access (xem chú thích đầy đủ hơn tại bundles/providers/
-      // agent-runner). `recall()` bản thân đã best-effort (log-and-swallow
-      // bên trong provider), nên không cần try/catch ở đây nữa.
-      const recalled: MemoryEntry[] =
-        (await runCtx.get('memory')?.recall(session.id, userMessage, 3, { userId: session.ownerId })) ?? []
+      // agent-runner).
+      // Deploy thật (self-improve): `recall()` có thể throw khi backend memory
+      // chập chờn (TencentDB timeout/5xx) — memory chỉ là gợi ý nền, không
+      // được sập turn. Catch, log warn, đi tiếp với [] (turnNotes tự loại).
+      let recalled: MemoryEntry[] = []
+      try {
+        recalled = (await runCtx.get('memory')?.recall(session.id, userMessage, 3, { userId: session.ownerId })) ?? []
+      } catch (error) {
+        runCtx.logger('loop-default').warn('memory recall failed, continuing without memory notes: %s', error instanceof Error ? error.message : String(error))
+      }
       const memoryNotes = recalled.map((m) => `Đã ghi nhớ trước đó: ${m.text}`)
       const turnNotes = () => [
         skillCatalogGuidance(
@@ -229,6 +259,14 @@ export const apply = (ctx: Context) => {
         // như plain text content thay vì gọi tool thật. Khôi phục đúng ý định
         // trước khi ghi/emit -- không để lượt đó trôi qua như rác hiển thị.
         Object.assign(response, repairLeakedToolCallLabel(response, (name) => runCtx.tools.has(name)))
+        // Mở rộng (bug user báo UI hiện rác): repair trên chỉ cứu content KHỚP
+        // CHÍNH XÁC 1 nhãn. Model còn NHÚNG nhãn giữa text dài / trong arg —
+        // những mảnh đó không phải tool call thật, chỉ là rác nội bộ lọt ra
+        // mắt user. Strip hết trước khi ghi storage/emit/recordAssistant để
+        // cả live, resume lẫn history turn sau đều sạch.
+        if (!response.toolCall && typeof response.content === 'string') {
+          response.content = stripLeakedToolCallLabels(response.content)
+        }
         if (response.usage) {
           usage ??= { inputTokens: 0, outputTokens: 0, totalTokens: 0, cost: 0 }
           usage.inputTokens += response.usage.inputTokens ?? 0

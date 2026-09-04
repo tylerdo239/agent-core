@@ -11,8 +11,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 FROM node:22-slim
 WORKDIR /app
 
+# git + curl (2026-09, bug thật tìm ra lúc thử opencode trong container):
+# docker-compose.dev.yml mount thẳng root repo (kể cả .git) với lý do rõ ràng
+# ghi trong comment của chính nó — "agent trong container git status/diff
+# được ngay trên chính repo host" — nhưng thiếu `git` thì agent nào chạy
+# trong container (opencode, hay Claude Code nếu chạy trong đây) không thể
+# làm đúng điều đó. curl thêm vào vì cùng lý do hay thiếu khi cần cài thêm
+# tool/kiểm tra network bên trong.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    make g++ sudo default-jre-headless \
+    make g++ sudo default-jre-headless git curl \
     libgdbm6 libgomp1 libncursesw6 libnsl2 libreadline8 libsqlite3-0 \
     libssl3 libtcl8.6 libtirpc3 libtk8.6 \
   && rm -rf /var/lib/apt/lists/*

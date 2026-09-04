@@ -21,6 +21,7 @@
 // tool thật thay vì để lượt đó trôi qua như 1 câu trả lời cụt lủn kèm rác
 // hiển thị xấu cho user.
 const LEAKED_LABEL_PATTERN = /^\[tool_call:([a-zA-Z_][\w-]*)\((.*)\)\]\s*$/s
+const LEAKED_LABEL_OPEN = /\[tool_call:([a-zA-Z_][\w-]*)\(/g
 
 export interface RepairableResponse {
   content: string
@@ -32,11 +33,16 @@ export interface RepairableResponse {
  * đã dùng đúng API). Chỉ sửa khi content KHỚP CHÍNH XÁC nhãn leak, JSON args
  * parse được thành object hợp lệ, và tên tool đó THẬT SỰ tồn tại trong bộ
  * tool hiện có (`toolExists`) — tránh đoán bừa khi chỉ là văn bản trùng hợp.
+ *
+ * Kiểu trả về `T & RepairableResponse`: hàm có thể THÊM `toolCall` vào response
+ * vốn không có (đúng vai trò "khôi phục ý định"), nên caller luôn đọc được
+ * `.toolCall` mà không cần cast — trước đây khai `T` thuần khiến TypeScript
+ * hiểu nhầm là "không bao giờ thêm field mới".
  */
 export function repairLeakedToolCallLabel<T extends RepairableResponse>(
   response: T,
   toolExists: (name: string) => boolean,
-): T {
+): T & RepairableResponse {
   if (response.toolCall) return response
   const match = LEAKED_LABEL_PATTERN.exec(response.content.trim())
   if (!match) return response
@@ -50,4 +56,81 @@ export function repairLeakedToolCallLabel<T extends RepairableResponse>(
   }
   if (typeof args !== 'object' || args === null || Array.isArray(args)) return response
   return { ...response, content: '', toolCall: { name, args: args as Record<string, unknown> } }
+}
+
+// Bug production tiếp theo (user báo UI hiện rác — xem ghi chú triển khai ở
+// cuối file): model không chỉ echo nhãn nội bộ `[tool_call:name(args)]` như
+// ĐÚNG 1 content (case repair ở trên cứu được), mà còn NHÚNG nó giữa text
+// dài, hoặc tệ hơn là nhét vào ARG của tool/event khác (vd. path của
+// `skill_resource` = `references/kpi-framework.md.\n[tool_call:web_search({...})]`),
+// rồi chuỗi bẩn đó chảy verbatim qua event → storage → UI. repair() exact-match
+// bỏ lọt 100% các case này — user thấy JSON kỹ thuật thô.
+//
+// Fix: STRIP mọi nhãn well-formed khỏi chuỗi hiển thị/field sự kiện. Nhãn nội
+// bộ không bao giờ là nội dung user-facing hợp lệ, nên xoá là an toàn (không
+// đoán ý định như repair). Quét cân bằng ngoặc có tôn trọng string quote để
+// JSON args chứa `)]` (vd. query "a)b]c") không làm strip dở dang.
+export function stripLeakedToolCallLabels(text: string): string {
+  if (!text || !text.includes('[tool_call:')) return text
+  let out = ''
+  let cursor = 0
+  LEAKED_LABEL_OPEN.lastIndex = 0
+  while (true) {
+    LEAKED_LABEL_OPEN.lastIndex = cursor
+    const match = LEAKED_LABEL_OPEN.exec(text)
+    if (!match || match.index < cursor) break
+    const scan = match.index + match[0].length
+    const end = findLabelEnd(text, scan)
+    if (end === -1) {
+      // Mở nhãn nhưng không đóng hợp lệ (model gõ dở, cụt) — giữ nguyên phần
+      // còn lại, không mangle text thật của user.
+      break
+    }
+    out += text.slice(cursor, match.index)
+    cursor = end
+  }
+  return out + text.slice(cursor)
+}
+
+/** Từ sau `name(`, tìm `)]` đóng tương ứng; -1 nếu cụt/không hợp lệ. */
+function findLabelEnd(text: string, from: number): number {
+  let depth = 1
+  let i = from
+  while (i < text.length) {
+    const ch = text[i]
+    if (ch === '"' || ch === "'") {
+      // Bỏ qua string quote (JSON args) — `)]` trong query là data, không
+      // phải đóng nhãn. Tôn trọng backslash escape.
+      const quote = ch
+      i++
+      while (i < text.length) {
+        if (text[i] === '\\') { i += 2; continue }
+        if (text[i] === quote) break
+        i++
+      }
+      i++ // qua quote đóng (hoặc hết chuỗi -> vòng ngoài trả -1)
+      continue
+    }
+    if (ch === '(') depth++
+    else if (ch === ')') {
+      depth--
+      if (depth === 0) {
+        return text[i + 1] === ']' ? i + 2 : -1
+      }
+    }
+    i++
+  }
+  return -1
+}
+
+/**
+ * Field sự kiện/model-controlled (skill name, resource path, tool name...):
+ * strip nhãn + ép 1 dòng + trim. Path/name hợp lệ không bao giờ chứa newline;
+ * cắt dòng đầu để arg bẩn kiểu `path + "\\n" + label` không lọt rác xuống UI
+ * ngay cả khi label vì lý do nào đó không well-formed (không strip được).
+ */
+export function sanitizeEventField(value: unknown): string {
+  const stripped = stripLeakedToolCallLabels(String(value ?? ''))
+  const firstLine = stripped.split('\n', 1)[0] ?? ''
+  return firstLine.replace(/\r$/, '').trim()
 }

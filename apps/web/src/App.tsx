@@ -36,6 +36,7 @@
 // tự lọc đúng session CỦA CHÍNH caller nhờ ownerId) thay vì localStorage —
 // xem packages/ui-sidebar/src/sessionHistory.ts cho lý do đầy đủ.
 import { useEffect, useRef, useState } from 'react'
+import { sanitizeEventField, stripLeakedToolCallLabels } from './sanitize.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import { RenderSlot } from '@agent-core/ui-react'
 import type { ToolViewOwnerProps } from '@agent-core/ui-slots'
@@ -213,31 +214,41 @@ function toolRowSummary(item: Extract<ChatItem, { kind: 'tool' }>): string {
   // vì UI đoán tên field theo tool cụ thể.
   if (item.toolUi?.summaryArg) {
     const value = (item.toolCall.args as Record<string, unknown> | undefined)?.[item.toolUi.summaryArg]
-    if (typeof value === 'string' && value) return `"${value}"`
+    // summary hiện thẳng arg model truyền — lột nhãn nội bộ nếu model nhúng vào.
+    if (typeof value === 'string' && value) return stripLeakedToolCallLabels(`"${value}"`)
   }
-  return JSON.stringify(item.toolCall.args ?? {})
+  return stripLeakedToolCallLabels(JSON.stringify(item.toolCall.args ?? {}))
 }
 
 function workspaceReadActivity(step: Pick<LoopStep, 'action' | 'path'>) {
-  const action = step.action ?? 'đọc'
+  // sanitize: event bẩn cũ trong DB (path nhúng nhãn nội bộ) resume ra vẫn
+  // sạch ở lớp render cuối cùng (xem apps/web/src/sanitize.ts).
+  const action = sanitizeEventField(step.action ?? 'đọc') || 'đọc'
+  const safePath = typeof step.path === 'string' ? sanitizeEventField(step.path) : ''
   const normalized = action.toLowerCase()
   let description = 'Đọc dữ liệu từ workspace để phục vụ lượt phân tích hiện tại.'
   if (normalized === 'list datasets') description = 'Kiểm tra các dataset hiện có trong workspace.'
   else if (normalized === 'profile dataset') description = 'Đọc cấu trúc, kiểu dữ liệu và thống kê cơ bản của dataset.'
-  else if (normalized === 'load dataset') description = `Nạp ${step.path || 'dataset'} vào môi trường Python để xử lý.`
+  else if (normalized === 'load dataset') description = `Nạp ${safePath || 'dataset'} vào môi trường Python để xử lý.`
   else if (normalized === 'list files') description = 'Kiểm tra các file hiện có trong workspace.'
-  else if (normalized === 'read file') description = `Đọc ${step.path || 'file'} từ workspace.`
+  else if (normalized === 'read file') description = `Đọc ${safePath || 'file'} từ workspace.`
   return { text: `📄 ${action}`, description }
 }
 
 function workspaceWriteActivity(path = '') {
-  const lower = path.toLowerCase()
+  const safePath = sanitizeEventField(path)
+  const lower = safePath.toLowerCase()
   let description = 'Lưu kết quả vào workspace để tải xuống hoặc sử dụng ở lượt sau.'
   if (lower.endsWith('.json')) description = 'Lưu kết quả dạng JSON vào workspace để tải xuống hoặc dùng lại.'
   else if (/\.(md|html|pdf)$/.test(lower)) description = 'Lưu báo cáo hoàn chỉnh vào workspace.'
   else if (/\.(csv|parquet|xlsx)$/.test(lower)) description = 'Lưu dataset kết quả vào workspace.'
-  if (path) description = `${description.replace(/\.$/, '')}: ${path}`
+  if (safePath) description = `${description.replace(/\.$/, '')}: ${safePath}`
   return { text: '💾 ghi output', description }
+}
+
+/** Mô tả do model viết (analysis/critic) có thể nhúng nhãn nội bộ — lột lúc render. */
+function cleanDescription(value: string | undefined): string | undefined {
+  return typeof value === 'string' ? stripLeakedToolCallLabels(value) : value
 }
 
 export function App() {
@@ -616,7 +627,17 @@ export function App() {
       })
 
       ws.addEventListener('message', (event) => {
-        const msg = JSON.parse(event.data)
+        // Deploy thật: proxy/load-balancer có thể chêm frame lạ, hoặc 1 bản
+        // server cũ/mới lệch protocol gửi payload không phải JSON — throw ở
+        // đây sập cả listener (mọi step sau đó mất theo). Bỏ qua frame hỏng,
+        // giữ stream sống cho các message hợp lệ tiếp theo.
+        let msg: { type?: string; step?: LoopStep; message?: string; sessionId?: string }
+        try {
+          msg = JSON.parse(String(event.data))
+        } catch {
+          return
+        }
+        if (!msg || typeof msg !== 'object') return
 
         if (msg.type === 'step') {
           applyStep(msg.step as LoopStep)
@@ -820,7 +841,7 @@ export function App() {
       return
     }
     if (step.type === 'critic_message') {
-      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '🔍 Rà soát', description: step.content, ts: Date.now() }])
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '🔍 Rà soát', description: cleanDescription(step.content), ts: Date.now() }])
       return
     }
     if (step.type === 'final') {
@@ -838,15 +859,15 @@ export function App() {
       return
     }
     if (step.type === 'analysis' && step.content) {
-      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '🧠 Think', description: step.content }])
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '🧠 Think', description: cleanDescription(step.content) }])
       return
     }
     if (step.type === 'skill_loaded') {
-      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '📚 Skill', description: `Đọc ${step.skill ?? 'unknown'} để áp dụng hướng dẫn chuyên môn.` }])
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '📚 Skill', description: `Đọc ${sanitizeEventField(step.skill ?? 'unknown') || 'unknown'} để áp dụng hướng dẫn chuyên môn.` }])
       return
     }
     if (step.type === 'skill_resource') {
-      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '📚 Skill resource', description: `Đọc ${step.skill ?? 'unknown'}${step.path ? `/${step.path}` : ''}.` }])
+      setItems((prev) => [...prev, { kind: 'critic', id: genId(), text: '📚 Skill resource', description: `Đọc ${sanitizeEventField(step.skill ?? 'unknown') || 'unknown'}${step.path ? `/${sanitizeEventField(step.path)}` : ''}.` }])
       return
     }
     if (step.type === 'workspace_read') {
@@ -1093,19 +1114,19 @@ export function App() {
         continue
       }
       if (step.type === 'critic_message') {
-        result.push({ kind: 'critic', id: genId(), text: '🔍 Rà soát', description: step.content })
+        result.push({ kind: 'critic', id: genId(), text: '🔍 Rà soát', description: cleanDescription(step.content) })
         continue
       }
       if (step.type === 'analysis' && step.content) {
-        result.push({ kind: 'critic', id: genId(), text: '🧠 Think', description: step.content })
+        result.push({ kind: 'critic', id: genId(), text: '🧠 Think', description: cleanDescription(step.content) })
         continue
       }
       if (step.type === 'skill_loaded') {
-        result.push({ kind: 'critic', id: genId(), text: '📚 Skill', description: `Đọc ${step.skill ?? 'unknown'} để áp dụng hướng dẫn chuyên môn.` })
+        result.push({ kind: 'critic', id: genId(), text: '📚 Skill', description: `Đọc ${sanitizeEventField(step.skill ?? 'unknown') || 'unknown'} để áp dụng hướng dẫn chuyên môn.` })
         continue
       }
       if (step.type === 'skill_resource') {
-        result.push({ kind: 'critic', id: genId(), text: '📚 Skill resource', description: `Đọc ${step.skill ?? 'unknown'}${step.path ? `/${step.path}` : ''}.` })
+        result.push({ kind: 'critic', id: genId(), text: '📚 Skill resource', description: `Đọc ${sanitizeEventField(step.skill ?? 'unknown') || 'unknown'}${step.path ? `/${sanitizeEventField(step.path)}` : ''}.` })
         continue
       }
       if (step.type === 'workspace_read') {

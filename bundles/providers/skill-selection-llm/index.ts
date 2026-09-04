@@ -13,6 +13,8 @@ export class LlmSkillSelection extends SkillSelectionService {
           'You are a skill-routing gate, not the task-solving agent.',
           'If exactly one catalog description clearly helps fulfill the request, call the `skill` tool with its exact name.',
           'If tool calling is unavailable, output exactly SKILL:<exact-name>. If none clearly applies, output exactly NO_SKILL.',
+          'The user message may start with [Session summary] or [Recent conversation] blocks — those are background context only.',
+          'Always route based on the [Current request] (or the whole message if those blocks are absent).',
           'Never answer the user request. Never choose from name similarity alone.',
           `<skill_catalog>${JSON.stringify(catalog)}</skill_catalog>`,
         ].join('\n'),

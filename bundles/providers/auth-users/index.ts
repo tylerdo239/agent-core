@@ -27,6 +27,10 @@ const CONNECT_RETRY_BASE_DELAY_MS = 500
 export namespace AuthUsers {
   export interface Config {
     connectionString: string
+    // Self-improve (test song song cạn max_connections): pool mặc định của pg
+    // là 10/provider — 3 provider PG × N server test song song dễ vượt trần
+    // Postgres. Cho phép cấu hình trần để deploy/test nhỏ giới hạn tài nguyên.
+    poolMax?: number
   }
 }
 
@@ -46,7 +50,7 @@ export class AuthUsers extends AuthService {
   }
 
   async [Service.init]() {
-    this.pool = new Pool({ connectionString: this.config.connectionString })
+    this.pool = new Pool({ connectionString: this.config.connectionString, max: this.config.poolMax ?? 10 })
 
     // Boot resilience: docker-compose `depends_on: condition: service_healthy`
     // xử lý trường hợp thường gặp, nhưng `pg_isready` báo healthy và Postgres

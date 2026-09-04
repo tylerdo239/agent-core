@@ -83,8 +83,12 @@ export async function prepareRlmTurn(options: {
     historyIndex: 0,
   }))
   const snapshot = await memory.snapshot(session.id, {
-    activeDatasets: workspace.resources.datasets,
-    artifacts: workspace.resources.artifacts,
+    // Deploy thật: workspace provider custom/malformed có thể thiếu `resources`
+    // (undefined) — trước đây `workspace.resources.datasets` throw TypeError thô
+    // làm sập turn với message khó debug. Default về []: turn vẫn chạy với
+    // context ít dữ liệu hơn, đúng tinh thần degrade thay vì crash.
+    activeDatasets: workspace.resources?.datasets ?? [],
+    artifacts: workspace.resources?.artifacts ?? [],
     currentContextIndex: state.contextIndex,
   })
   const sessionMemory = {
@@ -97,7 +101,7 @@ export async function prepareRlmTurn(options: {
     ? {
         type: 'user_request',
         request: input.message,
-        datasets: workspace.datasets,
+        datasets: workspace.datasets ?? [],
         active_dataset: workspace.activeDataset,
         session_memory: sessionMemory,
       }

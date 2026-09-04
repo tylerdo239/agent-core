@@ -136,7 +136,24 @@ export class ContextCompactorLlmProvider extends ContextCompactorService {
     const currentUser = currentUserIndex >= 0 ? body[currentUserIndex] : undefined
     const progress = currentUserIndex >= 0 ? body.slice(currentUserIndex + 1) : []
     if (!prior.length && !progress.length) {
-      throw new Error('context is above threshold but contains no compactable history')
+      // Deploy thật: 1 message đơn khổng lồ (paste 100k chars, dump log) vượt
+      // threshold nhưng không có history để nén — throw ở đây làm cả turn fail
+      // cứng trong khi vẫn còn cách cứu: cắt bớt chính message đó (đánh dấu
+      // [truncated]) để turn tiếp tục. Chỉ throw khi thực sự không có gì
+      // (body rỗng hoàn toàn) — trường hợp đó là bug caller, không cứu được.
+      if (!currentUser) {
+        throw new Error('context is above threshold but contains no compactable history')
+      }
+      const clipped = clip(currentUser.content, 6_000)
+      const truncated: LlmMessage[] = []
+      if (leadingSystem) truncated.push(leadingSystem)
+      truncated.push({ ...currentUser, content: clipped })
+      return {
+        messages: truncated,
+        summary: clipped,
+        quality: 'fallback',
+        error: 'single oversized message truncated in place (no compactable history)',
+      }
     }
 
     let priorSummary = ''

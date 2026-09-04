@@ -26,8 +26,13 @@ export interface RenderedWithEnv {
 // ngoái", "gần đây") thay vì chỉ có "hôm nay" — 3 cụm còn thiếu chính là
 // nguyên nhân model không nối được chúng với ghi chú ngày ở trên.
 export function environmentNote(now: Date = new Date()): string {
-  const iso = now.toISOString()
-  const currentYear = now.getUTCFullYear()
+  // Deploy thật: caller có thể truyền Invalid Date (parse chuỗi ngày từ config/
+  // user input hỏng) — `toISOString()` throw RangeError làm sập cả turn chỉ vì
+  // cái ghi chú ngày. Fallback về "bây giờ" thật thay vì throw: note có thể
+  // lệch nhưng turn vẫn sống; caller muốn strict thì tự validate trước.
+  const safe = now instanceof Date && !Number.isNaN(now.getTime()) ? now : new Date()
+  const iso = safe.toISOString()
+  const currentYear = safe.getUTCFullYear()
   const lastYear = currentYear - 1
   return [
     '',
