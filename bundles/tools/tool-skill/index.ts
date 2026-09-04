@@ -4,6 +4,7 @@ import '../../../seams/storage.ts'
 import '../../../seams/tools.ts'
 import '../../../seams/sessions.ts'
 import { sanitizeEventField } from '../../../src/leaked-tool-call-label.ts'
+import { serves } from '../../../src/skill-runtime.ts'
 
 function requiredString(args: Record<string, unknown>, key: string): string {
   const value = args[key]
@@ -18,6 +19,11 @@ function requiredString(args: Record<string, unknown>, key: string): string {
 // buộc -- ép inject cứng sẽ chặn apply() ở bất kỳ fixture/test nào mount
 // tool-skill mà không mount session-registry (gap thật gặp phải: làm rỗng
 // toàn bộ tool catalog trong tests/skill-semantic-discovery.test.ts).
+// `invocation.source` là danh tính người gọi tool (loop-default ghi
+// 'default-loop', worker RLM ghi 'rlm'); map sang tên driver để lọc
+// SkillDefinition.drivers. Nguồn lạ -> undefined = không lọc, giữ hành vi cũ.
+const SOURCE_TO_DRIVER: Record<string, string> = { 'default-loop': 'default', rlm: 'rlm' }
+
 export const inject = ['tools', 'skills', 'storage']
 
 export const apply = (ctx: Context) => {
@@ -39,9 +45,13 @@ export const apply = (ctx: Context) => {
     async handler(args, invocation) {
       const name = requiredString(args, 'name')
       const ownerId = ctx.get('sessions')?.get(invocation.sessionId)?.ownerId
+      const driver = SOURCE_TO_DRIVER[invocation.source]
       const definition = ctx.skills.get(name, ownerId)
-      if (!definition) {
-        const available = ctx.skills.list({ topLevelOnly: true, visibleTo: ownerId }).map((item) => item.name)
+      // Catalog đã lọc theo driver, nhưng model vẫn có thể đoán bừa một tên
+      // ngoài catalog. Chặn ở đây để loop này không nạp được hướng dẫn nó
+      // không có tool để thực hiện (xem seams/skill.ts SkillDefinition.drivers).
+      if (!definition || !serves(definition.drivers, driver)) {
+        const available = ctx.skills.list({ topLevelOnly: true, visibleTo: ownerId, driver }).map((item) => item.name)
         throw new Error(`skill "${name}" not found; available: ${available.join(', ')}`)
       }
       const event = { type: 'skill_loaded', source: invocation.source, activation: 'agent', skill: name }
@@ -79,6 +89,10 @@ export const apply = (ctx: Context) => {
       const name = sanitizeEventField(requiredString(args, 'name'))
       const resourcePath = sanitizeEventField(requiredString(args, 'path'))
       const ownerId = ctx.get('sessions')?.get(invocation.sessionId)?.ownerId
+      const owning = ctx.skills.get(name, ownerId)
+      if (!owning || !serves(owning.drivers, SOURCE_TO_DRIVER[invocation.source])) {
+        throw new Error(`skill "${name}" not found`)
+      }
       const resource = await ctx.skills.readResource(name, resourcePath, ownerId)
       const event = {
         type: 'skill_resource', source: invocation.source,

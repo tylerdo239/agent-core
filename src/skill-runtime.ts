@@ -13,18 +13,30 @@ export function resolveActiveSkills(
   message: string,
   selectedSkill?: string,
   visibleTo?: string,
+  driver?: string,
 ): ActiveSkill[] {
   if (selectedSkill) {
     const selected = registry.get(selectedSkill, visibleTo)
-    if (!selected || !selected.userInvocable) {
+    // `driver` cũng kiểm ở nhánh chọn tường minh: skill khai `drivers` không
+    // chứa driver hiện tại là skill loop này KHÔNG chạy nổi (vd. skill cần
+    // sandbox Python chọn trong default-loop). Cho qua = nạp hướng dẫn model
+    // không thể làm theo — đúng lỗi mà trường `drivers` sinh ra để chặn.
+    const usable = selected && selected.userInvocable && serves(selected.drivers, driver)
+    if (!usable) {
       const available = registry
-        .list({ userInvocableOnly: true, topLevelOnly: true, visibleTo })
+        .list({ userInvocableOnly: true, topLevelOnly: true, visibleTo, driver })
         .map((skill) => skill.name)
       throw new Error(`skill "${selectedSkill}" is not user-invocable; available: ${available.join(', ')}`)
     }
     return [{ skill: selected, source: 'selected' }]
   }
-  return registry.match(message, visibleTo).map((skill) => ({ skill, source: 'trigger' }))
+  return registry.match(message, visibleTo, driver).map((skill) => ({ skill, source: 'trigger' }))
+}
+
+/** Không khai `drivers` = mọi driver dùng được (mặc định tương thích ngược). */
+export function serves(drivers: string[] | undefined, driver?: string): boolean {
+  if (!driver || !drivers?.length) return true
+  return drivers.includes(driver)
 }
 
 /**

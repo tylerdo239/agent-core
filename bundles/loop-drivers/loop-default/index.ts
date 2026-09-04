@@ -48,8 +48,11 @@ const TOOL_CODE_TO_TAXONOMY: Record<string, string> = {
 
 export const inject = ['loop']
 
+/** Tên driver đăng ký với ctx.loop; cũng là khoá lọc SkillDefinition.drivers. */
+const DRIVER = 'default'
+
 export const apply = (ctx: Context) => {
-  ctx.loop.register('default', {
+  ctx.loop.register(DRIVER, {
     async runTurn(runCtx: Context, session: Session, input: TurnInput): Promise<LoopTurnResult> {
       const userMessage = input.message
       const prompts = runCtx.get('prompts')
@@ -61,8 +64,11 @@ export const apply = (ctx: Context) => {
       // Inject ngày hiện tại (BUG temporal-grounding, xem src/environment-note.ts):
       // model không biết hôm nay là ngày nào nếu harness không nói.
       const frameworkPrompt = injectEnvironmentNote(prompts.render({ driver: 'default', sessionId: session.id }), 'end')
-      let activeSkills = resolveActiveSkills(runCtx.skills, userMessage, input.selectedSkill, session.ownerId)
-      const skillCatalog = runCtx.skills.list({ topLevelOnly: true, visibleTo: session.ownerId })
+      let activeSkills = resolveActiveSkills(runCtx.skills, userMessage, input.selectedSkill, session.ownerId, DRIVER)
+      // driver: DRIVER — default-loop KHÔNG có sandbox code lẫn workspace, nên
+      // skill khai `drivers: rlm` (đọc dataset, chạy pandas/sklearn) không được
+      // lọt vào catalog. Xem seams/skill.ts SkillDefinition.drivers.
+      const skillCatalog = runCtx.skills.list({ topLevelOnly: true, visibleTo: session.ownerId, driver: DRIVER })
       // Semantic router fallback (chuyển từ loop-rlm sang: cùng seam
       // `skillSelection`, cùng logic — không có explicit selection lẫn
       // trigger nào khớp thì hỏi 1 lượt LLM router rẻ tiền trước khi vào

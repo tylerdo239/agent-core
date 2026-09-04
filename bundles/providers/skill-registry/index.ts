@@ -24,6 +24,12 @@ function isVisible(skill: SkillDefinition, visibleTo?: string): boolean {
   return skill.ownerId === visibleTo
 }
 
+/** Không khai `drivers` = dùng được mọi driver (mặc định tương thích ngược). */
+export function servesDriver(skill: SkillDefinition, driver?: string): boolean {
+  if (!driver || !skill.drivers?.length) return true
+  return skill.drivers.includes(driver)
+}
+
 export class SkillRegistry extends SkillRegistryService {
   private skills = new Map<string, { definition: SkillDefinition; readResource?: SkillResourceReader }>()
 
@@ -70,6 +76,7 @@ export class SkillRegistry extends SkillRegistryService {
   list(options: SkillListOptions = {}) {
     const visible = [...this.skills.values()].map((entry) => entry.definition).filter((skill) => {
       if (!isVisible(skill, options.visibleTo)) return false
+      if (!servesDriver(skill, options.driver)) return false
       if (options.userInvocableOnly && !skill.userInvocable) return false
       return true
     })
@@ -91,9 +98,9 @@ export class SkillRegistry extends SkillRegistryService {
     return [...byName.values()]
   }
 
-  match(userMessage: string, visibleTo?: string) {
+  match(userMessage: string, visibleTo?: string, driver?: string) {
     const haystack = userMessage.normalize('NFKC').toLowerCase()
-    return this.list({ visibleTo }).filter((skill) =>
+    return this.list({ visibleTo, driver }).filter((skill) =>
       skill.triggers.some((trigger) => {
         const needle = trigger.normalize('NFKC').trim().toLowerCase()
         if (!needle) return false

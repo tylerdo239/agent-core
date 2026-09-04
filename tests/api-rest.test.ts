@@ -136,6 +136,23 @@ const fakeSkills = Object.assign(
   { inject: ['skills'] },
 )
 
+// Flake hạ tầng test (đo được, không phải giả thuyết): `settle()` là ĐÚNG MỘT
+// tick timer, đủ khi máy rảnh nhưng không đủ khi boot chậm (Postgres vừa
+// khởi động, hoặc cluster đã tích nhiều database do các test này KHÔNG drop
+// database chúng tạo -- CREATE DATABASE chậm dần). Fiber còn PENDING thì
+// `fiber.await()` resolve ngay lập tức mà không đợi gì (chính comment trong
+// file này đã ghi), nên `config.port` vẫn là 0 -> test fetch tới
+// http://127.0.0.1:0 -> ECONNREFUSED hàng loạt. Đợi ĐÚNG điều kiện thật cần
+// (server đã bind xong, port đã được ghi ngược vào config) thay vì đoán thời
+// gian.
+async function waitForPort(config: { port?: number }, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs
+  while (!config.port) {
+    if (Date.now() > deadline) throw new Error('server không bind được port trong thời gian chờ')
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+}
+
 async function settle() {
   // Auth-users giờ làm I/O mạng thật (Postgres qua pg.Pool), khác các provider
   // đồng bộ trước đây — 10ms (đủ cho SQLite/RBAC in-memory) không đủ cho
@@ -217,6 +234,7 @@ async function bootApp(databaseUrl: string, port = 0, extraConfig: Partial<apiRe
   // trước, sau đó `fiber.await()` mới có ý nghĩa.
   await settle()
   await fiber.await()
+  await waitForPort(config)
   return { root, fiber, config }
 }
 
@@ -256,6 +274,7 @@ async function bootAppForStreaming(databaseUrl: string) {
   const fiber = root.plugin(apiRest, config)
   await settle()
   await fiber.await()
+  await waitForPort(config)
   return { root, fiber, config }
 }
 

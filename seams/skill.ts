@@ -27,6 +27,25 @@ export interface SkillDefinition {
   resources?: SkillResource[]
   /** undefined = skill global (built-in, mọi user thấy). Có giá trị = skill riêng do 1 user tự thêm — chỉ user đó (và admin) thấy được, xem SkillListOptions.visibleTo. */
   ownerId?: string
+  /**
+   * Loop driver nào được thấy skill này. undefined/rỗng = mọi driver
+   * (mặc định, tương thích ngược).
+   *
+   * Lý do tồn tại: hai loop có NĂNG LỰC KHÁC HẲN NHAU — loop-rlm có sandbox
+   * IPython (pandas/sklearn/matplotlib) và workspace đọc/ghi file, còn
+   * default-loop chỉ có web_search/database_query, KHÔNG chạy được code và
+   * KHÔNG đọc được dataset. Trước khi có trường này, cả hai loop nhận đúng
+   * một catalog, nên default-loop được chào 14/18 skill bảo nó "đọc dataset
+   * rồi chạy Python" — đưa cho model bộ hướng dẫn nó không có cách nào làm
+   * theo. Đúng lớp lỗi "hứa năng lực không tồn tại" đã đo được ở tầng prompt
+   * (xem src/environment-note.ts, bundles/tools/tool-web-search), chỉ khác
+   * tầng. Hệ quả thứ hai: router phải phân biệt 18 mô tả gần trùng nhau thay
+   * vì đúng số skill dùng được.
+   *
+   * Cùng khuôn với PromptSection.drivers (seams/prompt.ts) — không phát minh
+   * cơ chế mới.
+   */
+  drivers?: string[]
 }
 
 export type SkillResourceKind = 'asset' | 'reference' | 'checklist' | 'script' | 'template'
@@ -48,6 +67,8 @@ export interface SkillListOptions {
   topLevelOnly?: boolean
   /** userId của caller. Khi set: ẩn skill có `ownerId` khác giá trị này (skill global — `ownerId` undefined — luôn hiện). Không set = chỉ thấy skill global. */
   visibleTo?: string
+  /** Loop driver đang hỏi. Khi set: ẩn skill khai `drivers` không chứa giá trị này. Không set = không lọc (dùng cho API quản trị/liệt kê toàn bộ). */
+  driver?: string
 }
 
 export abstract class SkillRegistryService extends Service {
@@ -76,6 +97,6 @@ export abstract class SkillRegistryService extends Service {
   abstract has(name: string, ownerId?: string): boolean
   abstract list(options?: SkillListOptions): SkillDefinition[]
   /** Trả về các skill có ≥1 trigger khớp userMessage; semantic discovery do model + tool `skill` thực hiện. */
-  abstract match(userMessage: string, visibleTo?: string): SkillDefinition[]
+  abstract match(userMessage: string, visibleTo?: string, driver?: string): SkillDefinition[]
   abstract readResource(skillName: string, resourcePath: string, visibleTo?: string): Promise<SkillResourceContent>
 }

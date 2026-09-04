@@ -176,8 +176,11 @@ function workspaceActivities(code: string): SandboxEvent[] {
 
 export const inject = ['loop']
 
+/** Tên driver đăng ký với ctx.loop; cũng là khoá lọc SkillDefinition.drivers. */
+const DRIVER = 'rlm'
+
 export const apply = (ctx: Context) => {
-  ctx.loop.register('rlm', {
+  ctx.loop.register(DRIVER, {
     async runTurn(runCtx: Context, session: Session, input: TurnInput): Promise<LoopTurnResult> {
       assertNotCancelled(input)
       // sandbox/workspace chỉ bắt buộc với driver này, không phải với
@@ -198,8 +201,8 @@ export const apply = (ctx: Context) => {
       // Explicit user selection wins. Without one, a precise trigger is the
       // deterministic fast path; semantic discovery remains available through
       // the model-facing `skill` tool and catalog in the prepared context.
-      const activeSkills = resolveActiveSkills(runCtx.skills, input.message, input.selectedSkill, session.ownerId)
-      const skillCatalog = runCtx.skills.list({ topLevelOnly: true, visibleTo: session.ownerId })
+      const activeSkills = resolveActiveSkills(runCtx.skills, input.message, input.selectedSkill, session.ownerId, DRIVER)
+      const skillCatalog = runCtx.skills.list({ topLevelOnly: true, visibleTo: session.ownerId, driver: DRIVER })
       let active = activeSkills[0]
       if (!active) {
         const selector = runCtx.get('skillSelection')

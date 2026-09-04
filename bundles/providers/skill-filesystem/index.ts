@@ -78,6 +78,8 @@ export const apply = (ctx: Context, config: SkillFilesystem.Config) => {
       description: metadata.description || '',
       instructions,
       triggers: (metadata.triggers || '').split(',').map((item) => item.trim()).filter(Boolean),
+      // `drivers: default, rlm` trong frontmatter. Không khai = mọi driver.
+      drivers: (metadata.drivers || '').split(',').map((item) => item.trim()).filter(Boolean),
       userInvocable: (metadata['user-invocable'] || 'true').toLowerCase() !== 'false',
       resources,
     }, async (resourcePath) => {
