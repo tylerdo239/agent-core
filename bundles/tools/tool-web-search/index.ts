@@ -214,6 +214,12 @@ export const apply = (ctx: Context, config: ToolWebSearch.Config = {}) => {
     order: 110,
     text: [
       'Web-search guidance:',
+      // Mệnh lệnh "phải search trước" thuộc về tool này, KHÔNG phải
+      // operating-policy tĩnh: stack không mount tool-web-search mà vẫn bị ra
+      // lệnh search thì model chỉ còn cách kể chuyện đang search rồi kết thúc
+      // turn với steps=0 (quan sát thật, lặp lại 3 lần). Đặt ở đây thì prompt
+      // tự khớp với bộ tool thực sự có mặt.
+      '- Current-state facts — prices, latest versions, officeholders, scores, recent events, anything phrased "hiện tại/hôm nay/latest" — require a `web_search` first, even when you believe you already know the answer: your training data predates today.',
       '- Use `web_search(query, limit=10)` for current or externally verifiable information; `limit` is capped at 30.',
       '- The result contains `query` and `results`, where each result has `title`, `url`, and `snippet`.',
       '- Treat snippets as leads, not complete evidence. Do not claim details absent from the returned text.',
