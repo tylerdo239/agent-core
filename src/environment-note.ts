@@ -40,7 +40,11 @@ export function environmentNote(now: Date = new Date()): string {
     `- Current date: ${iso.slice(0, 10)} (${iso.slice(11, 16)} UTC). This IS "today" — current year is ${currentYear}, last year is ${lastYear}.`,
     '- Your training data ends BEFORE this date, so anything time-sensitive (versions, prices, officeholders, rankings, recent events) may have changed.',
     `- Any phrase meaning "now"/"current"/"latest"/"recent" — including Vietnamese "hôm nay", "năm nay" (this year), "mới nhất" (latest), "gần đây" (recently), "năm ngoái" (last year) — means ${currentYear} (or ${lastYear} for "last year"). NEVER reason from a year recalled from training data.`,
-    `- When a request has no year specified and implies "latest"/"current"/"recent" data, your search query MUST explicitly include ${currentYear} — do not rely on your own sense of what year is "recent".`,
+    // Câu "search query MUST include <year>" từng nằm ở đây, nhưng ghi chú này
+    // inject VÔ ĐIỀU KIỆN cho mọi stack — nói về "search query" khi không có
+    // tool search nào là hứa năng lực không tồn tại (đo được: model narrate
+    // một cuộc tìm kiếm rồi kết thúc turn với steps=0, 3/3 lần). Nó là guidance
+    // của công cụ tìm kiếm nên đã chuyển sang section của tool-web-search.
   ].join('\n')
 }
 

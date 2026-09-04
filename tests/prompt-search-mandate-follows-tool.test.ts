@@ -12,6 +12,7 @@ import * as promptDefaultAgent from '../bundles/prompts/prompt-default-agent/ind
 import * as permissionRbac from '../bundles/providers/permission-rbac/index.ts'
 import * as toolRegistry from '../bundles/providers/tool-registry/index.ts'
 import * as toolWebSearch from '../bundles/tools/tool-web-search/index.ts'
+import { injectEnvironmentNote } from '../src/environment-note.ts'
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 10))
 const MANDATE = 'require a `web_search` first'
@@ -38,6 +39,18 @@ describe('mệnh lệnh "phải web_search trước" đi theo tool, không nằm
     expect(content).not.toContain('web search first')
     // Phần còn lại của điều 4 vẫn nguyên vẹn.
     expect(content).toContain('Never claim that a tool or action succeeded before its result confirms it.')
+    // Invariant mạnh nhất: stack không có tool tìm kiếm thì prompt KHÔNG được
+    // nhắc tới "search" ở bất kỳ đâu — kể cả trong ghi chú môi trường
+    // (src/environment-note.ts từng ghi "your search query MUST include
+    // <year>", inject vô điều kiện, chính là lời hứa thứ hai bị bỏ sót).
+    const withEnvNote = injectEnvironmentNote({ content, version: 'v' }, 'end', new Date('2026-09-04T00:00:00Z')).content
+    expect(withEnvNote).not.toMatch(/search/i)
+  })
+
+  it('thiếu tool retrieval -> có luật xác định cho tình huống đó (không để model tự chọn bịa hay từ chối)', async () => {
+    const content = await renderDefaultPrompt(false)
+    expect(content).toContain('no retrieval tool is available this turn')
+    expect(content).toContain('Never present specific figures recalled from training data as if they were current.')
   })
 
   it('CÓ mount tool-web-search -> mệnh lệnh xuất hiện đầy đủ (deploy thật không đổi hành vi)', async () => {

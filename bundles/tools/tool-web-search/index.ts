@@ -220,6 +220,7 @@ export const apply = (ctx: Context, config: ToolWebSearch.Config = {}) => {
       // turn với steps=0 (quan sát thật, lặp lại 3 lần). Đặt ở đây thì prompt
       // tự khớp với bộ tool thực sự có mặt.
       '- Current-state facts — prices, latest versions, officeholders, scores, recent events, anything phrased "hiện tại/hôm nay/latest" — require a `web_search` first, even when you believe you already know the answer: your training data predates today.',
+      '- When a request implies "latest"/"current"/"recent" without naming a year, the query you pass to `web_search` MUST explicitly include the current year from the Environment note — do not rely on your own sense of what year is "recent".',
       '- Use `web_search(query, limit=10)` for current or externally verifiable information; `limit` is capped at 30.',
       '- The result contains `query` and `results`, where each result has `title`, `url`, and `snippet`.',
       '- Treat snippets as leads, not complete evidence. Do not claim details absent from the returned text.',
