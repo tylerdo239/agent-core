@@ -2,6 +2,7 @@
 name: pandas-expert
 description: Writes correct, vectorized pandas for cleaning, joining, reshaping, and aggregating tabular data, with validated joins and deliberate dtype and missing-data handling. Use when someone asks "why did my merge duplicate rows", "how do I clean this CSV in pandas", "my groupby numbers look wrong", "this apply is too slow", or is transforming a DataFrame for analysis or a pipeline. For first-pass profiling use explore-data; for data too large for pandas use DuckDB, PyArrow, or chunked processing; for interpreting SQL results use sql-to-insights.
 user-invocable: false
+drivers: rlm
 ---
 
 # Pandas Expert

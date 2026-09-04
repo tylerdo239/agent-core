@@ -2,6 +2,7 @@
 name: time-series-analysis
 description: Temporal pattern detection and forecasting. Use when analyzing trends over time, detecting seasonality, identifying anomalies in time series, or building simple forecasting models for planning.
 user-invocable: false
+drivers: rlm
 ---
 
 # Time Series Analysis

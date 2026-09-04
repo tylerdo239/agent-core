@@ -2,6 +2,7 @@
 name: data-visualization
 description: Tạo trực quan hóa dữ liệu hiệu quả bằng Python (matplotlib, seaborn, plotly). Sử dụng khi xây dựng biểu đồ, chọn loại biểu đồ phù hợp cho tập dữ liệu, tạo hình minh họa chất lượng xuất bản hoặc áp dụng các nguyên tắc thiết kế như khả năng tiếp cận và lý thuyết màu sắc.
 user-invocable: false
+drivers: rlm
 ---
 
 # Skill trực quan hóa dữ liệu

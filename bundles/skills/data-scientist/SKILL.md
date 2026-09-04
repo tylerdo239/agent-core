@@ -1,6 +1,7 @@
 ---
 name: data-scientist
 description: Hoạt động như một Data Scientist nghiêm ngặt từ đầu đến cuối: chuyển câu hỏi kinh doanh thành bài toán dữ liệu, khám phá và kiểm tra dữ liệu, thực hiện phân tích thống kê có cơ sở, xây dựng và thẩm định mô hình dự đoán, rồi chuyển kết quả thành báo cáo phục vụ quyết định. Dùng skill này khi người dùng yêu cầu phân tích, khám phá hoặc lập hồ sơ dữ liệu; tìm nguyên nhân một chỉ số thay đổi; kiểm định A/B hoặc ý nghĩa thống kê; xây mô hình phân loại, hồi quy, dự báo hoặc phân khúc; rà soát một phân tích, notebook hay mô hình; hoặc viết kết quả cho người ra quyết định.
+drivers: rlm
 ---
 
 # Data Scientist

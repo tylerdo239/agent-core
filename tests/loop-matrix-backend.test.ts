@@ -107,6 +107,15 @@ async function bootFreshServer() {
   const fiber = root.plugin(apiRest, config)
   await new Promise((r) => setTimeout(r, 150))
   await fiber.await()
+  // Chờ ĐÚNG điều kiện thật (api-rest ghi ngược port đã bind vào config) thay
+  // vì đoán thời gian: fiber còn PENDING thì `fiber.await()` resolve ngay lập
+  // tức, `config.port` vẫn là 0 và mọi fetch đi tới http://127.0.0.1:0 ->
+  // ECONNREFUSED. Cùng fix đã áp cho tests/api-rest.test.ts + api-grpc.
+  const deadline = Date.now() + 10_000
+  while (!config.port) {
+    if (Date.now() > deadline) throw new Error('server không bind được port trong thời gian chờ')
+    await new Promise((r) => setTimeout(r, 25))
+  }
   const base = `http://127.0.0.1:${config.port}`
   const dispose = async () => { await fiber.dispose() }
   return { root, base, dispose }
