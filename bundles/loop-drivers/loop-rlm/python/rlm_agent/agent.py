@@ -491,6 +491,15 @@ class RLMDataAgent(RLM):
             from .errors import classify as _classify_error
             error_code = _classify_error(str(exc))
             self._turn_issue = {"code": error_code, "message": str(exc)}
+            # RLM đính SẴN phần trả lời tốt nhất tới thời điểm lỗi vào chính
+            # exception (ErrorThresholdExceededError/TimeoutExceededError...
+            # đều có `partial_answer`). Trước đây harness vứt nó đi rồi trả cho
+            # user đúng một dòng jargon tiếng Anh — vừa khó hiểu vừa mất luôn
+            # phần việc đã làm được. Đưa lên turn_issue để phía TS dựng câu trả
+            # lời cho user; `answer` giữ nguyên chuỗi gốc cho log/debug.
+            partial_answer = getattr(exc, "partial_answer", None)
+            if partial_answer:
+                self._turn_issue["partial_answer"] = str(partial_answer)
             self.last_turn_result = AgentTurnResult(
                 status="failed",
                 answer=str(exc),

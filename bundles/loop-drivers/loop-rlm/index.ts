@@ -11,6 +11,7 @@ import { assertNotCancelled, LoopStep, LoopTurnResult, Session, TurnInput } from
 import { SandboxEvent } from '../../../seams/sandbox.ts'
 import { classifyError, isHarnessErrorCode } from '../../../src/errors.ts'
 import { sanitizeEventField, stripLeakedToolCallLabels } from '../../../src/leaked-tool-call-label.ts'
+import { turnFailureText } from '../../../src/user-facing-error.ts'
 import { prepareRlmTurn, RlmSessionState } from './protocol.ts'
 import { resolveActiveSkills, buildSkillRouterQuery } from '../../../src/skill-runtime.ts'
 
@@ -391,7 +392,7 @@ export const apply = (ctx: Context, config: LoopRlm.Config = {}) => {
       const status = String(result.status ?? 'failed') as LoopTurnResult['status']
       // answer từ Python có thể nhúng nhãn nội bộ model echo — strip trước
       // khi trả về caller (REST/WS/gRPC) lẫn recordAssistant ngay dưới.
-      const content = stripLeakedToolCallLabels(String(result.answer ?? finalContent ?? ''))
+      let content = stripLeakedToolCallLabels(String(result.answer ?? finalContent ?? ''))
       const memory = record(result.memory)
       const state = session.extension<RlmSessionState>('loop:rlm', () => ({ contextIndex: 0, historyIndex: 0 }))
       // BUG-10: turn_issue từ python (crash đã classify / cạn iteration /
@@ -399,7 +400,16 @@ export const apply = (ctx: Context, config: LoopRlm.Config = {}) => {
       const turnIssue = record(result.turn_issue)
       if (status === 'failed') {
         const message = String(turnIssue.message ?? result.answer ?? 'turn failed')
-        state.lastError = { code: isHarnessErrorCode(turnIssue.code) ? turnIssue.code : classifyError(message), message }
+        const code = isHarnessErrorCode(turnIssue.code) ? turnIssue.code : classifyError(message)
+        state.lastError = { code, message }
+        // User KHÔNG nhận chuỗi jargon nội bộ ("Error threshold exceeded: 3
+        // consecutive errors (limit: 3)") nữa — chuỗi gốc vẫn nằm nguyên trong
+        // state.lastError và event turn_result bên dưới để debug. Phần việc RLM
+        // đã làm được (partial_answer) đứng trước, ghi chú vì sao chưa xong
+        // đứng sau. Xem src/user-facing-error.ts.
+        content = turnFailureText(code, typeof turnIssue.partial_answer === 'string'
+          ? stripLeakedToolCallLabels(turnIssue.partial_answer)
+          : finalContent || undefined).content
       } else if (Object.keys(turnIssue).length) {
         state.lastError = { code: isHarnessErrorCode(turnIssue.code) ? turnIssue.code : undefined, message: String(turnIssue.message ?? '') }
       } else {
