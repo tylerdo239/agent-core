@@ -28,6 +28,13 @@ function cleanErrorDetail(raw: string): string {
   return detail
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-[redacted]')
+    // Bug thật: proxy trả 429 kèm nguyên key — "Rate limit exceeded for
+    // api_key: 560f79f7...". Key là hex trần nên lọt cả 2 luật trên, rồi chuỗi
+    // đó đi thẳng vào storage.appendEvent và hiện ra UI. Che theo NHÃN (bắt
+    // mọi định dạng key, không chỉ sk-) và che chuỗi hex dài đứng một mình
+    // (>=24 ký tự hex gần như luôn là secret/hash, không phải văn xuôi lỗi).
+    .replace(/((?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|password)\s*[:=]\s*)\S+/gi, '$1[redacted]')
+    .replace(/\b[0-9a-f]{24,}\b/gi, '[redacted]')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, MAX_ERROR_DETAIL_CHARS)
