@@ -37,6 +37,9 @@
 // xem packages/ui-sidebar/src/sessionHistory.ts cho lý do đầy đủ.
 import { useEffect, useRef, useState } from 'react'
 import { sanitizeEventField, stripLeakedToolCallLabels } from './sanitize.ts'
+// Import THẲNG hằng số (không hỏi backend): số này bị nướng vào bundle lúc
+// build, nên bundle cũ mang số cũ — đó là toàn bộ điểm của nó. Xem src/version.ts.
+import { APP_VERSION } from '../../../src/version.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import { RenderSlot } from '@agent-core/ui-react'
 import type { ToolViewOwnerProps } from '@agent-core/ui-slots'
@@ -253,6 +256,8 @@ function cleanDescription(value: string | undefined): string | undefined {
 
 export function App() {
   const [clientCtx, setClientCtx] = useState<Context | null>(null)
+  /** Phiên bản backend đọc từ /health; null = chưa đọc được (mạng lỗi, server cũ). */
+  const [apiVersion, setApiVersion] = useState<number | null>(null)
   const [settings, setSettings] = useState<Settings>(() => loadSettings())
   const [auth, setAuth] = useState<AuthState | null>(() => loadAuthState())
   const [authView, setAuthView] = useState<'login' | 'signup'>('login')
@@ -539,6 +544,20 @@ export function App() {
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
+
+  // Hỏi phiên bản backend một lần lúc mở trang. /health là route công khai
+  // nên không cần token. Lỗi thì để null — footer hiện "api —" thay vì vờ như
+  // mọi thứ khớp nhau.
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${settings.restUrl}/health`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((body) => {
+        if (!cancelled && typeof body?.version === 'number') setApiVersion(body.version)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [settings.restUrl])
   // Session hiện tại đã có tin nhắn user đầu tiên chưa — chỉ cập nhật title
   // lịch sử ĐÚNG 1 LẦN cho câu hỏi đầu tiên, không ghi đè bằng câu hỏi sau.
   const titledSessionIdsRef = useRef<Set<string>>(new Set())
@@ -1442,6 +1461,8 @@ export function App() {
             onOpenSkillManager={openSkillManager}
             currentUsername={auth.user.username}
             onLogout={handleLogout}
+            uiVersion={APP_VERSION}
+            apiVersion={apiVersion}
           />
         }
         // Follow-up (2026-08), lần 2: xoá HẲN header (trước đó chỉ bỏ tiêu đề

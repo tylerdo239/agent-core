@@ -45,6 +45,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { Duplex } from 'node:stream'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { Context } from '@deepseek-ai/cordis'
+import { APP_VERSION } from '../../../src/version.ts'
 import '../../../seams/sessions.ts'
 import '../../../seams/agent.ts'
 import '../../../seams/storage.ts'
@@ -79,6 +80,9 @@ export const inject = ['sessions', 'projects', 'agent', 'storage', 'auth', 'perm
 
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024 // 1 MiB
 const FILE_MAX_BODY_BYTES = 70 * 1024 * 1024 // 70 MiB for uploads
+/** Mốc process khởi động — kèm /health để biết container đã restart chưa. */
+const startedAt = new Date().toISOString()
+
 const DEFAULT_WS_MAX_PAYLOAD_BYTES = 1024 * 1024 // 1 MiB
 
 async function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
@@ -349,7 +353,10 @@ async function handle(ctx: Context, req: IncomingMessage, res: ServerResponse, m
   const { pathname } = url
 
   if (req.method === 'GET' && pathname === '/health') {
-    return sendJson(res, 200, { status: 'ok' })
+    // `version` để web đối chiếu với hằng số nó tự nướng vào bundle — xem
+    // src/version.ts. Route này công khai (PUBLIC_PATHS) nên web đọc được
+    // ngay cả trước khi đăng nhập.
+    return sendJson(res, 200, { status: 'ok', version: APP_VERSION, startedAt })
   }
 
   if (req.method === 'GET' && pathname === '/ready') {

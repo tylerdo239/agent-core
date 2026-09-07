@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { WebSocket } from 'ws'
 import { Context } from '@deepseek-ai/cordis'
 import pg from 'pg'
+import { APP_VERSION } from '../src/version.ts'
 import * as toolRegistry from '../bundles/providers/tool-registry/index.ts'
 import * as skillRegistry from '../bundles/providers/skill-registry/index.ts'
 import * as stateSqlite from '../bundles/providers/state-sqlite/index.ts'
@@ -326,6 +327,20 @@ afterEach(async () => {
 })
 
 describe('Phase 6.1 — REST API', () => {
+  it('/health trả kèm phiên bản để web đối chiếu với hằng số nướng trong bundle', async () => {
+    await withFreshSchemaUrl(async (databaseUrl) => {
+      const { fiber, config } = await bootApp(databaseUrl)
+      cleanup = () => fiber.dispose()
+      const response = await fetch(`http://127.0.0.1:${config.port}/health`)
+      expect(response.status).toBe(200)
+      const body = await response.json()
+      expect(body.status).toBe('ok')
+      // Cùng hằng số web import — không phải bản sao.
+      expect(body.version).toBe(APP_VERSION)
+      expect(typeof body.startedAt).toBe('string')
+    })
+  })
+
   it('liệt kê đúng skill mà UI được phép chọn', async () => {
     await withFreshSchemaUrl(async (databaseUrl) => {
       const { root, fiber, config } = await bootApp(databaseUrl)
@@ -349,7 +364,9 @@ describe('Phase 6.1 — REST API', () => {
 
       const health = await fetch(`${base}/health`)
       expect(health.status).toBe(200)
-      expect(await health.json()).toEqual({ status: 'ok' })
+      // toMatchObject chứ không toEqual: /health còn kèm version + startedAt
+      // (xem test riêng bên trên), test này chỉ quan tâm nó báo "ok".
+      expect(await health.json()).toMatchObject({ status: 'ok' })
 
       const ready = await fetch(`${base}/ready`)
       expect(ready.status).toBe(200)

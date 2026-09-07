@@ -78,6 +78,13 @@ export interface SidebarProps {
   onOpenSkillManager: () => void
   currentUsername: string
   onLogout: () => void
+  /**
+   * Số phiên bản của CHÍNH bundle web này (nướng vào lúc build) và số backend
+   * trả về qua /health. Hiện cạnh nhau để lệch là thấy ngay phía nào cũ —
+   * xem src/version.ts. `api` null = chưa hỏi được backend.
+   */
+  uiVersion?: number
+  apiVersion?: number | null
 }
 
 export function Sidebar({
@@ -93,6 +100,8 @@ export function Sidebar({
   onOpenSkillManager,
   currentUsername,
   onLogout,
+  uiVersion,
+  apiVersion,
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(() => loadSidebarCollapsed())
   const [searchOpen, setSearchOpen] = useState(false)
@@ -232,6 +241,26 @@ export function Sidebar({
       </nav>
 
       <div className={styles.foot}>
+        {!collapsed && uiVersion !== undefined && (
+          <div
+            className={styles.version}
+            title={
+              apiVersion === undefined || apiVersion === null
+                ? 'Chưa đọc được phiên bản máy chủ'
+                : apiVersion === uiVersion
+                  ? 'Giao diện và máy chủ cùng phiên bản'
+                  : apiVersion < uiVersion
+                    ? 'Máy chủ đang chạy bản CŨ hơn — container chưa restart?'
+                    : 'Giao diện đang là bản CŨ hơn — chưa build lại web?'
+            }
+          >
+            <span>ui {uiVersion}</span>
+            <span aria-hidden="true">·</span>
+            <span className={apiVersion !== undefined && apiVersion !== null && apiVersion !== uiVersion ? styles.versionMismatch : undefined}>
+              api {apiVersion ?? '—'}
+            </span>
+          </div>
+        )}
         {!collapsed && (
           <div className={styles.userRow}>
             <span className={styles.username} title={currentUsername}>

@@ -263,3 +263,23 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+
+/* Phiên bản ui/api ở footer — chữ nhỏ, mờ, chỉ nổi lên khi hai số lệch nhau
+   (dấu hiệu web hoặc backend chưa được cập nhật). Xem src/version.ts. */
+.version {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.15rem 0.5rem 0.35rem;
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  opacity: 0.55;
+  cursor: default;
+  user-select: text;
+}
+
+.versionMismatch {
+  color: var(--color-danger, #c0392b);
+  font-weight: 600;
+  opacity: 1;
+}
