@@ -54,6 +54,8 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json tsconfig.json ./
 COPY packages ./packages
 COPY apps/web ./apps/web
+# apps/web import src/version.ts để hiện số phiên bản UI cạnh phiên bản API.
+COPY src/version.ts ./src/version.ts
 # Follow-up (2026-08) — deploy VPS domain riêng: khi app/API sống trên 2
 # subdomain khác nhau (vd. app-harness.onebot.meobeo.ai vs api-harness.
 # onebot.meobeo.ai), packages/ui-settings-general/src/settings.ts không còn
